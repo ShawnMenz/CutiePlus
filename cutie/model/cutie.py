@@ -116,7 +116,7 @@ class CUTIE(nn.Module):
         batch_size, num_objects = msk_value.shape[:2]
 
         # read using visual attention
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             affinity = get_affinity(memory_key.float(), memory_shrinkage.float(), query_key.float(),
                                     query_selection.float())
 

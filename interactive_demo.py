@@ -43,7 +43,6 @@ if __name__ in "__main__":
     from omegaconf import open_dict
     from hydra import compose, initialize
     from PySide6.QtWidgets import QApplication
-    import qdarktheme
     from gui.main_controller import MainController
 
     # logging
@@ -73,7 +72,12 @@ if __name__ in "__main__":
 
     # start everything
     app = QApplication(sys.argv)
-    qdarktheme.setup_theme("auto")
+    try:
+        import qdarktheme
+        qdarktheme.setup_theme("auto")
+    except (ImportError, AttributeError):
+        # the theme package is optional; fall back to Qt's built-in style
+        app.setStyle("Fusion")
     ex = MainController(cfg)
     if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
         sys.exit(0)

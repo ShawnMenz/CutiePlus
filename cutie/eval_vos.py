@@ -109,7 +109,7 @@ def eval_vos(cfg: DictConfig):
             first_mask_loaded = False
 
             for ti, data in enumerate(loader):
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast('cuda', enabled=use_amp):
                     image = data['rgb'].cuda()
                     mask = data.get('mask')
                     if mask is not None:

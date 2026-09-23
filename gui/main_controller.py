@@ -5,7 +5,7 @@ from typing import Literal
 
 import cv2
 # fix conflicts between qt5 and cv2
-os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
+os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
 import torch
 try:
@@ -127,12 +127,20 @@ class MainController():
         self.update_config()
 
     def initialize_networks(self) -> None:
-        download_models_if_needed()
+        weight_dir = download_models_if_needed()
+        # relative weight paths in the config refer to the downloaded weights,
+        # so the GUI works regardless of the working directory
+        weights, ritm_weights = self.cfg.weights, self.cfg.ritm_weights
+        if not path.isabs(weights):
+            weights = path.join(weight_dir, path.basename(weights))
+        if not path.isabs(ritm_weights):
+            ritm_weights = path.join(weight_dir, path.basename(ritm_weights))
+
         self.cutie = CUTIE(self.cfg).eval().to(self.device)
-        model_weights = torch.load(self.cfg.weights, map_location=self.device)
+        model_weights = torch.load(weights, map_location=self.device, weights_only=True)
         self.cutie.load_weights(model_weights)
 
-        self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
+        self.click_ctrl = ClickController(ritm_weights, device=self.device)
 
     def hit_number_key(self, number: int):
         if number == self.curr_object:
@@ -475,7 +483,7 @@ class MainController():
 
             used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
             self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
-            self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100 / 1024))
+            self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100))
         elif 'mps' in self.device:
             mem_used = mps.current_allocated_memory() / (2**30)
             self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')

@@ -24,43 +24,39 @@ Source: https://raw.githubusercontent.com/hkchengrex/Cutie/main/docs/sources.txt
 
 ## Installation
 
-Tested on Ubuntu only.
+Tested on Ubuntu 24.04 with an NVIDIA GPU. The environment is managed with [uv](https://docs.astral.sh/uv/): Python 3.12, and PyTorch with CUDA 13.0 (needs NVIDIA driver 580 or newer).
 
-**Prerequisite:**
+**Prerequisites:**
 
-- Python 3.8+
-- PyTorch 1.12+ and corresponding torchvision
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- For the GUI on X11: `sudo apt install libxcb-cursor0` (required by Qt 6.5+)
 
-**Clone our repository:**
-
-```bash
-git clone https://github.com/hkchengrex/Cutie.git
-```
-
-**Install with pip:**
+**Install:**
 
 ```bash
 cd Cutie
-pip install -e .
+uv sync
 ```
 
-(If you encounter the File "setup.py" not found error, upgrade your pip with pip install --upgrade pip)
+This creates `.venv` from `uv.lock`. Training and benchmark evaluation need extra packages: `uv sync --extra train`, `uv sync --extra eval`, or `uv sync --all-extras`.
 
 **Download the pretrained models:**
 
-```python
-python cutie/utils/download_models.py
+```bash
+uv run python cutie/utils/download_models.py
 ```
+
+Run the other commands below with `uv run` as well (e.g. `uv run python interactive_demo.py ...`).
 
 ## Quick Start
 
 ### Scripting Demo
 
-This is probably the best starting point if you want to use Cutie in your project. Hopefully, the script is self-explanatory (additional comments in `scripting_demo.py`). If not, feel free to open an issue. For more advanced usage, like adding or removing objects, see `scripting_demo_add_del_objects.py`.
+This is probably the best starting point if you want to use Cutie in your project. Hopefully, the script is self-explanatory (additional comments in `scripting_demo.py`). If not, feel free to open an issue.
 
 ```python
 @torch.inference_mode()
-@torch.cuda.amp.autocast()
+@torch.autocast('cuda')
 def main():
 
     cutie = get_default_model()
@@ -103,7 +99,7 @@ main()
 Start the interactive demo with:
 
 ```bash
-python interactive_demo.py --video ./examples/example.mp4 --num_objects 1
+uv run python interactive_demo.py --video ./examples/example.mp4 --num_objects 1
 ```
 
 [See more instructions here](docs/INTERACTIVE.md).

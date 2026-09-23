@@ -50,7 +50,7 @@ def convert_mask_to_binary(mask_folder: str,
     for i, mask_path in enumerate(masks):
         mask = Image.open(os.path.join(mask_folder, mask_path))
         mask = np.array(mask)
-        mask = np.where(np.isin(mask, target_objects), 255, 0)
+        mask = np.where(np.isin(mask, target_objects), 255, 0).astype(np.uint8)
         cv2.imwrite(os.path.join(output_path, mask_path), mask)
 
         if progress_callback is not None and i % 10 == 0:
