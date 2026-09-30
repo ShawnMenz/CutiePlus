@@ -29,6 +29,9 @@ class InferenceCore:
         self.chunk_size = cfg.chunk_size
         self.save_aux = cfg.save_aux
         self.max_internal_size = cfg.max_internal_size
+        # when True, frames with a shorter side below max_internal_size are enlarged to it
+        # (helps small objects); by default frames are only ever shrunk
+        self.upscale_to_internal_size = False
         self.flip_aug = cfg.flip_aug
 
         self.curr_ti = -1
@@ -208,7 +211,8 @@ class InferenceCore:
         if self.max_internal_size > 0:
             h, w = image.shape[-2:]
             min_side = min(h, w)
-            if min_side > self.max_internal_size:
+            if min_side > self.max_internal_size or (self.upscale_to_internal_size
+                                                     and min_side < self.max_internal_size):
                 resize_needed = True
                 new_h = int(h / min_side * self.max_internal_size)
                 new_w = int(w / min_side * self.max_internal_size)
