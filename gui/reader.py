@@ -1,5 +1,5 @@
 import sys
-from typing import Literal
+from typing import Literal, Optional
 
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import ToTensor
@@ -8,11 +8,19 @@ from gui.resource_manager import ResourceManager
 
 
 class PropagationReader(Dataset):
-    def __init__(self, res_man: ResourceManager, start_ti: int, direction: Literal['forward',
-                                                                                   'backward']):
+    """
+    Yields (display image, display tensor, model tensor). The model always sees the default
+    (anchor) modality; the display follows display_modality when a task has a second one.
+    """
+    def __init__(self,
+                 res_man: ResourceManager,
+                 start_ti: int,
+                 direction: Literal['forward', 'backward'],
+                 display_modality: Optional[str] = None):
         self.res_man = res_man
         self.start_ti = start_ti
         self.direction = direction
+        self.display_modality = display_modality
 
         # skip the first frame
         if self.direction == 'forward':
@@ -38,8 +46,11 @@ class PropagationReader(Dataset):
 
         image = self.res_man.get_image(ti)
         image_torch = self.to_tensor(image)
+        if self.display_modality in (None, self.res_man.default_modality):
+            return image, image_torch, image_torch
 
-        return image, image_torch
+        display_image = self.res_man.get_image(ti, self.display_modality)
+        return display_image, self.to_tensor(display_image), image_torch
 
     def __len__(self):
         return self.length

@@ -42,6 +42,10 @@ except:
 color_map_np = np.frombuffer(davis_palette, dtype=np.uint8).reshape(-1, 3).copy()
 # scales for better visualization
 color_map_np = (color_map_np.astype(np.float32) * 1.5).clip(0, 255).astype(np.uint8)
+# display only (saved masks keep the DAVIS palette): the first object in cyan, apart from the
+# green/red click dots
+TARGET_MASK_COLOR = (0, 255, 255)
+color_map_np[1] = TARGET_MASK_COLOR
 color_map = color_map_np.tolist()
 color_map_torch = torch.from_numpy(color_map_np).to(device) / 255
 
@@ -227,3 +231,9 @@ def overlay_rgba_torch(image: torch.Tensor, prob: torch.Tensor, target_objects: 
     im_overlay = torch.cat([image, obj_mask], dim=-1).clip(0, 1)
     im_overlay = (im_overlay * 255).byte().cpu().numpy()
     return im_overlay
+
+
+# click dots, painted on the scaled canvas so they are this wide on screen at any zoom
+POSITIVE_CLICK_COLOR = (40, 200, 40)
+NEGATIVE_CLICK_COLOR = (230, 40, 40)
+CLICK_DOT_DIAMETER = 4

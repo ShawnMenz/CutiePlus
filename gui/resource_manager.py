@@ -15,9 +15,19 @@ if not hasattr(Image, 'Resampling'):  # Pillow<9.0
 import numpy as np
 
 from cutie.utils.palette import davis_palette
+from gui.task_state import TaskState
 from tqdm import tqdm
 
 log = logging.getLogger()
+
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp')
+
+
+def _frame_files(directory: str) -> Dict[str, str]:
+    # frame name -> file name, in frame order
+    files = sorted(f for f in os.listdir(directory)
+                   if path.splitext(f)[1].lower() in IMAGE_EXTENSIONS)
+    return {path.splitext(f)[0]: f for f in files}
 
 
 # https://bugs.python.org/issue28178
@@ -42,6 +52,9 @@ class LRU:
 
     def invalidate(self, key):
         self.cache.pop(key, None)
+
+    def clear(self):
+        self.cache.clear()
 
 
 @dataclass
@@ -76,10 +89,14 @@ class ResourceManager:
         with open_dict(cfg):
             cfg['workspace'] = self.workspace
 
+        # task mode reads the frames in place from the directories named in task.json
+        labeler = cfg['labeler'] if 'labeler' in cfg else None
+        self.task = TaskState(self.workspace, labeler) if TaskState.is_task(self.workspace) else None
+
         # determine the location of input images
         need_decoding = False
         need_resizing = False
-        if path.exists(path.join(self.workspace, 'images')):
+        if self.task is not None or path.exists(path.join(self.workspace, 'images')):
             pass
         elif images is not None:
             need_resizing = True
@@ -88,11 +105,17 @@ class ResourceManager:
             need_decoding = True
 
         # create workspace subdirectories
-        self.image_dir = path.join(self.workspace, 'images')
+        if self.task is not None:
+            self.image_dirs = dict(self.task.frame_dirs)
+            self.default_modality = self.task.anchor_modality
+        else:
+            self.image_dirs = {'default': path.join(self.workspace, 'images')}
+            self.default_modality = 'default'
+            os.makedirs(self.image_dirs['default'], exist_ok=True)
+        self.image_dir = self.image_dirs[self.default_modality]
         self.mask_dir = path.join(self.workspace, 'masks')
         self.visualization_dir = path.join(self.workspace, 'visualization')
         self.soft_mask_dir = path.join(self.workspace, 'soft_masks')
-        os.makedirs(self.image_dir, exist_ok=True)
         os.makedirs(self.mask_dir, exist_ok=True)
         os.makedirs(self.visualization_dir, exist_ok=True)
         os.makedirs(self.soft_mask_dir, exist_ok=True)
@@ -113,10 +136,26 @@ class ResourceManager:
         if need_resizing:
             self._copy_resize_frames(images)
 
-        # read all frame names
-        self.names = sorted(os.listdir(self.image_dir))
-        self.names = [f[:-4] for f in self.names]  # remove extensions
+        # read all frame names; each modality maps a frame name to its file (a task lists them in
+        # task.json, sparing a slow scan of large directories on external drives)
+        if self.task is not None and self.task.frame_files:
+            self.frame_files = {
+                modality: {path.splitext(f)[0]: f for f in files}
+                for modality, files in self.task.frame_files.items()
+            }
+        else:
+            self.frame_files = {
+                modality: _frame_files(directory)
+                for modality, directory in self.image_dirs.items()
+            }
+        self.names = list(self.frame_files[self.default_modality])
+        self.name_to_ti = {name: ti for ti, name in enumerate(self.names)}
         self.length = len(self.names)
+        for modality, files in self.frame_files.items():
+            missing = len(set(self.names) - set(files))
+            if missing:
+                print(f'{missing} frames have no {modality} image; they show the '
+                      f'{self.default_modality} image instead.')
 
         assert self.length > 0, f'No images found! Check {self.workspace}/images. Remove folder if necessary.'
 
@@ -134,13 +173,21 @@ class ResourceManager:
         for t in self.save_threads:
             t.daemon = True
             t.start()
+        self.closed = False
 
-    def __del__(self):
+    def close(self):
+        # finish pending saves and stop the save threads; safe to call more than once
+        if getattr(self, 'closed', True):
+            return
+        self.closed = True
         for _ in range(self.num_save_threads):
             self.save_queue.put(None)
         self.save_queue.join()
         for t in self.save_threads:
             t.join()
+
+    def __del__(self):
+        self.close()
 
     def save_thread(self, queue: Queue):
         while True:
@@ -241,25 +288,84 @@ class ResourceManager:
 
         self.add_to_queue_with_warning(SaveItem('soft_mask', prob, self.names[ti]))
 
-    def _get_image_unbuffered(self, ti: int):
-        # returns H*W*3 uint8 array
+    def _get_image_unbuffered(self, ti: int, modality: Optional[str] = None):
+        # returns H*W*3 uint8 array; modality selects a task's other frame directory
         assert 0 <= ti < self.length
 
-        image = Image.open(path.join(self.image_dir, self.names[ti] + '.jpg')).convert('RGB')
+        name = self.names[ti]
+        modality = modality or self.default_modality
+        if name not in self.frame_files[modality]:
+            modality = self.default_modality
+        image_path = path.join(self.image_dirs[modality], self.frame_files[modality][name])
+        image = Image.open(image_path).convert('RGB')
         image = np.array(image)
         return image
 
     def _get_mask_unbuffered(self, ti: int):
-        # returns H*W uint8 array
+        # returns H*W uint8 array; a task falls back to its prefill for untouched frames
         assert 0 <= ti < self.length
 
-        mask_path = path.join(self.mask_dir, self.names[ti] + '.png')
+        name = self.names[ti]
+        mask_path = path.join(self.mask_dir, name + '.png')
         if path.exists(mask_path):
             mask = Image.open(mask_path)
             mask = np.array(mask)
             return mask
-        else:
+        if self.task is not None and name in self.task.prefill:
+            prefill = np.array(Image.open(self.task.prefill[name]['path']))
+            return (prefill > 0).astype(np.uint8)
+        return None
+
+    def mask_source(self, ti: int) -> Optional[str]:
+        # where the shown mask of a task frame comes from; None outside task mode
+        if self.task is None:
             return None
+        name = self.names[ti]
+        anchor = self.task.anchor(name)
+        if anchor is not None:
+            kind = 'empty anchor' if anchor['kind'] == 'empty' else 'anchor'
+            return f'{kind}: {anchor["origin"]}'
+        if path.exists(path.join(self.mask_dir, name + '.png')):
+            return 'propagated'
+        if name in self.task.prefill:
+            return f'prefill: {self.task.prefill[name]["source"]}'
+        return 'no mask'
+
+    def frame_parts(self, ti: int, modality: Optional[str] = None
+                    ) -> Tuple[str, Optional[str], Optional[str]]:
+        """(file name, modality shown, where the mask comes from); the last two are None outside
+        task mode."""
+        modality = modality or self.default_modality
+        name = self.names[ti]
+        label = self.frame_files[modality].get(name, self.frame_files[self.default_modality][name])
+        if self.task is None:
+            return label, None, None
+        return label, modality, self.mask_source(ti)
+
+    def delete_mask(self, ti: int) -> None:
+        # wait for pending saves so a queued write cannot recreate the file
+        self.save_queue.join()
+        mask_path = path.join(self.mask_dir, self.names[ti] + '.png')
+        if path.exists(mask_path):
+            os.remove(mask_path)
+        self.invalidate(ti)
+
+    def clear_sequence_masks(self) -> int:
+        """Remove only generated mask PNGs from this sequence's workspace."""
+        self.save_queue.join()
+        directories = (self.mask_dir, path.join(self.workspace, 'binary_masks'),
+                       self.soft_mask_dir)
+        removed = 0
+        for directory in directories:
+            if not path.isdir(directory):
+                continue
+            for root, _, files in os.walk(directory):
+                for name in files:
+                    if name.lower().endswith('.png'):
+                        os.remove(path.join(root, name))
+                        removed += 1
+        self.get_mask.clear()
+        return removed
 
     def import_mask(self, file_name: str, size: Optional[Tuple[int, int]] = None):
         # read an mask file and resize it to exactly match the canvas size

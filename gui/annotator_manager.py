@@ -1,0 +1,219 @@
+"""
+The Manage annotators page of the task browser: one row per annotator, 'Port: [5902] --> [name]'.
+Edits are staged in the page; Save checks them, writes annotators.json (see gui/annotators.py) and
+makes them effective for the sessions that read it.
+"""
+from typing import List, Optional
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+
+from gui.annotators import (ANNOTATORS_FILE, MAX_NAME_LENGTH, MAX_PORT, MIN_PORT, VNC_BASE_PORT,
+                            annotators_path, check_annotators, load_annotators, save_annotators)
+
+FIRST_ANNOTATOR_PORT = VNC_BASE_PORT + 2  # screen :1 is the real monitor
+
+
+class AnnotatorRow(QWidget):
+    """Port: [number] --> [name] [Remove]"""
+
+    changed = Signal()
+    removed = Signal(object)
+
+    def __init__(self, port: int, name: str) -> None:
+        super().__init__()
+        self.port_box = QSpinBox()
+        self.port_box.setRange(MIN_PORT, MAX_PORT)
+        self.port_box.setValue(port)
+        self.port_box.setToolTip(f'The port this annotator connects to: {VNC_BASE_PORT} plus the '
+                                 'virtual screen number.')
+        self.name_box = QLineEdit(name)
+        self.name_box.setMaxLength(MAX_NAME_LENGTH)
+        self.name_box.setPlaceholderText('Annotator name')
+        self.remove_button = QPushButton('Remove')
+        self.remove_button.setAutoDefault(False)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.addWidget(QLabel('Port:'))
+        layout.addWidget(self.port_box)
+        layout.addWidget(QLabel('-->'))
+        layout.addWidget(self.name_box, 1)
+        layout.addWidget(self.remove_button)
+        self.setLayout(layout)
+        self.port_box.valueChanged.connect(lambda _: self.changed.emit())
+        self.name_box.textChanged.connect(lambda _: self.changed.emit())
+        self.remove_button.clicked.connect(lambda: self.removed.emit(self))
+
+    def entry(self) -> dict:
+        return {'port': self.port_box.value(), 'name': self.name_box.text().strip()}
+
+    def matches(self, text: str) -> bool:
+        return text in f'{self.port_box.value()} {self.name_box.text().lower()}'
+
+
+class AnnotatorManager(QDialog):
+    """Create, update, remove and look up annotators; nothing is written until Save."""
+
+    saved = Signal(int)  # the number of annotators now in the file
+
+    def __init__(self, task_root: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.task_root = task_root
+        self.setWindowTitle('Manage annotators')
+        self.rows: List[AnnotatorRow] = []
+        # what the file held when this page opened or last saved: a change underneath is noticed
+        self.loaded = load_annotators(task_root)
+        self.saved_state: List[dict] = []  # set once the rows exist
+
+        header = QLabel('Each annotator connects to their own port: port 59NN is virtual screen :NN. '
+                        'Changes take effect when you press Save.')
+        header.setWordWrap(True)
+        self.lookup = QLineEdit()
+        self.lookup.setPlaceholderText('Look up by port or name')
+        self.lookup.textChanged.connect(self.apply_lookup)
+
+        self.rows_layout = QVBoxLayout()
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.addStretch(1)
+        rows_widget = QWidget()
+        rows_widget.setLayout(self.rows_layout)
+        scroll = QScrollArea()
+        scroll.setWidget(rows_widget)
+        scroll.setWidgetResizable(True)
+
+        self.add_button = QPushButton('Add annotator')
+        self.add_button.clicked.connect(lambda: self.add_row(self.next_free_port(), ''))
+        self.save_button = QPushButton('Save')
+        self.save_button.clicked.connect(self.save)
+        self.close_button = QPushButton('Close')
+        self.close_button.clicked.connect(self.reject)
+        for button in (self.add_button, self.save_button, self.close_button):
+            button.setAutoDefault(False)  # Enter in a name box must not press a button
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        hint = QLabel(f'A screen with no entry records the account name. Stored in {ANNOTATORS_FILE} '
+                      'in the task root.')
+        hint.setWordWrap(True)
+
+        lookup_row = QHBoxLayout()
+        lookup_row.addWidget(QLabel('Look up:'))
+        lookup_row.addWidget(self.lookup, 1)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.add_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(self.close_button)
+        layout = QVBoxLayout()
+        layout.addWidget(header)
+        layout.addLayout(lookup_row)
+        layout.addWidget(scroll, 1)
+        layout.addLayout(buttons)
+        layout.addWidget(self.status)
+        layout.addWidget(hint)
+        self.setLayout(layout)
+
+        for entry in self.loaded:
+            self.add_row(entry['port'], entry['name'])
+        self.saved_state = self.current_entries()
+        self.update_status()
+        self.resize(620, 460)
+
+    # ---- the staged list ----------------------------------------------------------------------
+    def add_row(self, port: int, name: str) -> AnnotatorRow:
+        row = AnnotatorRow(port, name)
+        row.changed.connect(self.on_edited)
+        row.removed.connect(self.remove_row)
+        self.rows.append(row)
+        self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
+        self.apply_lookup()
+        self.update_status()
+        return row
+
+    def remove_row(self, row: AnnotatorRow) -> None:
+        self.rows.remove(row)
+        self.rows_layout.removeWidget(row)
+        row.deleteLater()
+        self.update_status()
+
+    def next_free_port(self) -> int:
+        used = {row.port_box.value() for row in self.rows}
+        return next((port for port in range(FIRST_ANNOTATOR_PORT, MAX_PORT + 1) if port not in used),
+                    MAX_PORT)
+
+    def current_entries(self) -> List[dict]:
+        return sorted((row.entry() for row in self.rows),
+                      key=lambda entry: (entry['port'], entry['name']))
+
+    def is_dirty(self) -> bool:
+        return self.current_entries() != self.saved_state
+
+    def on_edited(self) -> None:
+        self.apply_lookup()
+        self.update_status()
+
+    def apply_lookup(self) -> None:
+        text = self.lookup.text().strip().lower()
+        for row in self.rows:
+            row.setVisible(not text or row.matches(text))
+
+    def update_status(self) -> None:
+        problems = check_annotators(self.current_entries())
+        if problems:
+            self.set_status('\n'.join(problems), 'red')
+        elif self.is_dirty():
+            self.set_status('Unsaved changes: press Save to make them effective.', 'orange')
+        else:
+            self.set_status('', 'gray')
+
+    def set_status(self, text: str, color: str) -> None:
+        self.status.setText(text)
+        self.status.setStyleSheet(f'QLabel {{ color: {color}; }}')
+
+    # ---- saving and closing -------------------------------------------------------------------
+    def save(self) -> bool:
+        entries = self.current_entries()
+        problems = check_annotators(entries)
+        if problems:
+            self.set_status('Not saved:\n' + '\n'.join(problems), 'red')
+            return False
+        if load_annotators(self.task_root) != self.loaded:
+            answer = QMessageBox.question(
+                self, 'Annotators changed',
+                'Someone saved a different list since this page was opened. Overwrite it with '
+                'yours?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        try:
+            saved = save_annotators(self.task_root, entries)
+        except (OSError, ValueError) as exc:
+            self.set_status(f'Not saved: {exc}', 'red')
+            return False
+        self.loaded = saved
+        self.saved_state = self.current_entries()
+        count = len(saved)
+        self.set_status(f'Saved {count} annotator{"" if count == 1 else "s"}.', 'green')
+        self.saved.emit(count)
+        return True
+
+    def confirm_close(self) -> bool:
+        if not self.is_dirty():
+            return True
+        answer = QMessageBox.question(
+            self, 'Unsaved changes', 'Close without saving your changes?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
+
+    def reject(self) -> None:
+        # Close and Esc
+        if self.confirm_close():
+            super().reject()
+
+    def closeEvent(self, event) -> None:
+        # the window's own close button
+        if self.confirm_close():
+            event.accept()
+        else:
+            event.ignore()

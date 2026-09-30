@@ -9,6 +9,8 @@ output
 pretrained/
 workspace
 workspace/
+# people's names (the task browser's Manage annotators page)
+annotators.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

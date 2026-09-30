@@ -52,12 +52,24 @@ class ClickInteraction(Interaction):
         super().__init__(image, prev_mask, true_size, controller)
         self.tar_obj = tar_obj
 
-        # negative/positive for each object
-        self.pos_clicks = []
-        self.neg_clicks = []
+        # (x, y, is_negative) in click order, drawn on the canvas as green/red dots
+        self.clicks = []
 
         self.first_click = True
         self.out_prob = self.prev_mask.clone()
+
+    @property
+    def pos_clicks(self):
+        return [(x, y) for x, y, is_neg in self.clicks if not is_neg]
+
+    @property
+    def neg_clicks(self):
+        return [(x, y) for x, y, is_neg in self.clicks if is_neg]
+
+    def pop_click(self) -> None:
+        # the controller's undo_click takes back the prediction; this forgets the dot
+        if self.clicks:
+            self.clicks.pop()
 
     """
     neg - Negative interaction or not
@@ -65,11 +77,7 @@ class ClickInteraction(Interaction):
     """
 
     def push_point(self, x: int, y: int, is_neg: bool) -> None:
-        # Clicks
-        if is_neg:
-            self.neg_clicks.append((x, y))
-        else:
-            self.pos_clicks.append((x, y))
+        self.clicks.append((x, y, is_neg))
 
         # Do the prediction
         if self.first_click:
