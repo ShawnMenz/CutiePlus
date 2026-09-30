@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QPainter,
                            QColor)
-from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QSize
+from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
@@ -35,6 +35,8 @@ STOP_LABEL = 'Stop video (R)'
 
 
 class GUI(QWidget):
+    # what the frame label shows now, to draw it again when the theme changes
+    frame_label_args = None
 
     def __init__(self, controller, cfg: DictConfig) -> None:
         super().__init__()
@@ -507,10 +509,18 @@ class GUI(QWidget):
 
     def set_frame_label(self, file_name: str, modality=None, source=None) -> None:
         # the frame's file, the modality shown and where its mask comes from, in color
+        self.frame_label_args = (file_name, modality, source)
         dark = is_dark(self)
         self.frame_name.setText(frame_label_html(file_name, modality, source, dark))
         if modality is not None:
             self.frame_name.setToolTip(frame_label_legend(dark))
+
+    def changeEvent(self, event) -> None:
+        # a new theme (the browser's theme button, or Auto following the desktop) changes the
+        # palette; the label's colors depend on it
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange and self.frame_label_args is not None:
+            self.set_frame_label(*self.frame_label_args)
 
     def show_fitted(self) -> None:
         # the controls in one row and at least the image plus 200 px; maximized instead when that

@@ -82,12 +82,10 @@ if __name__ in "__main__":
 
     # start everything
     app = QApplication(sys.argv)
-    try:
-        import qdarktheme
-        qdarktheme.setup_theme("auto")
-    except (ImportError, AttributeError):
-        # the theme package is optional; fall back to Qt's built-in style
-        app.setStyle("Fusion")
+    # the theme package is optional (apply_theme falls back to Qt's built-in style); the theme is
+    # the one last chosen with the browser's theme button on this screen, Auto at first
+    from gui.theme import apply_theme, saved_theme
+    apply_theme(saved_theme())
     if cfg['tasks'] is not None:
         from gui.task_browser import TaskBrowser
         browser = TaskBrowser(cfg, cfg['tasks'], cfg['task_split'])

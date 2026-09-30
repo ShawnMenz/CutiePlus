@@ -29,6 +29,8 @@ from gui.task_export import start_export
 from gui.task_state import (TASK_FILE, TaskLock, TaskLocked, describe_holder, export_command,
                             export_is_current, labeler_name, load_task_set, lock_holder, mark_done,
                             summarize_task, task_status)
+from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_theme,
+                       saved_theme)
 
 COLUMNS = ('Sequence', 'Frames', 'Anchors', 'Status', 'Annotators', 'Open by', 'Modality', 'Target')
 SEQUENCE_COLUMN, STATUS_COLUMN, ANNOTATORS_COLUMN, OPEN_BY_COLUMN, TARGET_COLUMN = 0, 3, 4, 5, 7
@@ -39,6 +41,10 @@ STATUS_COLORS = {
     'under review': QColor(70, 130, 230),
     'done': QColor(60, 170, 80),
 }
+
+
+def theme_button_text(theme: str) -> str:
+    return f'Theme: {theme.capitalize()}'
 
 
 class TargetDelegate(QStyledItemDelegate):
@@ -105,6 +111,17 @@ class TaskBrowser(QWidget):
         self.hide_done = QCheckBox('Hide done')
         self.hide_done.setToolTip('Hide the sequences that are done (in every tab).')
         self.hide_done.toggled.connect(self.apply_filter)
+        # top right: cycles Auto, Light, Dark for every window of this program
+        self.theme = saved_theme()
+        self.theme_button = QPushButton()
+        self.theme_button.setToolTip('Color theme: Auto follows the desktop. Click to cycle Auto, '
+                                     'Light, Dark. Remembered for this screen.')
+        self.theme_button.setMinimumWidth(
+            max(QFontMetrics(self.theme_button.font()).horizontalAdvance(theme_button_text(name))
+                for name in THEMES) + 32)
+        self.theme_button.setEnabled(has_theme_package())
+        self.theme_button.clicked.connect(self.on_theme)
+        self.show_theme()
         self.target_delegate = TargetDelegate(self)
 
         self.tabs = QTabWidget()
@@ -153,6 +170,7 @@ class TaskBrowser(QWidget):
         filter_row = QHBoxLayout()
         filter_row.addWidget(self.search, 1)
         filter_row.addWidget(self.hide_done)
+        filter_row.addWidget(self.theme_button)
         layout.addLayout(filter_row)
         layout.addWidget(self.tabs)
         layout.addLayout(buttons)
@@ -180,6 +198,15 @@ class TaskBrowser(QWidget):
         if self.windowTitle() != title:
             self.setWindowTitle(title)
         return self.labeler
+
+    def show_theme(self) -> None:
+        self.theme_button.setText(theme_button_text(self.theme))
+
+    def on_theme(self) -> None:
+        self.theme = next_theme(self.theme)
+        apply_theme(self.theme)
+        save_theme(self.theme)
+        self.show_theme()
 
     def on_manage_annotators(self) -> None:
         dialog = AnnotatorManager(self.task_root, self)
