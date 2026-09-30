@@ -148,8 +148,8 @@ nvtx = [
 ]
 
 [[package]]
-name = "cutie"
-version = "1.0.0"
+name = "cutieplus"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "av", marker = "sys_platform == 'linux'" },

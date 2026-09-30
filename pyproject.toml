@@ -11,10 +11,10 @@ indent_width = 4
 column_limit = 100
 
 [project]
-name = "cutie"
-version = "1.0.0"
-authors = [{ name = "Rex Cheng", email = "hkchengrex@gmail.com" }]
-description = ""
+name = "cutieplus"
+version = "0.1.0"
+authors = [{ name = "Zexuan Meng" }]
+description = "A multi-annotator video object segmentation annotation tool built upon Cutie."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 classifiers = [
@@ -67,5 +67,7 @@ torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 
 [project.urls]
-"Homepage" = "https://github.com/hkchengrex/Cutie"
-"Bug Tracker" = "https://github.com/hkchengrex/Cutie/issues"
+"Homepage" = "https://github.com/ShawnMenz/CutiePlus"
+"Repository" = "https://github.com/ShawnMenz/CutiePlus"
+"Bug Tracker" = "https://github.com/ShawnMenz/CutiePlus/issues"
+"Upstream" = "https://github.com/hkchengrex/Cutie"

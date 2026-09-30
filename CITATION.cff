@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use CutiePlus, please cite the original Cutie paper and acknowledge CutiePlus."
+title: "CutiePlus"
+abstract: "A multi-annotator video object segmentation annotation tool built upon Cutie."
+type: software
+version: "0.1.0"
+authors:
+  - family-names: Meng
+    given-names: Zexuan
+repository-code: "https://github.com/ShawnMenz/CutiePlus"
+url: "https://github.com/ShawnMenz/CutiePlus"
+license: MIT
+keywords:
+  - video object segmentation
+  - video annotation
+  - computer vision
+  - RGB-thermal
+  - Cutie
+# CutiePlus is built upon Cutie. The original Cutie paper and code are listed here as related
+# work; they are not a publication of CutiePlus.
+references:
+  - type: conference-paper
+    title: "Putting the Object Back into Video Object Segmentation"
+    authors:
+      - family-names: Cheng
+        given-names: Ho Kei
+      - family-names: Oh
+        given-names: Seoung Wug
+      - family-names: Price
+        given-names: Brian
+      - family-names: Lee
+        given-names: Joon-Young
+      - family-names: Schwing
+        given-names: Alexander
+    collection-title: "Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)"
+    year: 2024
+    month: 6
+    start: 3151
+    end: 3161
+  - type: software
+    title: "Cutie"
+    authors:
+      - family-names: Cheng
+        given-names: Ho Kei
+    repository-code: "https://github.com/hkchengrex/Cutie"
+    license: MIT
+    commit: ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a
