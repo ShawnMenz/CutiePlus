@@ -6,7 +6,7 @@ All credit for the model, the original code and the interactive tool belongs to 
 
 [Ho Kei Cheng](https://hkchengrex.github.io/), [Seoung Wug Oh](https://sites.google.com/view/seoungwugoh/), [Brian Price](https://www.brianpricephd.com/), [Joon-Young Lee](https://joonyoung-cv.github.io/), [Alexander Schwing](https://www.alexander-schwing.de/) — University of Illinois Urbana-Champaign and Adobe.
 
-[[Original repository]](https://github.com/hkchengrex/Cutie) [[arXiv]](https://arxiv.org/abs/2310.12982) [[PDF]](https://arxiv.org/pdf/2310.12982.pdf) [[Project page]](https://hkchengrex.github.io/Cutie/) ![Open In Colab](https://colab.research.google.com/drive/1yo43XTbjxuWA7XgCUO9qxAi7wBI6HzvP?usp=sharing)
+[[Original repository]](https://github.com/hkchengrex/Cutie) [[arXiv]](https://arxiv.org/abs/2310.12982) [[PDF]](https://arxiv.org/pdf/2310.12982.pdf) [[Project page]](https://hkchengrex.github.io/Cutie/) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1yo43XTbjxuWA7XgCUO9qxAi7wBI6HzvP?usp=sharing)
 
 - CutiePlus is based on the original repository at commit [`ec5cdd4`](https://github.com/hkchengrex/Cutie/commit/ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a) (8 November 2024) and keeps its git history. Modified by Zexuan Meng.
 - It is **not affiliated with or endorsed by** the original authors. Please report problems specific to CutiePlus in the [CutiePlus issue tracker](https://github.com/ShawnMenz/CutiePlus/issues), not to them.
