@@ -345,3 +345,16 @@ def test_memory_pressure_postpones_a_step_without_losing_the_run(two_tasks, env_
     assert done['state'] == 'finished' and done['attempt'] == 1  # the context was kept
     assert done['all_frames'] == [1, 2, 3, 4, 5, 7, 8, 9]
     assert any('memory is short' in message for message in done['all_messages'])
+
+
+def test_a_worker_that_dies_while_idle_is_replaced(two_tasks, env_factory):
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2')
+    old_pid = env.service.worker.pid
+    os.kill(old_pid, 9)
+    wait_for(lambda: env.service.worker.generation == 2 and env.service.worker.alive(), timeout=60)
+    assert env.service.worker.pid != old_pid
+    reply = open_task(alice, first)
+    _, result = click(alice, reply, '000004', 40, 40)
+    assert result['clicks'] == 1

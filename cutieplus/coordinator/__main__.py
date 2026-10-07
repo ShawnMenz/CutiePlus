@@ -47,10 +47,8 @@ def overrides_from(settings) -> dict:
 
 
 def socket_for(args) -> str:
-    from cutieplus.coordinator.service import default_socket_path, default_state_dir
-    if args.socket:
-        return args.socket
-    return default_socket_path(args.state_dir or default_state_dir(args.tasks))
+    from cutieplus.paths import socket_for as derive
+    return derive(args.tasks, args.state_dir, args.socket)
 
 
 def start(args) -> int:

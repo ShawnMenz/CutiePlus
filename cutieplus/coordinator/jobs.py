@@ -217,6 +217,12 @@ class JobManager:
                                    if job.state in ('queued', 'waiting_memory') else None),
                 'attempt': job.attempt,
                 'content_revision': job.content_revision,
+                'metrics': dict(job.metrics, replay_checked=job.replay_checked,
+                                replay_mismatches=job.replay_mismatches,
+                                oom_retries=job.oom_retries, worker_restarts=job.worker_restarts,
+                                run_seconds=(job.finished or self.clock()) - job.started
+                                if job.started else None),
+                'effective': job.effective,
             }
 
     def cancel(self, job_id: str, session_id: Optional[str] = None, reason: str = 'cancelled') -> None:
@@ -517,6 +523,17 @@ class JobManager:
 
     def active(self) -> List[Job]:
         return [job for job in self.jobs.values() if not job.done]
+
+    def prune(self, max_age: float = 3600.0) -> int:
+        """Forgets jobs finished more than max_age seconds ago (their record stays in the
+        database); the windows have read their end long before."""
+        limit = self.clock() - max_age
+        with self.lock:
+            old = [job_id for job_id, job in self.jobs.items()
+                   if job.done and job.finished is not None and job.finished < limit]
+            for job_id in old:
+                del self.jobs[job_id]
+        return len(old)
 
     def shutdown(self) -> None:
         self.committer.shutdown(wait=True)

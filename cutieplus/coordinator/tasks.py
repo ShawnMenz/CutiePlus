@@ -317,7 +317,10 @@ class TaskService:
 
     def _record_views(self, task_id: str, mask_stats: Dict[str, Optional[list]],
                       json_stats: Dict[str, Optional[list]], revision: int) -> None:
-        with self.db.transaction() as conn:
+        # not waiting for the disk: if this record is lost, the files (written durably, and
+        # identical to the committed state) are taken for a change and imported again, which is
+        # harmless
+        with self.db.transaction(durable=False) as conn:
             for frame, stat in mask_stats.items():
                 conn.execute('UPDATE frames SET view_stat = ? WHERE task_id = ? AND frame = ?',
                              (dumps(stat), task_id, frame))
@@ -492,8 +495,11 @@ class TaskService:
 
     def _touch(self, conn, task_id: str, labeler: str, changes: _Changes) -> None:
         state = self._state(conn, task_id)
-        state['progress'] = touched_progress(state['progress'], self._all_anchors(conn, task_id),
-                                             labeler, self.clock())
+        progress = touched_progress(state['progress'], self._all_anchors(conn, task_id), labeler,
+                                    self.clock())
+        if progress == state['progress']:
+            return  # the same second, the same editors: progress.json stays as it is
+        state['progress'] = progress
         self._set_state(conn, task_id, state)
         changes.json_files[PROGRESS_FILE] = state['progress']
 

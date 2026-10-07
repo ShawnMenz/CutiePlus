@@ -24,6 +24,7 @@ from cutieplus.coordinator.tasks import TaskError, TaskService
 from cutieplus.coordinator.worker_proxy import (WorkerDied, WorkerError, WorkerProxy,
                                                 stop_stale_worker)
 from cutieplus.engine.settings import model_config
+from cutieplus.paths import default_socket_path, default_state_dir
 from cutieplus.storage.db import Database, dumps
 from cutieplus.storage.objects import ObjectStore
 from gui.task_state import TaskLock, TaskLocked
@@ -57,12 +58,6 @@ def service_section(cfg: DictConfig, overrides: Optional[dict] = None) -> dict:
     return section
 
 
-def default_state_dir(task_root: str) -> str:
-    return path.join(path.abspath(task_root), '.cutieplus')
-
-
-def default_socket_path(state_dir: str) -> str:
-    return path.join(state_dir, 'coordinator.sock')
 
 
 class Service:
@@ -315,12 +310,35 @@ class Service:
             self.jobs._fail(job, f'the GPU worker could not be restarted: {reason}')
 
     def _maintenance_loop(self) -> None:
+        last_health = last_prune = time.monotonic()
         while self.running:
             time.sleep(1.0)
             try:
                 self.sessions.expire_stale()
             except Exception:
                 log.exception('session expiry')
+            now = time.monotonic()
+            if now - last_health >= 5.0:
+                last_health = now
+                self._check_worker()
+            if now - last_prune >= 600.0:
+                last_prune = now
+                self.jobs.prune()
+                with self.db.transaction() as conn:
+                    conn.execute("DELETE FROM requests WHERE created_at < datetime('now', '-7 days')")
+
+    def _check_worker(self) -> None:
+        """A worker that died while idle is replaced now, not at the next request: a status
+        request through the scheduler meets the dead worker on the dispatcher thread, which
+        recovers it."""
+        if self.worker_problem is not None or self.worker.alive():
+            return
+        log.warning('the GPU worker is not running; replacing it')
+        try:
+            self.scheduler.submit('_service', lambda: self.worker.call('status', timeout=30),
+                                  'health')
+        except QueueFull:
+            pass
 
     def _session_ended(self, session_id: str) -> None:
         self.jobs.cancel_session(session_id, 'the session ended')

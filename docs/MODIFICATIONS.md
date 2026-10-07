@@ -72,6 +72,25 @@ Guards and clean-up for opening many tasks in one session:
 - A closed task window now releases its processor, caches and window; before, every opened task kept about 38 MB of GPU memory in our tests.
 - *Reset* and *Import* are refused while a propagation runs, playback stops when one starts, a window cannot be closed while its export runs, and the window's timers belong to the window so that a closed one can be freed.
 
+## Shared GPU service
+
+Files: `cutieplus/` (new), `interactive_demo.py` (`--backend`), `gui/main_controller.py`,
+`gui/task_browser.py`, `gui/click_controller.py`, `gui/ritm/controller.py`,
+`gui/interactive_utils.py`, `gui/resource_manager.py`, `gui/task_state.py`,
+`cutie/config/gui_config.yaml` (section `service`). See [SHARED_SERVICE.md](SHARED_SERVICE.md).
+
+- The window's inference runs through `cutieplus/engine` behind a backend: `local` keeps the
+  original behaviour (a recorded session of the original window still matches it exactly);
+  `shared` sends the work to a coordinator and its GPU worker.
+- `gui/interactive_utils.py` no longer creates CUDA tensors at import (which also made the CPU
+  mode fail on a machine with a GPU).
+- The mask save threads survive a failed save (before, `save_queue.join()` then waited forever and
+  the window froze); masks are written to a temporary file and renamed; failures are shown.
+- The permanent-memory anchor limit is computed by `cutieplus/engine/policies.py` (same numbers);
+  in shared mode the worker's measured memory budget can lower it, which is recorded.
+- The click controller can give each interaction its own predictor state over one shared network
+  (`ClickController.session`).
+
 ## Removed from the original
 
 Dead or unused code was deleted: `cutie/inference/utils/frame_utils.py` (its import was broken), `scripting_demo_add_del_objects.py`, the RITM modules that nothing imports (`gui/ritm/inference/evaluation.py`, `gui/ritm/model/is_deeplab_model.py`, `gui/ritm/model/modeling/{basic_blocks,deeplab_v3,resnet}.py`, `gui/ritm/utils/{distributed,exp,vis}.py`, `gui/ritm/utils/exp_imports/default.py`).

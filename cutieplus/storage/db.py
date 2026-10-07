@@ -192,9 +192,14 @@ class Database:
         self.fail_next_commit: Optional[Exception] = None
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        """One short write transaction (BEGIN IMMEDIATE); rolled back on any error."""
+    def transaction(self, durable: bool = True) -> Iterator[sqlite3.Connection]:
+        """One short write transaction (BEGIN IMMEDIATE); rolled back on any error. durable=False
+        commits without waiting for the disk (synchronous=NORMAL): the transaction survives a
+        crash of the process and becomes durable with the next durable one; only for records
+        whose loss is harmless."""
         with self.lock:
+            if not durable:
+                self.conn.execute('PRAGMA synchronous=NORMAL')
             self.conn.execute('BEGIN IMMEDIATE')
             try:
                 yield self.conn
@@ -205,6 +210,9 @@ class Database:
             except BaseException:
                 self.conn.execute('ROLLBACK')
                 raise
+            finally:
+                if not durable:
+                    self.conn.execute('PRAGMA synchronous=FULL')
 
     def query(self, sql: str, args: Iterable = ()) -> List[sqlite3.Row]:
         with self.lock:

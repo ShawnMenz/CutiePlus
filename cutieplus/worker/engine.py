@@ -301,7 +301,9 @@ class TorchWorkerEngine:
         if self.job is not None and self.job.job_id == job_id:
             self.job.prefetcher.close()
             self.job = None
-            gc.collect()
+            # the GPU is shared with other programs: give the context's cached blocks back (the
+            # tensors are gone already; the next job allocates again in milliseconds)
+            self._free()
         return {}
 
     # memory

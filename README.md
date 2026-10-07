@@ -171,10 +171,32 @@ Several Cutie sessions can share one task root, for example one virtual screen p
 - **Manage annotators** (button in the task browser) edits `annotators.json`: rows of `Port: [5902] --> [name]`, where port 59NN is virtual screen `:NN`. Add, edit and remove rows, look one up by port or name, and press **Save** to make everything effective; nothing is written before that. The next task opened on any screen records the new names without a restart.
 - `annotators.json` holds people's names, so it is listed in `.gitignore`.
 
+### One shared GPU for every annotator
+
+Each window normally loads its own copy of the models onto the GPU. With the shared service, one
+coordinator and one GPU worker hold the only copies; the windows send clicks and propagations to
+them, clicks are served between the steps of a running propagation, and the coordinator alone
+writes the tasks' annotation data (SQLite and immutable mask files, with the usual task files kept
+up to date for the export pipeline). GPU memory limits are measured on the GPU at start.
+
+```bash
+uv run python -m cutieplus.coordinator start --tasks workspace/cutie_tasks
+```
+
+```bash
+uv run python interactive_demo.py --tasks workspace/cutie_tasks --backend shared
+```
+
+Without `--backend shared` a window works as before; both kinds respect each other's task locks.
+See [docs/SHARED_SERVICE.md](docs/SHARED_SERVICE.md) for the design, settings, recovery and
+limitations, and [docs/benchmarks](docs/benchmarks/) for measurements.
+
 
 ## Documentation
 
 - [docs/MODIFICATIONS.md](docs/MODIFICATIONS.md): what CutiePlus changes relative to the original Cutie, file by file.
+- [docs/SHARED_SERVICE.md](docs/SHARED_SERVICE.md): the shared GPU service (coordinator and GPU worker): design, running it, recovery, limitations.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the labeling window worked before the shared service (the local mode).
 - [gui/TIPS.md](gui/TIPS.md): the labeling guide (keys and controls); also in the window with **F1**.
 - [docs/INTERACTIVE.md](docs/INTERACTIVE.md): instructions for the interactive demo (from the original Cutie).
 

@@ -140,3 +140,18 @@ def test_messages_round_trip_arrays_and_bytes():
     left.close()
     with pytest.raises(ConnectionError):
         receive_message(right)
+
+
+def test_finished_jobs_are_forgotten_after_a_while():
+    from cutieplus.coordinator.jobs import Job, JobConfig, JobManager
+    clock = Clock()
+    manager = JobManager(None, None, Scheduler(SchedulerConfig(), clock), None, None, JobConfig(),
+                         clock)
+    for job_id, state, finished in (('old', 'finished', 10.0), ('recent', 'cancelled', 150.0),
+                                    ('running', 'running', None)):
+        job = Job(job_id, 't', 's', 1, 1, {})
+        job.state, job.finished = state, finished
+        manager.jobs[job_id] = job
+    clock.now = 3700.0
+    assert manager.prune(3600.0) == 1
+    assert sorted(manager.jobs) == ['recent', 'running']

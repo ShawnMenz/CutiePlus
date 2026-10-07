@@ -58,13 +58,13 @@ def task_root_for(args):
 def connect_to_service(args):
     """The shared mode's connection to the coordinator, with its session; exits with a clear
     message when the service is not running."""
-    from os import path
     from cutieplus.client import ClientError, ServiceClient
     from gui.task_state import labeler_name
     task_root = task_root_for(args)
     if task_root is None:
         sys.exit('The shared service works on tasks: give --tasks or a task --workspace.')
-    socket_path = args.service_socket or path.join(task_root, '.cutieplus', 'coordinator.sock')
+    from cutieplus.paths import socket_for
+    socket_path = socket_for(task_root, socket=args.service_socket)
     client = ServiceClient(socket_path, labeler_name(args.labeler, task_root),
                            reconnect_seconds=5)
     try:
