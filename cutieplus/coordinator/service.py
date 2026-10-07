@@ -524,6 +524,23 @@ class Service:
         self.jobs.cancel(job_id, session_id)
         return {}
 
+    def op_begin_export(self, session_id: str, task_id: str, lease_epoch: int) -> dict:
+        self._no_running_job(task_id)
+        return self.tasks.begin_export(task_id, session_id, lease_epoch)
+
+    def op_finish_export(self, session_id: str, export_id: str, exit_ok: bool) -> dict:
+        return self.tasks.finish_export(export_id, session_id, exit_ok)
+
+    def op_export_status(self, session_id: str, task_id: str) -> dict:
+        self.tasks.info_by_id(task_id)
+        if self.tasks.task_row(task_id) is None:
+            return {'status': 'unknown', 'review_current': False, 'export_current': False}
+        return self.tasks.export_status(task_id)
+
+    def op_mark_done(self, session_id: str, task_id: str, lease_epoch: int,
+                     request_id: Optional[str] = None) -> dict:
+        return self.tasks.mark_done(task_id, session_id, lease_epoch, request_id)
+
     def op_test_worker(self, session_id: str, command: str, **args) -> dict:
         """Test hooks of the fake engine (allow_test_commands only)."""
         if not self.settings.get('allow_test_commands'):

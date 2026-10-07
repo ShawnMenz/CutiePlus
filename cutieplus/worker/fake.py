@@ -185,6 +185,11 @@ class FakeWorkerEngine:
         crash_ti = self.inject.get('crash_on_ti')
         if crash_ti is not None and crash_ti == ti:
             os._exit(3)  # a worker that dies mid-propagation
+        if self.inject.get('pressure_on_ti') == ti and self.inject.get('pressure_times', 0) > 0:
+            # memory short before this step: it is not taken, the context stays
+            self.inject['pressure_times'] -= 1
+            state['frame_cursor'] -= 1
+            raise CommandError('pressure', f'injected memory pressure at frame {ti}')
         if self.inject.get('oom_on_ti') == ti:
             self.inject.pop('oom_on_ti')
             self.prop_release(job_id)

@@ -296,6 +296,16 @@ class SharedTaskBackend:
         self.res_man.get_mask.clear()
         return reply['removed'], reply['removed_exports']
 
+    # the external export command runs in the window; the coordinator records and verifies it
+    def begin_export(self) -> str:
+        return self._call('begin_export')['export_id']
+
+    def finish_export(self, export_id: str, ok: bool) -> dict:
+        try:
+            return self.client.call('finish_export', export_id=export_id, exit_ok=bool(ok))
+        except ClientError as exc:
+            return {'status': 'failed', 'detail': str(exc)}
+
     # memory settings and gauges ---------------------------------------------------------------
     def memory_settings(self) -> Tuple[int, int, int, int]:
         # what the window's own MemoryManager reported in local mode (configured - 1 frames)

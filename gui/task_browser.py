@@ -104,6 +104,8 @@ class TaskBrowser(QWidget):
         self.networks = None
         self.controller: Optional[MainController] = None
         self.exports: Dict[Tuple[str, str], QProcess] = {}
+        # shared mode: (task id, lease epoch, whether the browser took the lease, export id)
+        self.service_exports: Dict[Tuple[str, str], tuple] = {}
         # tasks this browser exports without having them open in its window
         self.export_locks: Dict[Tuple[str, str], TaskLock] = {}
         # only what --labeler said: the name itself follows the annotator list (refresh_identity)
@@ -458,10 +460,60 @@ class TaskBrowser(QWidget):
             self.log(f'{split}/{sequence} is {status}: save its binary PNGs in the labeling window '
                      'to submit it for review first.')
             return
+        if self.service is not None:
+            # the review and the export must be of the task's current content
+            status = self.service.call('export_status', task_id=f'{split}/{sequence}')
+            if not status['review_current']:
+                self.log(f'{split}/{sequence} changed after it was submitted; save its binary PNGs '
+                         'again to submit it for review.')
+            elif status['export_current']:
+                self.shared_mark_done(split, sequence)
+            else:
+                self.export_task(split, sequence, then_mark_done=True)
+            return
         if export_is_current(workspace, self.task_set):
             self.finish_mark_done(split, sequence)
         else:
             self.export_task(split, sequence, then_mark_done=True)
+
+    def service_lease(self, split: str, sequence: str) -> Optional[Tuple[str, int, bool]]:
+        """(task id, lease epoch, taken here) of a task the browser exports or marks done in shared
+        mode: the open window's lease, else a lease of the browser's own session."""
+        from cutieplus.client import ClientError
+        if self.is_open(split, sequence):
+            backend = self.controller.backend
+            return backend.task_id, backend.epoch, False
+        try:
+            reply = self.service.call('open_task', workspace=self.task_dir(split, sequence))
+        except ClientError as exc:
+            self.log(f'{split}/{sequence}: {exc}')
+            self.refresh_task(split, sequence)
+            return None
+        return reply['task_id'], reply['lease_epoch'], True
+
+    def release_service_lease(self, task_id: str, epoch: int, taken: bool) -> None:
+        if taken:
+            try:
+                self.service.call('close_task', task_id=task_id, lease_epoch=epoch)
+            except Exception as exc:
+                self.log(f'Releasing {task_id}: {exc}')
+
+    def shared_mark_done(self, split: str, sequence: str, lease=None) -> None:
+        from cutieplus.client import ClientError, new_request_id
+        lease = lease or self.service_lease(split, sequence)
+        if lease is None:
+            return
+        task_id, epoch, taken = lease
+        try:
+            self.service.call('mark_done', task_id=task_id, lease_epoch=epoch,
+                              request_id=new_request_id())
+            self.log(f'{split}/{sequence} is done.')
+        except ClientError as exc:
+            self.log(f'{split}/{sequence} is not marked done: {exc}')
+        finally:
+            if lease is not None and not self.service_exports.get((split, sequence)):
+                self.release_service_lease(task_id, epoch, taken)
+        self.refresh_task(split, sequence)
 
     def finish_mark_done(self, split: str, sequence: str) -> None:
         workspace = self.task_dir(split, sequence)
@@ -476,7 +528,25 @@ class TaskBrowser(QWidget):
         if (split, sequence) in self.exports or self.window_exporting(split, sequence):
             self.log(f'{split}/{sequence} is already being exported.')
             return
-        if self.is_open(split, sequence):
+        if self.service is not None:
+            if self.is_open(split, sequence) and self.controller.propagating:
+                self.log('Pause the propagation before exporting.')
+                return
+            lease = self.service_lease(split, sequence)
+            if lease is None:
+                return
+            try:
+                export_id = self.service.call('begin_export', task_id=lease[0],
+                                              lease_epoch=lease[1])['export_id']
+            except Exception as exc:
+                self.log(f'{split}/{sequence} is not exported: {exc}')
+                self.release_service_lease(*lease)
+                return
+            self.service_exports[(split, sequence)] = lease + (export_id, )
+            if self.is_open(split, sequence):
+                self.controller.browser_exporting = True
+                self.controller.gui.refresh_reset_button_state()
+        elif self.is_open(split, sequence):
             if self.controller.propagating:
                 self.log('Pause the propagation before exporting.')
                 return
@@ -504,6 +574,22 @@ class TaskBrowser(QWidget):
         if self.is_open(split, sequence):
             self.controller.browser_exporting = False
             self.controller.gui.refresh_reset_button_state()
+        service_export = self.service_exports.pop((split, sequence), None)
+        if service_export is not None:
+            # the coordinator accepts it only complete and of the content it started from
+            task_id, epoch, taken, export_id = service_export
+            result = self.service.call('finish_export', export_id=export_id, exit_ok=bool(ok))
+            if ok and result['status'] != 'complete':
+                self.log(f'The export of {split}/{sequence} is not accepted ({result["status"]}): '
+                         f'{result["detail"]}')
+                ok = False
+            self.log(f'Exported {split}/{sequence}.' if ok else
+                     f'Export of {split}/{sequence} failed.')
+            if ok and then_mark_done:
+                self.shared_mark_done(split, sequence, (task_id, epoch, False))
+            self.release_service_lease(task_id, epoch, taken)
+            self.refresh_task(split, sequence)
+            return
         self.log(f'Exported {split}/{sequence}.' if ok else f'Export of {split}/{sequence} failed.')
         if ok and then_mark_done:
             self.finish_mark_done(split, sequence)  # still holding the task

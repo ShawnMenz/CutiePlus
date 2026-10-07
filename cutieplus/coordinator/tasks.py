@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import threading
+import uuid
 from dataclasses import dataclass, field
 from os import path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -34,6 +35,7 @@ from cutieplus.storage.views import JSON_FILES, TaskViews
 from gui.exporter import convert_mask_to_binary
 from gui.task_state import (ANCHORS_FILE, DESCRIPTION_FILE, INTERVAL_FILE, PREFILL_FILE,
                             PROGRESS_FILE, TASK_FILE, TaskLock, TaskLocked, intervals_from_payload,
+                            load_task_set,
                             intervals_payload, next_anchor_entry, status_of, submitted_progress,
                             touched_progress, utc_now, write_description_text, write_interval_text)
 
@@ -789,3 +791,105 @@ class TaskService:
 
     def status(self, task_id: str) -> str:
         return status_of(self.task_row(task_id)['state']['progress'])
+
+    # export and review ----------------------------------------------------------------------
+    def export_tree(self, info: TaskInfo) -> str:
+        task_set = load_task_set(self.task_root)
+        return task_set['export_tree'].format(modality=info.anchor_modality,
+                                              sequence=info.sequence)
+
+    def begin_export(self, task_id: str, session_id: str, epoch: int) -> dict:
+        """Before the external export command runs: its files are brought up to date and the
+        export is recorded with the content revision it exports."""
+        info = self.info_by_id(task_id)
+        with self.lock(task_id):
+            with self.db.transaction() as conn:
+                self.check_lease(conn, task_id, session_id, epoch)
+            row = self.task_row(task_id)
+            if row['view_revision'] < row['content_revision']:
+                self.sync_views(info)
+            export_id = uuid.uuid4().hex[:16]
+            started_at = self.clock()
+            with self.db.transaction() as conn:
+                conn.execute('INSERT INTO exports VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)',
+                             (export_id, task_id, session_id, row['content_revision'], started_at,
+                              'running'))
+        return {'export_id': export_id, 'content_revision': row['content_revision'],
+                'started_at': started_at}
+
+    def finish_export(self, export_id: str, session_id: str, exit_ok: bool) -> dict:
+        """After the command: complete only when it succeeded, wrote a new metadata.json, and the
+        task did not change meanwhile; failed or stale otherwise."""
+        export = self.db.query_one('SELECT * FROM exports WHERE export_id = ?', (export_id, ))
+        if export is None or export['session_id'] != session_id:
+            raise TaskError('invalid', f'no export {export_id}')
+        if export['status'] != 'running':
+            return {'status': export['status'], 'detail': export['detail'],
+                    'content_revision': export['content_revision']}
+        info = self.info_by_id(export['task_id'])
+        status, detail = 'complete', None
+        if not exit_ok:
+            status, detail = 'failed', 'the export command failed'
+        else:
+            metadata_path = path.join(self.export_tree(info), 'metadata.json')
+            try:
+                with open(metadata_path, encoding='utf-8') as f:
+                    exported_at = json.load(f).get('exported_at')
+            except (OSError, ValueError):
+                exported_at = None
+            if exported_at is None:
+                status, detail = 'failed', f'{metadata_path} is missing or unreadable'
+            elif exported_at < export['started_at']:
+                status, detail = 'failed', f'{metadata_path} is older than this export'
+            else:
+                current = self.task_row(info.task_id)['content_revision']
+                if current != export['content_revision']:
+                    status, detail = 'stale', (f'the task changed during the export (revision '
+                                               f'{export["content_revision"]} -> {current})')
+        with self.db.transaction() as conn:
+            conn.execute('UPDATE exports SET finished_at = ?, status = ?, detail = ? WHERE '
+                         'export_id = ?', (self.clock(), status, detail, export_id))
+        return {'status': status, 'detail': detail,
+                'content_revision': export['content_revision']}
+
+    def export_status(self, task_id: str) -> dict:
+        row = self.task_row(task_id)
+        state = row['state']
+        latest = self.db.query_one("SELECT * FROM exports WHERE task_id = ? AND status = "
+                                   "'complete' ORDER BY finished_at DESC, rowid DESC LIMIT 1",
+                                   (task_id, ))
+        status = status_of(state['progress'])
+        revision = row['content_revision']
+        return {'status': status, 'content_revision': revision,
+                'review_revision': state.get('review_revision'),
+                'review_current': status == 'under review' and
+                state.get('review_revision') == revision,
+                'export_revision': latest['content_revision'] if latest else None,
+                'export_current': latest is not None and latest['content_revision'] == revision}
+
+    def mark_done(self, task_id: str, session_id: str, epoch: int,
+                  request_id: Optional[str] = None) -> dict:
+        """Accepts a task under review whose review and export are both of its current
+        content."""
+
+        def mutate(conn, state, labeler, changes):
+            revision = self._revisions(conn, task_id)['content_revision']
+            status = status_of(state['progress'])
+            if status != 'under review':
+                raise TaskError('invalid', f'the task is {status}; save its binary PNGs to submit '
+                                'it for review first')
+            if state.get('review_revision') != revision:
+                raise TaskError('stale', 'the task changed after it was submitted for review')
+            latest = conn.execute("SELECT content_revision FROM exports WHERE task_id = ? AND "
+                                  "status = 'complete' ORDER BY finished_at DESC, rowid DESC "
+                                  "LIMIT 1", (task_id, )).fetchone()
+            if latest is None or latest['content_revision'] != revision:
+                raise TaskError('export_needed', 'export the task first: its export is missing or '
+                                'older than its content')
+            state['progress'] = dict(state['progress'], done_at=self.clock(), done_by=labeler)
+            state['done_revision'] = revision
+            changes.json_files[PROGRESS_FILE] = state['progress']
+            return {'done_revision': revision}
+
+        return self._task_change(task_id, session_id, epoch, request_id, 'mark_done', mutate,
+                                 touch=False)

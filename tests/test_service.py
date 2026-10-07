@@ -293,3 +293,55 @@ def test_a_restarted_coordinator_recovers(two_tasks, env_factory, tmp_path):
     assert again['sync'] == 'current'
     _, result = click(alice, again, '000005', 50, 50)
     assert result['content_revision'] == revision + 1
+
+
+def test_concurrent_opens_of_one_task_give_one_lease(two_tasks, env_factory):
+    import threading
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    clients = [env.client(f'annotator{i}', f':{i + 2}') for i in range(4)]
+    outcomes = []
+
+    def try_open(client):
+        try:
+            outcomes.append(('ok', open_task(client, first)['lease_epoch']))
+        except ClientError as exc:
+            outcomes.append((exc.code, None))
+
+    threads = [threading.Thread(target=try_open, args=(client, )) for client in clients]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(code for code, _ in outcomes) == ['locked', 'locked', 'locked', 'ok']
+    assert len(env.service.tasks.leases) == 1
+
+
+def test_clicks_use_the_shown_modality_and_propagation_the_anchor_modality(tmp_path, env_factory):
+    visual = make_task(str(tmp_path / 'a'), sequence='0001', frame_count=6, mask_anchors=(0, ))
+    thermal = make_task(str(tmp_path / 'a'), sequence='0002', frame_count=6, mask_anchors=(0, ),
+                        anchor_modality='thermal')
+    env = env_factory(visual.root)
+    alice = env.client('alice', ':2')
+    for task, anchor_modality in ((visual, 'visual'), (thermal, 'thermal')):
+        reply = open_task(alice, task)
+        interaction, _ = click(alice, reply, '000002', 40, 40)  # clicked on the thermal view
+        record = env.service.interactions.interactions[interaction]
+        assert f'{path.sep}thermal{path.sep}' in record.image_path
+        done = run_propagation(alice, reply['task_id'], reply['lease_epoch'], '000001')
+        snapshot = env.service.jobs.jobs[done['job_id']].snapshot
+        assert snapshot['anchor_modality'] == anchor_modality
+        assert all(f'{path.sep}{anchor_modality}{path.sep}' in p for p in snapshot['frame_paths'])
+        alice.call('close_task', task_id=reply['task_id'], lease_epoch=reply['lease_epoch'])
+
+
+def test_memory_pressure_postpones_a_step_without_losing_the_run(two_tasks, env_factory):
+    first, _ = two_tasks
+    env = env_factory(first.root, step_seconds=0.01)
+    alice = env.client('alice', ':2')
+    a = open_task(alice, first)
+    alice.call('test_worker', command='test_inject', pressure_on_ti=3, pressure_times=3)
+    done = run_propagation(alice, a['task_id'], a['lease_epoch'], '000001')
+    assert done['state'] == 'finished' and done['attempt'] == 1  # the context was kept
+    assert done['all_frames'] == [1, 2, 3, 4, 5, 7, 8, 9]
+    assert any('memory is short' in message for message in done['all_messages'])

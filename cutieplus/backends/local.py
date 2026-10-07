@@ -288,6 +288,13 @@ class LocalTaskBackend:
                     removed_exports += 1
         return removed, removed_exports
 
+    # the external export command (task_set.json) runs in the window; local mode records nothing
+    def begin_export(self) -> Optional[str]:
+        return None
+
+    def finish_export(self, export_id: Optional[str], ok: bool) -> dict:
+        return {'status': 'complete' if ok else 'failed', 'detail': None}
+
     # memory buttons and gauges
     def clear_memory(self, permanent: bool) -> None:
         if permanent:

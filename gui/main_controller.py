@@ -62,6 +62,7 @@ class MainController():
         self.initialized = False
         self.on_task_event = on_task_event
         self.export_process = None
+        self.export_id = None  # shared mode: the export the coordinator verifies
         self.browser_exporting = False
         self.close_requested = False
         self.closed = False
@@ -529,7 +530,13 @@ class MainController():
         task_set = self.task_set()
         if task_set is None:
             return
-        self.res_man.save_queue.join()
+        self.backend.wait_for_saves()
+        try:
+            # shared mode: recorded with the content revision it exports
+            self.export_id = self.backend.begin_export()
+        except BackendError as exc:
+            self.gui.text(f'Export not started: {exc}')
+            return
         command = export_command(task_set, self.task.split, self.task.sequence_id)
         self.gui.text(f'Exporting {self.task.sequence_id}...')
         self.export_process = start_export(command, self.gui.text, self.on_export_finished)
@@ -537,6 +544,10 @@ class MainController():
 
     def on_export_finished(self, ok: bool) -> None:
         self.export_process = None
+        result = self.backend.finish_export(self.export_id, ok)
+        if ok and result['status'] != 'complete':
+            self.gui.text(f'The export is not accepted ({result["status"]}): {result["detail"]}')
+            ok = False
         self.gui.refresh_reset_button_state()
         self.gui.text('Export finished.' if ok else 'Export failed; see the messages above.')
         if ok and self.on_task_event is not None:
