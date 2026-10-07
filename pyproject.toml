@@ -85,3 +85,4 @@ markers = [
   "slow: takes more than a few seconds",
 ]
 addopts = "-m 'not gpu'"
+filterwarnings = ["ignore::DeprecationWarning:torch.serialization"]

@@ -29,16 +29,6 @@ def index_numpy_to_one_hot_torch(mask: np.ndarray, num_classes: int):
 """
 Some constants fro visualization
 """
-try:
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-except:
-    device = torch.device("cpu")
-
 color_map_np = np.frombuffer(davis_palette, dtype=np.uint8).reshape(-1, 3).copy()
 # scales for better visualization
 color_map_np = (color_map_np.astype(np.float32) * 1.5).clip(0, 255).astype(np.uint8)
@@ -47,10 +37,20 @@ color_map_np = (color_map_np.astype(np.float32) * 1.5).clip(0, 255).astype(np.ui
 TARGET_MASK_COLOR = (0, 255, 255)
 color_map_np[1] = TARGET_MASK_COLOR
 color_map = color_map_np.tolist()
-color_map_torch = torch.from_numpy(color_map_np).to(device) / 255
+# on the CPU: importing this module must not initialize CUDA (a shared-service GUI never does);
+# the tables are copied to an image's device on first use
+_COLOR_MAP_CPU = torch.from_numpy(color_map_np) / 255
 
 grayscale_weights = np.array([[0.3, 0.59, 0.11]]).astype(np.float32)
-grayscale_weights_torch = torch.from_numpy(grayscale_weights).to(device).unsqueeze(0)
+_GRAYSCALE_WEIGHTS_CPU = torch.from_numpy(grayscale_weights).unsqueeze(0)
+_device_tables = {}
+
+
+def _tables_on(device: torch.device) -> tuple:
+    """(color map, grayscale weights) on the given device."""
+    if device not in _device_tables:
+        _device_tables[device] = (_COLOR_MAP_CPU.to(device), _GRAYSCALE_WEIGHTS_CPU.to(device))
+    return _device_tables[device]
 
 
 def get_visualization(mode: Literal['image', 'mask', 'fade', 'davis', 'light', 'popup', 'layer',
@@ -87,6 +87,7 @@ def get_visualization_torch(mode: Literal['image', 'mask', 'fade', 'davis', 'lig
         return image
     elif mode == 'mask':
         mask = torch.max(prob, dim=0).indices
+        color_map_torch = _tables_on(mask.device)[0]
         return (color_map_torch[mask] * 255).byte().cpu().numpy()
     elif mode == 'fade':
         return overlay_davis_torch(image, prob, fade=True)
@@ -164,7 +165,7 @@ def overlay_davis_torch(image: torch.Tensor,
     im_overlay = image
     mask = torch.max(prob, dim=0).indices
 
-    colored_mask = color_map_torch[mask]
+    colored_mask = _tables_on(mask.device)[0][mask]
     foreground = image * alpha + (1 - alpha) * colored_mask
     binary_mask = (mask > 0)
     # Compose image
@@ -189,7 +190,7 @@ def overlay_popup_torch(image: torch.Tensor, prob: torch.Tensor, target_objects:
         # I check everywhere and it makes absolutely no sense.
         # I am blaming this on PyTorch and calling it a day
         obj_mask = prob[np.array(target_objects, dtype=np.int32)].sum(0).unsqueeze(2)
-    gray_image = (image * grayscale_weights_torch).sum(-1, keepdim=True)
+    gray_image = (image * _tables_on(image.device)[1]).sum(-1, keepdim=True)
     im_overlay = obj_mask * image + (1 - obj_mask) * gray_image
 
     im_overlay = (im_overlay * 255).byte().cpu().numpy()

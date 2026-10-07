@@ -10,8 +10,9 @@ from ..ritm.inference.predictors import get_predictor
 
 
 class InteractiveController:
-    def __init__(self, net, device, predictor_params, prob_thresh=0.5):
+    def __init__(self, net, device, predictor_params, prob_thresh=0.5, empty_cache_after_click=True):
         self.net = net.to(device)
+        self.empty_cache_after_click = empty_cache_after_click
         self.prob_thresh = prob_thresh
         self.clicker = clicker.Clicker()
         self.states = []
@@ -40,9 +41,9 @@ class InteractiveController:
         click = clicker.Click(is_positive=is_positive, coords=(y, x))
         self.clicker.add_click(click)
         pred = self.predictor.get_prediction(self.clicker, prev_mask=prev_mask)
-        if self.device == 'cuda':
+        if self.empty_cache_after_click and self.device == 'cuda':
             torch.cuda.empty_cache()
-        elif self.device == 'mps':
+        elif self.empty_cache_after_click and self.device == 'mps':
             mps.empty_cache()
 
         if self.probs_history:

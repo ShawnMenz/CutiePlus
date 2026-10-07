@@ -71,10 +71,30 @@ def qapp():
     yield app
 
 
-@pytest.fixture(scope='session')
-def cpu_networks():
-    """Cutie and RITM on the CPU, loaded once for the session."""
+_networks = {}
+
+
+def networks_on(device: str):
+    """Cutie and RITM on a device, loaded once per test session."""
     if not have_weights():
         pytest.skip('model weights not found in weights/')
-    from gui.main_controller import load_networks
-    return load_networks(compose_gui_config(device='cpu'))
+    if device not in _networks:
+        from cutieplus.engine.models import load_networks
+        _networks[device] = load_networks(compose_gui_config(device=device), device)
+    return _networks[device]
+
+
+@pytest.fixture(scope='session')
+def cpu_networks():
+    return networks_on('cpu')
+
+
+@pytest.fixture(params=['cpu', pytest.param('cuda', marks=pytest.mark.gpu)])
+def device(request):
+    """Runs a test on the CPU, and on the GPU in the GPU run (-m gpu)."""
+    return request.param
+
+
+@pytest.fixture
+def networks(device):
+    return networks_on(device)

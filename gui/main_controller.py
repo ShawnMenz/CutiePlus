@@ -1,80 +1,61 @@
 import os
+import time
+from dataclasses import dataclass, field
 from os import path
 import logging
-import math
-import shutil
-from typing import Callable, Literal, Optional, Tuple
+from typing import Callable, List, Literal, Optional, Tuple
 
 import cv2
 # fix conflicts between qt5 and cv2
 os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
 import torch
-try:
-    from torch import mps
-except:
-    print('torch.MPS not available.')
-from torch import autocast
 from torchvision.transforms.functional import to_tensor
 import numpy as np
 from omegaconf import DictConfig, open_dict
 
-from cutie.model.cutie import CUTIE
-from cutie.inference.inference_core import InferenceCore
+from cutieplus.backends.base import BackendError, ClickResult, TaskBackend
+from cutieplus.backends.local import LocalTaskBackend
+from cutieplus.engine import models
 
-from gui.interaction import *
 from gui.interactive_utils import *
 from gui.resource_manager import ResourceManager, SaveError
 from gui.gui import GUI
 from gui.click_controller import ClickController
-from gui.reader import PropagationReader, get_data_loader
-from gui.exporter import convert_frames_to_video, convert_mask_to_binary
+from gui.exporter import convert_frames_to_video
 from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_export import start_export
 from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, TaskLock, TaskState,
                             check_intervals, export_command, format_intervals, labeler_name,
-                            load_task_set, submit_for_review, task_root_of,
-                            write_description_text, write_interval_text)
-from cutie.utils.download_models import download_models_if_needed
+                            load_task_set, task_root_of)
 
 log = logging.getLogger()
 
-# Task mode: a target whose area at the default internal size is below SMALL_TARGET_AREA pixels
-# is processed at SMALL_TARGET_INTERNAL_SIZE instead (on RGBT sequences: a 78 px car went from
-# mean IoU 0.48 to 0.64 against SAM3; targets of 2.5k-12k px were unchanged, at ~2.5x the time).
-SMALL_TARGET_AREA = 1500
-SMALL_TARGET_INTERNAL_SIZE = 960
-TARGET_AREA_SAMPLES = 25
-# memory tokens x query tokens one propagation step may compare (~8 GB of GPU memory); it caps
-# how many anchors can sit in the permanent memory at once
-MEMORY_READ_BUDGET = 4e8
+
+def load_networks(cfg: DictConfig) -> Tuple[torch.nn.Module, ClickController]:
+    """(Cutie, the RITM click controller) on cfg's device, for the local mode."""
+    return models.load_networks(cfg, cfg['device'])
 
 
-def load_networks(cfg: DictConfig) -> Tuple[CUTIE, ClickController]:
-    weight_dir = download_models_if_needed()
-    # relative weight paths in the config refer to the downloaded weights,
-    # so the GUI works regardless of the working directory
-    weights, ritm_weights = cfg.weights, cfg.ritm_weights
-    if not path.isabs(weights):
-        weights = path.join(weight_dir, path.basename(weights))
-    if not path.isabs(ritm_weights):
-        ritm_weights = path.join(weight_dir, path.basename(ritm_weights))
-
-    cutie = CUTIE(cfg).eval().to(cfg['device'])
-    model_weights = torch.load(weights, map_location=cfg['device'], weights_only=True)
-    cutie.load_weights(model_weights)
-    return cutie, ClickController(ritm_weights, device=cfg['device'])
+@dataclass
+class ClickState:
+    """The window's view of the current click interaction; the backend holds its model state."""
+    tar_obj: int
+    clicks: List[Tuple[int, int, bool]] = field(default_factory=list)  # drawn as dots
 
 
 class MainController():
 
     def __init__(self,
                  cfg: DictConfig,
-                 networks: Optional[Tuple[CUTIE, ClickController]] = None,
-                 on_task_event: Optional[Callable[['MainController', str], None]] = None) -> None:
-        """networks: models loaded by load_networks, to reuse them across tasks.
+                 networks: Optional[Tuple[torch.nn.Module, ClickController]] = None,
+                 on_task_event: Optional[Callable[['MainController', str], None]] = None,
+                 backend_factory: Optional[Callable[..., TaskBackend]] = None) -> None:
+        """networks: models loaded by load_networks, to reuse them across tasks (local mode).
         on_task_event: called with 'exported' after an export, 'under review' once the task is
         submitted, and 'closed' once the window has closed and every pending save is written.
+        backend_factory: the shared service's backend (cutieplus.backends.shared); without it
+        the window runs the models itself (local mode).
         Raises TaskLocked when another window has the task open."""
         super().__init__()
 
@@ -97,8 +78,9 @@ class MainController():
             cfg["workspace"] = path.join(cfg['workspace_root'], basename)
 
         # a task is open in one window at a time; taken before anything is loaded, so a refusal
-        # leaves nothing to undo
+        # leaves nothing to undo (shared mode: the service's lease, taken by the backend factory)
         self.task_lock = None
+        self.backend: Optional[TaskBackend] = None
         init_only = 'workspace_init_only' in cfg and cfg['workspace_init_only']
         if TaskState.is_task(cfg['workspace']) and not init_only:
             # one name for the lock and the task's records
@@ -106,7 +88,8 @@ class MainController():
                                    task_root_of(cfg['workspace']))
             with open_dict(cfg):
                 cfg['labeler'] = labeler
-            self.task_lock = TaskLock.acquire(cfg['workspace'], labeler)
+            if backend_factory is None:
+                self.task_lock = TaskLock.acquire(cfg['workspace'], labeler)
 
         # reading arguments
         self.cfg = cfg
@@ -114,12 +97,13 @@ class MainController():
         self.device = cfg['device']
         self.amp = cfg['amp']
 
-        # initializing the network(s)
-        if networks is None:
-            self.initialize_networks()
-        else:
-            self.cutie, self.click_ctrl = networks
-            self.click_ctrl.unanchor()
+        # initializing the network(s): the local mode runs them in this process
+        self.cutie = self.click_ctrl = None
+        if backend_factory is None:
+            if networks is None:
+                self.initialize_networks()
+            else:
+                self.cutie, self.click_ctrl = networks
 
         # main components
         self.res_man = ResourceManager(cfg)
@@ -127,12 +111,21 @@ class MainController():
         self.view_modality = self.res_man.default_modality
         if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
             return
-        self.processor = InferenceCore(self.cutie, self.cfg)
+        try:
+            if backend_factory is None:
+                self.backend = LocalTaskBackend(cfg, self.networks, self.res_man, self.task)
+            else:
+                self.backend = backend_factory(cfg, self.res_man, self.task)
+        except BaseException:
+            self.res_man.close()
+            if self.task_lock is not None:
+                self.task_lock.release()
+            raise
         self.gui = GUI(self, self.cfg)
 
         # initialize control info
         self.length: int = self.res_man.length
-        self.interaction: Interaction = None
+        self.interaction: Optional[ClickState] = None
         self.history = EditHistory()
         self.interaction_before: Optional[FrameState] = None
         self.interaction_edit: Optional[Edit] = None
@@ -171,10 +164,11 @@ class MainController():
         # initialize stuff
         self.update_memory_gauges()
         self.update_gpu_gauges()
-        self.gui.work_mem_min.setValue(self.processor.memory.min_mem_frames)
-        self.gui.work_mem_max.setValue(self.processor.memory.max_mem_frames)
-        self.gui.long_mem_max.setValue(self.processor.memory.max_long_tokens)
-        self.gui.mem_every_box.setValue(self.processor.mem_every)
+        min_mem_frames, max_mem_frames, max_long_tokens, mem_every = self.backend.memory_settings()
+        self.gui.work_mem_min.setValue(min_mem_frames)
+        self.gui.work_mem_max.setValue(max_mem_frames)
+        self.gui.long_mem_max.setValue(max_long_tokens)
+        self.gui.mem_every_box.setValue(mem_every)
 
         # for exporting videos
         self.output_fps = cfg['output_fps']
@@ -199,7 +193,7 @@ class MainController():
         self.cutie, self.click_ctrl = load_networks(self.cfg)
 
     @property
-    def networks(self) -> Tuple[CUTIE, ClickController]:
+    def networks(self) -> Tuple[torch.nn.Module, ClickController]:
         return self.cutie, self.click_ctrl
 
     def hit_number_key(self, number: int):
@@ -207,8 +201,8 @@ class MainController():
             return
         self.curr_object = number
         self.gui.object_dial.setValue(number)
-        if self.click_ctrl is not None:
-            self.click_ctrl.unanchor()
+        # the next click starts an interaction for the new object
+        self.reset_this_interaction()
         self.gui.text(f'Current object changed to {number}.')
         self.gui.set_object_color(number)
         self.show_current_frame()
@@ -216,34 +210,31 @@ class MainController():
     def click_fn(self, action: Literal['left', 'right'], x: int, y: int):
         if self.propagating:
             return
+        if action not in ['left', 'right']:
+            raise NotImplementedError
 
-        last_interaction = self.interaction
-        new_interaction = None
+        # left: positive click
+        # right: negative click
+        self.convert_current_image_mask_torch()
+        try:
+            if self.interaction is None or self.interaction.tar_obj != self.curr_object:
+                # create new interaction is needed
+                self.complete_interaction()
+                self.backend.close_interaction()
+                self.backend.open_interaction(self.curr_ti, self.view_modality, self.curr_image_np,
+                                              self.curr_prob, self.curr_object)
+                self.interaction = ClickState(self.curr_object)
+                # the clicks of one interaction form one undoable edit
+                self.interaction_before = self.frame_state(self.curr_ti)
 
-        with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
-            if action in ['left', 'right']:
-                # left: positive click
-                # right: negative click
-                self.convert_current_image_mask_torch()
-                image = self.curr_image_torch
-                if (last_interaction is None or last_interaction.tar_obj != self.curr_object):
-                    # create new interaction is needed
-                    self.complete_interaction()
-                    self.click_ctrl.unanchor()
-                    new_interaction = ClickInteraction(image, self.curr_prob, (self.h, self.w),
-                                                       self.click_ctrl, self.curr_object)
-                    if new_interaction is not None:
-                        self.interaction = new_interaction
-                        # the clicks of one interaction form one undoable edit
-                        self.interaction_before = self.frame_state(self.curr_ti)
-
-                self.interaction.push_point(x, y, is_neg=(action == 'right'))
-                self.interacted_prob = self.interaction.predict().to(self.device, non_blocking=True)
-                self.update_interacted_mask()
-                self.update_gpu_gauges()
-
-            else:
-                raise NotImplementedError
+            result = self.backend.add_click(x, y, is_negative=(action == 'right'))
+        except BackendError as exc:
+            self.gui.text(f'Click not applied: {exc}')
+            self.reset_this_interaction()
+            return
+        self.interaction.clicks.append((x, y, action == 'right'))
+        self.update_interacted_mask(result)
+        self.update_gpu_gauges()
 
     def load_current_image_mask(self, no_mask: bool = False):
         self.curr_image_np = self.res_man.get_image(self.curr_ti, self.view_modality)
@@ -274,7 +265,7 @@ class MainController():
 
     def update_canvas(self):
         # the clicks of the current interaction show as dots on the canvas only, never in files
-        clicks = self.interaction.clicks if isinstance(self.interaction, ClickInteraction) else ()
+        clicks = self.interaction.clicks if self.interaction is not None else ()
         self.gui.set_canvas(self.vis_image, clicks)
 
     def update_current_image_fast(self, invalid_soft_mask: bool = False):
@@ -320,7 +311,7 @@ class MainController():
 
     def save_current_mask(self):
         # save mask to hard disk
-        self.res_man.save_mask(self.curr_ti, self.curr_mask)
+        self.backend.commit_frame(self.curr_ti, self.curr_mask, anchor=None)
 
     def on_slider_update(self):
         # if we are propagating, the on_run function will take care of everything
@@ -375,84 +366,96 @@ class MainController():
             return
         self.gui.stop_playback()
 
-        with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
-            if self.task is not None:
-                self.rebuild_permanent_memory()
-            self.convert_current_image_mask_torch()
-            model_image = self.model_image_torch(self.curr_ti)
+        self.convert_current_image_mask_torch()
+        try:
+            self.backend.start_propagation(self.curr_ti, self.propagate_direction, self.curr_prob)
+        except BackendError as exc:
+            self.gui.text(f'Propagation not started: {exc}')
+            self.on_pause()
+            return
+        # clear
+        self.interacted_prob = None
+        self.reset_this_interaction()
 
-            self.gui.text(f'Propagation started at t={self.curr_ti}.')
-            self.processor.clear_sensory_memory()
-            self.curr_prob = self.processor.step(model_image, self.curr_prob[1:], idx_mask=False)
-            self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
-            # clear
-            self.interacted_prob = None
-            self.reset_this_interaction()
-            # override this for #41
-            self.show_current_frame(fast=True, invalid_soft_mask=True)
+        self.propagating = True
+        self.gui.refresh_reset_button_state()
+        self.gui.clear_all_mem_button.setEnabled(False)
+        self.gui.clear_non_perm_mem_button.setEnabled(False)
+        self.gui.tl_slider.setEnabled(False)
 
-            self.propagating = True
-            self.gui.refresh_reset_button_state()
-            self.gui.clear_all_mem_button.setEnabled(False)
-            self.gui.clear_non_perm_mem_button.setEnabled(False)
-            self.gui.tl_slider.setEnabled(False)
-
-            start_ti = self.curr_ti
-            step = 1 if self.propagate_direction == 'forward' else -1
-            dataset = PropagationReader(self.res_man, start_ti, self.propagate_direction,
-                                        self.view_modality)
-            loader = get_data_loader(dataset, self.cfg.num_read_workers)
-
-            # propagate till the end
-            masks_written = 0
-            for index, data in enumerate(loader, 1):
-                if not self.propagating:
+        # propagate till the end, a step at a time; the backend saves the propagated masks and
+        # never touches an anchor's
+        queued_shown = None
+        try:
+            while self.propagating:
+                progress = self.backend.advance_propagation()
+                for message in progress.messages:
+                    self.gui.text(message)
+                for frame in progress.frames:
+                    self.show_propagated_frame(frame)
+                if progress.stopped_at is not None:
+                    # the run ends on the empty anchor that stopped it
+                    self.curr_ti = progress.stopped_at
+                    self.gui.tl_slider.setValue(self.curr_ti)
+                if progress.queue_position is not None and progress.queue_position != queued_shown:
+                    queued_shown = progress.queue_position
+                    self.gui.text(f'Waiting for the GPU: {queued_shown} job(s) ahead.')
+                if progress.done:
+                    if progress.state == 'failed':
+                        self.gui.text(f'Propagation failed: {progress.stop_reason}')
                     break
-                self.curr_image_np, self.curr_image_torch, model_image = data
-                self.curr_image_torch = self.curr_image_torch.to(self.device, non_blocking=True)
-                model_image = model_image.to(self.device, non_blocking=True)
-                # the frame comes from the reader, never from the slider: an arrow key pressed
-                # mid-run moves the slider, and the mask would be saved under that other frame
-                self.curr_ti = start_ti + step * index
-                self.gui.tl_slider.setValue(self.curr_ti)
-
-                anchor = self.current_anchor()
-                if anchor is not None and anchor['kind'] == 'empty':
-                    self.gui.text(f'Stopped at t={self.curr_ti}: the target is marked absent '
-                                  'here (empty anchor).')
-                    break
-                if anchor is not None:
-                    # a human mask: feed it to the model and leave its file untouched
-                    self.curr_mask = self.res_man.get_mask(self.curr_ti).copy()
-                    anchor_prob = index_numpy_to_one_hot_torch(self.curr_mask,
-                                                               self.num_objects + 1).to(self.device)
-                    self.curr_prob = self.processor.step(model_image,
-                                                         anchor_prob[1:],
-                                                         idx_mask=False)
-                else:
-                    self.curr_prob = self.processor.step(model_image)
-                    self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
-                    self.save_current_mask()
-                    masks_written += 1
-                self.show_current_frame(fast=True)
-
                 self.update_memory_gauges()
                 self.gui.process_events()
+                if not progress.frames and self.backend.kind != 'local':
+                    time.sleep(0.015)  # waiting for the service
+        except BackendError as exc:
+            self.gui.text(f'Propagation stopped: {exc}')
+        except Exception as exc:  # e.g. out of GPU memory in local mode
+            log.exception('Propagation failed')
+            self.gui.text(f'Propagation failed: {exc}')
+        finally:
+            self.backend.cancel_propagation()
 
-                if self.curr_ti == 0 or self.curr_ti == self.T - 1:
-                    break
+        self.propagating = False
+        self.curr_frame_dirty = False
+        if self.close_requested:
+            # the window was closed mid-propagation
+            self.finish_close()
+            return
+        self.on_pause()
+        self.on_slider_update()
+        self.gui.process_events()
 
-            self.propagating = False
-            self.curr_frame_dirty = False
-            if self.task is not None and masks_written:
-                self.task.touch()
-            if self.close_requested:
-                # the window was closed mid-propagation
-                self.finish_close()
-                return
-            self.on_pause()
-            self.on_slider_update()
-            self.gui.process_events()
+    def show_propagated_frame(self, frame) -> None:
+        if frame.kind == 'seed':
+            # the start frame: shown, never saved
+            self.curr_prob = frame.prob
+            self.curr_mask = frame.mask
+            if frame.prob is not None:
+                self.convert_current_image_mask_torch(no_mask=True)
+                # override this for #41
+                self.show_current_frame(fast=True, invalid_soft_mask=True)
+            else:
+                self.show_current_frame()
+            return
+        # the frame comes from the backend, never from the slider: a key pressed mid-run moves
+        # the slider, and the mask would be saved under that other frame
+        self.curr_ti = frame.ti
+        if frame.image is not None and self.view_modality == self.res_man.default_modality:
+            self.curr_image_np = frame.image
+        else:
+            self.curr_image_np = self.res_man.get_image(self.curr_ti, self.view_modality)
+        self.curr_image_torch = None
+        self.gui.tl_slider.setValue(self.curr_ti)
+        self.curr_mask = frame.mask
+        if frame.prob is not None:
+            self.curr_prob = frame.prob
+            self.convert_current_image_mask_torch(no_mask=True)
+            self.show_current_frame(fast=True)
+        else:
+            self.res_man.invalidate(self.curr_ti)
+            self.curr_prob = None
+            self.show_current_frame()
 
     def pause_propagation(self):
         self.propagating = False
@@ -468,17 +471,16 @@ class MainController():
         else:
             # get mask from interaction
             self.complete_interaction()
-            self.update_interacted_mask()
 
-        with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
-            self.convert_current_image_mask_torch()
-            self.gui.text(f'Permanent memory saved at {self.curr_ti}.')
-            self.curr_prob = self.processor.step(self.curr_image_torch,
-                                                 self.curr_prob[1:],
-                                                 idx_mask=False,
-                                                 force_permanent=True)
-            self.update_memory_gauges()
-            self.update_gpu_gauges()
+        if self.backend.kind != 'local':
+            self.gui.text('The permanent memory is rebuilt from the anchors of a task.')
+            return
+        self.convert_current_image_mask_torch()
+        self.gui.text(f'Permanent memory saved at {self.curr_ti}.')
+        self.curr_prob = self.backend.commit_to_permanent_memory(self.curr_image_torch,
+                                                                 self.curr_prob)
+        self.update_memory_gauges()
+        self.update_gpu_gauges()
 
     def on_window_closed(self) -> None:
         if self.propagating:
@@ -494,20 +496,21 @@ class MainController():
         self.closed = True
         self.res_man.close()
         self.report_save_errors()
+        # the window's signal connections keep this controller alive, so release its GPU and
+        # frame memory here rather than waiting for it to be collected (the processor also
+        # caches image features, which clear_memory keeps); shared mode: releases the lease
+        self.curr_prob = self.curr_image_torch = self.interacted_prob = None
+        self.overlay_layer_torch = None
+        try:
+            self.backend.close()
+        except BackendError as exc:
+            log.warning('Closing the task: %s', exc)
         # every save is written: another window may take the task now
         if self.task_lock is not None:
             self.task_lock.release()
-        # the window's signal connections keep this controller alive, so release its GPU and
-        # frame memory here rather than waiting for it to be collected (the processor also
-        # caches image features, which clear_memory keeps)
-        self.processor = None
-        self.curr_prob = self.curr_image_torch = self.interacted_prob = None
-        self.overlay_layer_torch = None
         self.res_man.get_image.clear()
         self.res_man.get_mask.clear()
         self.gui.deleteLater()
-        if 'cuda' in self.device:
-            torch.cuda.empty_cache()
         if self.on_task_event is not None:
             self.on_task_event(self, 'closed')
 
@@ -539,107 +542,47 @@ class MainController():
         if ok and self.on_task_event is not None:
             self.on_task_event(self, 'exported')
 
-    def model_image_torch(self, ti: int) -> torch.Tensor:
-        # the model always sees the default (task: anchor) modality
-        if ti == self.curr_ti and self.view_modality == self.res_man.default_modality:
-            self.convert_current_image_mask_torch(no_mask=True)
-            return self.curr_image_torch
-        return to_tensor(self.res_man.get_image(ti)).to(self.device, non_blocking=True)
-
     def current_anchor(self) -> dict:
         if self.task is None:
             return None
         return self.task.anchor(self.res_man.names[self.curr_ti])
 
-    def mark_anchor(self, edited: bool = True) -> None:
-        # every human decision on a task frame makes it an anchor, like a Label Studio submit
-        if self.task is None:
-            return
-        kind = 'mask' if (self.curr_mask > 0).any() else 'empty'
-        self.task.set_anchor(self.res_man.names[self.curr_ti], kind, edited)
-
     def commit_anchor(self) -> None:
         name = self.res_man.names[self.curr_ti]
         if self.interacted_prob is not None:
+            # the clicks are saved already; the frame is an anchor since the first one
             self.complete_interaction()
-            self.update_interacted_mask()
         elif self.current_anchor() is not None:
             self.gui.text(f'{name} is already an anchor.')
             return
         else:
             before = self.frame_state(self.curr_ti)
-            self.save_current_mask()
-            self.mark_anchor(edited=False)
+            if not self.apply_commit(lambda: self.backend.commit_frame(
+                    self.curr_ti, self.curr_mask, anchor='accept')):
+                return
             self.record_edit(self.curr_ti, before)
         self.show_current_frame()
         self.gui.text(f'{name} is an anchor ({self.current_anchor()["kind"]}).')
 
-    def median_target_area(self) -> Optional[int]:
-        # from the mask anchors, else from a sample of the prefill masks
-        names = [name for name, anchor in self.task.anchors.items() if anchor['kind'] == 'mask']
-        if not names:
-            prefill = sorted(self.task.prefill)
-            names = prefill[::max(1, len(prefill) // TARGET_AREA_SAMPLES)][:TARGET_AREA_SAMPLES]
-        areas = []
-        for name in names:
-            mask = self.res_man.get_mask(self.res_man.name_to_ti[name]) if name in self.res_man.name_to_ti else None
-            if mask is not None and mask.any():
-                areas.append(int((mask > 0).sum()))
-        return int(np.median(areas)) if areas else None
+    def apply_commit(self, commit: Callable[[], object]) -> bool:
+        """Runs a change of the frame's official data; a refusal (shared mode: e.g. the task
+        was lost) is shown and the frame reloaded. Returns whether it was applied."""
+        try:
+            commit()
+            return True
+        except BackendError as exc:
+            self.gui.text(f'Not saved: {exc}')
+            self.reset_this_interaction()
+            self.res_man.invalidate(self.curr_ti)
+            self.load_current_image_mask()
+            self.show_current_frame()
+            return False
 
     def configure_task_resolution(self) -> None:
-        # stride-16 features lose small targets at the default size; process those larger
-        area = self.median_target_area()
-        default_size = self.processor.max_internal_size
-        if area is None or default_size <= 0:
-            return
-        scale = min(1.0, default_size / min(self.h, self.w))
-        if area * scale**2 < SMALL_TARGET_AREA:
-            self.processor.max_internal_size = SMALL_TARGET_INTERNAL_SIZE
-            self.processor.upscale_to_internal_size = True
-            self.gui.text(f'Small target (median {area} px): processing at '
-                          f'{SMALL_TARGET_INTERNAL_SIZE} px.')
-        else:
-            self.gui.text(f'Target median {area} px: processing at {default_size} px.')
-
-    def memory_tokens_per_frame(self) -> int:
-        h, w = self.h, self.w
-        size = self.processor.max_internal_size
-        min_side = min(h, w)
-        if size > 0 and (min_side > size or
-                         (self.processor.upscale_to_internal_size and min_side < size)):
-            h, w = int(h / min_side * size), int(w / min_side * size)
-        return math.ceil(h / 16) * math.ceil(w / 16)
-
-    def permanent_anchor_limit(self) -> int:
-        tokens = self.memory_tokens_per_frame()
-        memory = self.processor.memory
-        other_tokens = (memory.max_mem_frames + 1) * tokens
-        if memory.use_long_term:
-            other_tokens += memory.max_long_tokens
-        return max(1, int((MEMORY_READ_BUDGET / tokens - other_tokens) // tokens))
-
-    def rebuild_permanent_memory(self) -> None:
-        # mask anchors enter the permanent memory, so each one guides every frame; beyond the
-        # GPU budget only those nearest to the start do, the rest are fed when reached
-        self.res_man.save_queue.join()
-        self.processor.clear_memory()
-        self.processor.update_config(self.cfg)
-        all_anchor_tis = sorted(self.res_man.name_to_ti[name]
-                                for name, anchor in self.task.anchors.items()
-                                if anchor['kind'] == 'mask' and name in self.res_man.name_to_ti)
-        nearest = sorted(all_anchor_tis, key=lambda ti: abs(ti - self.curr_ti))
-        anchor_tis = sorted(nearest[:self.permanent_anchor_limit()])
-        for ti in anchor_tis:
-            prob = index_numpy_to_one_hot_torch(self.res_man.get_mask(ti),
-                                                self.num_objects + 1).to(self.device)
-            self.processor.step(self.model_image_torch(ti),
-                                prob[1:],
-                                idx_mask=False,
-                                force_permanent=True)
-        self.processor.clear_sensory_memory()
-        self.gui.text(f'Permanent memory rebuilt from {len(anchor_tis)} of '
-                      f'{len(all_anchor_tis)} mask anchors.')
+        # stride-16 features lose small targets at the default size; the backend processes those
+        # larger (decided when the task is opened)
+        if self.backend.resolution_message:
+            self.gui.text(self.backend.resolution_message)
 
     def on_remove_anchor(self) -> None:
         if self.task is None or self.propagating:
@@ -649,8 +592,8 @@ class MainController():
             self.gui.text(f'{name} is not an anchor.')
             return
         before = self.frame_state(self.curr_ti)
-        self.task.remove_anchor(name)
-        self.res_man.delete_mask(self.curr_ti)
+        if not self.apply_commit(lambda: self.backend.remove_anchor(self.curr_ti)):
+            return
         self.reset_this_interaction()
         self.record_edit(self.curr_ti, before)
         self.load_current_image_mask()
@@ -725,7 +668,7 @@ class MainController():
         if self.propagating:
             self.gui.text('Pause the propagation first.')
             return
-        self.res_man.save_queue.join()
+        self.backend.wait_for_saves()
         if self.task is not None:
             # the intervals and the description are saved with every submission; a number (or
             # 'm') typed into an interval box and not confirmed yet counts (the Ctrl+S shortcut,
@@ -740,31 +683,29 @@ class MainController():
                 self.gui.text(f'{len(unsaved)} interval{"" if len(unsaved) == 1 else "s"} not saved '
                               '(not complete, or overlapping): the saved intervals are used.')
             self.on_description_change()
-            intervals, _ = self.task.intervals(self.T)
-            self.task.save_intervals(intervals)
         mask_folder = path.join(self.cfg['workspace'], 'masks')
-        save_folder = path.join(self.cfg['workspace'], 'binary_masks')
         if path.exists(mask_folder):
-            os.makedirs(save_folder, exist_ok=True)
             self.gui.text(f'Exporting binary masks -- please wait')
             self.gui.process_events()
-            convert_mask_to_binary(mask_folder,
-                                   save_folder,
-                                   self.vis_target_objects,
-                                   progress_callback=self.gui.progressbar_update)
+            try:
+                export = self.backend.export_binary(self.vis_target_objects,
+                                                    self.gui.progressbar_update)
+            except BackendError as exc:
+                self.gui.progressbar_update(0)
+                self.gui.text(f'Binary masks not saved: {exc}')
+                return
+            save_folder = export.folder
+            intervals = export.intervals
             self.gui.text(f'Binary masks exported to {save_folder}')
             self.gui.progressbar_update(0)
             if self.task is not None:
-                write_interval_text(save_folder, intervals)
                 if len(intervals) == 1:
                     self.gui.text(f'Interval {format_intervals(intervals)} saved to '
                                   f'{path.join(save_folder, INTERVAL_TEXT)}')
                 else:
                     self.gui.text(f'Intervals {format_intervals(intervals)} ({len(intervals)} clips) '
                                   f'saved to {path.join(save_folder, INTERVAL_TEXT)}')
-                write_description_text(save_folder, self.task.description)
                 self.gui.text(f'Description saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
-                submit_for_review(self.cfg['workspace'], self.task.labeler)
                 self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
                               'Mark done accepts it, any further edit reopens it.')
                 if self.on_task_event is not None:
@@ -806,8 +747,11 @@ class MainController():
             return False
         if intervals == self.task.intervals(self.T)[0]:
             return False
-        self.task.save_intervals(intervals)
-        self.task.touch()
+        try:
+            self.backend.set_intervals(intervals)
+        except BackendError as exc:
+            self.gui.text(f'Intervals not saved: {exc}')
+            return False
         # the slider shows the saved intervals; Shift+R starts again from the first
         self.gui.tl_slider.set_intervals(intervals)
         self.gui.preview_index = 0
@@ -833,8 +777,12 @@ class MainController():
         if text == self.task.description:
             self.gui.set_description(text)  # drops stray whitespace
             return
-        self.task.save_description(text)
-        self.task.touch()
+        try:
+            self.backend.set_description(text)
+        except BackendError as exc:
+            self.gui.set_description(self.task.description)
+            self.gui.text(f'Description not saved: {exc}')
+            return
         self.gui.set_description(text)
         self.gui.text('Description changed; the task needs a new review.')
         if self.on_task_event is not None:
@@ -850,11 +798,11 @@ class MainController():
     def on_bitrate_dial_change(self):
         self.output_bitrate = self.gui.bitrate_dial.value()
 
-    def update_interacted_mask(self):
+    def update_interacted_mask(self, result: ClickResult):
+        # the backend has saved the mask and made the frame an anchor
+        self.interacted_prob = result.prob
         self.curr_prob = self.interacted_prob
-        self.curr_mask = torch_prob_to_numpy_mask(self.interacted_prob)
-        self.save_current_mask()
-        self.mark_anchor()
+        self.curr_mask = result.update.mask
         self.record_interaction_edit()
         self.show_current_frame()
         self.curr_frame_dirty = False
@@ -862,8 +810,8 @@ class MainController():
     def reset_this_interaction(self):
         self.complete_interaction()
         self.interacted_prob = None
-        if self.click_ctrl is not None:
-            self.click_ctrl.unanchor()
+        if self.backend is not None:
+            self.backend.close_interaction()
 
     def on_reset_mask(self):
         if self.propagating:
@@ -873,8 +821,9 @@ class MainController():
         self.curr_mask.fill(0)
         if self.curr_prob is not None:
             self.curr_prob.fill_(0)
-        self.save_current_mask()
-        self.mark_anchor()
+        if not self.apply_commit(lambda: self.backend.commit_frame(
+                self.curr_ti, self.curr_mask, anchor='edit')):
+            return
         self.reset_this_interaction()
         self.record_edit(self.curr_ti, before)
         self.show_current_frame()
@@ -887,8 +836,9 @@ class MainController():
         self.curr_mask[self.curr_mask == self.curr_object] = 0
         if self.curr_prob is not None:
             self.curr_prob[self.curr_object] = 0
-        self.save_current_mask()
-        self.mark_anchor()
+        if not self.apply_commit(lambda: self.backend.commit_frame(
+                self.curr_ti, self.curr_mask, anchor='edit')):
+            return
         self.reset_this_interaction()
         self.record_edit(self.curr_ti, before)
         self.show_current_frame()
@@ -922,7 +872,7 @@ class MainController():
             self.gui.text(f'Cannot locate the Cutie exports; no masks removed: {exc}')
             return
 
-        self.res_man.save_queue.join()
+        self.backend.wait_for_saves()
         reason = self.reset_block_reason()
         if reason is not None:
             self.gui.text(reason)
@@ -934,15 +884,8 @@ class MainController():
         self.interacted_prob = None
         reset_error = None
         try:
-            removed = self.res_man.clear_sequence_masks()
-            removed_exports = 0
-            if self.task is not None:
-                self.task.clear_mask_references()
-                for directory in export_dirs:
-                    if path.isdir(directory):
-                        shutil.rmtree(directory)
-                        removed_exports += 1
-        except OSError as exc:
+            removed, removed_exports = self.backend.reset_all_masks(export_dirs)
+        except (OSError, BackendError) as exc:
             reset_error = exc
         finally:
             self.res_man.get_mask.clear()
@@ -968,16 +911,9 @@ class MainController():
 
     # undo/redo of frame edits (see gui/edit_history.py)
     def frame_state(self, ti: int) -> FrameState:
-        self.res_man.save_queue.join()
+        state = self.backend.frame_state(ti)
         self.report_save_errors()
-        name = self.res_man.names[ti]
-        mask_path = path.join(self.res_man.mask_dir, name + '.png')
-        mask = None
-        if path.exists(mask_path):
-            with open(mask_path, 'rb') as f:
-                mask = f.read()
-        anchor = self.task.anchor(name) if self.task is not None else None
-        return FrameState(mask, dict(anchor) if anchor is not None else None)
+        return state
 
     def record_edit(self, ti: int, before: FrameState) -> None:
         self.history.record(Edit(self.res_man.names[ti], before, self.frame_state(ti)))
@@ -995,21 +931,23 @@ class MainController():
             self.history.redo_stack.clear()
 
     def interaction_clicks(self) -> int:
-        if not isinstance(self.interaction, ClickInteraction):
+        if self.interaction is None:
             return 0
-        return len(self.click_ctrl.controller.states)
+        return self.backend.interaction_clicks()
 
     def on_undo(self) -> None:
         if self.propagating:
             return
         if self.interaction_clicks() > 1:
             # take back the last click only
-            self.click_ctrl.controller.undo_click()
-            self.interaction.pop_click()
-            self.interaction.obj_mask = self.click_ctrl.controller.probs_history[-1][1]
-            with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
-                self.interacted_prob = self.interaction.predict().to(self.device)
-            self.update_interacted_mask()
+            try:
+                result = self.backend.undo_click()
+            except BackendError as exc:
+                self.gui.text(f'Undo not applied: {exc}')
+                self.reset_this_interaction()
+                return
+            self.interaction.clicks.pop()
+            self.update_interacted_mask(result)
             self.gui.text(f'Undid the last click ({self.interaction_clicks()} left).')
             return
         edit = self.history.undo()
@@ -1031,18 +969,9 @@ class MainController():
 
     def apply_frame_state(self, name: str, state: FrameState) -> None:
         self.reset_this_interaction()
-        self.res_man.save_queue.join()
         ti = self.res_man.name_to_ti[name]
-        mask_path = path.join(self.res_man.mask_dir, name + '.png')
-        if state.mask is None:
-            if path.exists(mask_path):
-                os.remove(mask_path)
-        else:
-            with open(mask_path, 'wb') as f:
-                f.write(state.mask)
-        self.res_man.invalidate(ti)
-        if self.task is not None:
-            self.task.restore_anchor(name, state.anchor)
+        if not self.apply_commit(lambda: self.backend.restore_frame(ti, state)):
+            return
         # the restored file is newer than whatever the window holds; do not save over it
         self.curr_frame_dirty = False
         if ti != self.curr_ti:
@@ -1060,28 +989,20 @@ class MainController():
         self.gui.tl_slider.setValue(new_ti)
 
     def update_gpu_gauges(self):
-        if 'cuda' in self.device:
-            info = torch.cuda.mem_get_info()
-            global_free, global_total = info
-            global_free /= (2**30)
-            global_total /= (2**30)
-            global_used = global_total - global_free
-
-            self.gui.gpu_mem_gauge.setFormat(f'{global_used:.1f} GB / {global_total:.1f} GB')
-            self.gui.gpu_mem_gauge.setValue(round(global_used / global_total * 100))
-
-            used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
-            self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
-            self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100))
-        elif 'mps' in self.device:
-            mem_used = mps.current_allocated_memory() / (2**30)
-            self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')
+        gauges = self.backend.gpu_gauges()
+        if gauges.used is not None and gauges.total:
+            self.gui.gpu_mem_gauge.setFormat(f'{gauges.used:.1f} GB / {gauges.total:.1f} GB')
+            self.gui.gpu_mem_gauge.setValue(round(gauges.used / gauges.total * 100))
+        elif gauges.used is not None:
+            self.gui.gpu_mem_gauge.setFormat(f'{gauges.used:.1f} GB')
             self.gui.gpu_mem_gauge.setValue(0)
-            self.gui.torch_mem_gauge.setFormat('N/A')
-            self.gui.torch_mem_gauge.setValue(0)
         else:
             self.gui.gpu_mem_gauge.setFormat('N/A')
             self.gui.gpu_mem_gauge.setValue(0)
+        if gauges.torch_used is not None and gauges.total:
+            self.gui.torch_mem_gauge.setFormat(f'{gauges.torch_used:.1f} GB / {gauges.total:.1f} GB')
+            self.gui.torch_mem_gauge.setValue(round(gauges.torch_used / gauges.total * 100))
+        else:
             self.gui.torch_mem_gauge.setFormat('N/A')
             self.gui.torch_mem_gauge.setValue(0)
 
@@ -1099,24 +1020,22 @@ class MainController():
         self.gui.refresh_reset_button_state()
 
     def update_memory_gauges(self):
-        try:
-            curr_perm_tokens = self.processor.memory.work_mem.perm_size(0)
+        gauges = self.backend.memory_gauges()
+        if gauges is not None:
+            curr_perm_tokens, _ = gauges['permanent']
             self.gui.perm_mem_gauge.setFormat(f'{curr_perm_tokens} / {curr_perm_tokens}')
             self.gui.perm_mem_gauge.setValue(100)
 
-            max_work_tokens = self.processor.memory.max_work_tokens
-            max_long_tokens = self.processor.memory.max_long_tokens
-
-            curr_work_tokens = self.processor.memory.work_mem.non_perm_size(0)
-            curr_long_tokens = self.processor.memory.long_mem.non_perm_size(0)
+            curr_work_tokens, max_work_tokens = gauges['working']
+            curr_long_tokens, max_long_tokens = gauges['long_term']
 
             self.gui.work_mem_gauge.setFormat(f'{curr_work_tokens} / {max_work_tokens}')
-            self.gui.work_mem_gauge.setValue(round(curr_work_tokens / max_work_tokens * 100))
+            self.gui.work_mem_gauge.setValue(round(curr_work_tokens / max(1, max_work_tokens) * 100))
 
             self.gui.long_mem_gauge.setFormat(f'{curr_long_tokens} / {max_long_tokens}')
-            self.gui.long_mem_gauge.setValue(round(curr_long_tokens / max_long_tokens * 100))
+            self.gui.long_mem_gauge.setValue(round(curr_long_tokens / max(1, max_long_tokens) * 100))
 
-        except AttributeError as e:
+        else:
             self.gui.work_mem_gauge.setFormat('Unknown')
             self.gui.long_mem_gauge.setFormat('Unknown')
             self.gui.work_mem_gauge.setValue(0)
@@ -1144,25 +1063,15 @@ class MainController():
                 self.cfg.long_term['max_num_tokens'] = self.gui.long_mem_max.value()
                 self.cfg['mem_every'] = self.gui.mem_every_box.value()
 
-            self.processor.update_config(self.cfg)
+            self.backend.update_config(self.cfg)
 
     def on_clear_memory(self):
-        self.processor.clear_memory()
-        if 'cuda' in self.device:
-            torch.cuda.empty_cache()
-        elif 'mps' in self.device:
-            mps.empty_cache()
-        self.processor.update_config(self.cfg)
+        self.backend.clear_memory(permanent=True)
         self.update_gpu_gauges()
         self.update_memory_gauges()
 
     def on_clear_non_permanent_memory(self):
-        self.processor.clear_non_permanent_memory()
-        if 'cuda' in self.device:
-            torch.cuda.empty_cache()
-        elif 'mps' in self.device:
-            mps.empty_cache()
-        self.processor.update_config(self.cfg)
+        self.backend.clear_memory(permanent=False)
         self.update_gpu_gauges()
         self.update_memory_gauges()
 
@@ -1190,8 +1099,9 @@ class MainController():
             before = self.frame_state(self.curr_ti)
             self.curr_image_torch = self.curr_prob = None
             self.curr_mask = mask
-            self.save_current_mask()
-            self.mark_anchor()
+            if not self.apply_commit(lambda: self.backend.commit_frame(
+                    self.curr_ti, self.curr_mask, anchor='edit')):
+                return
             self.record_edit(self.curr_ti, before)
             self.show_current_frame()
 
