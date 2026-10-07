@@ -21,6 +21,7 @@ from cutie.inference.inference_core import InferenceCore
 from cutieplus.backends.base import (BackendError, BinaryExport, ClickResult, FrameUpdate,
                                      GpuGauges, Interval, PropagatedFrame, PropagationProgress)
 from cutieplus.engine import policies
+from cutieplus.engine.device import autocast
 from cutieplus.engine.images import FramePrefetcher
 from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime
 from cutieplus.engine.ritm import RitmEngine
@@ -297,7 +298,7 @@ class LocalTaskBackend:
         self.processor.update_config(self.cfg)
 
     def commit_to_permanent_memory(self, image: torch.Tensor, prob: torch.Tensor) -> torch.Tensor:
-        with torch.autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
+        with autocast(self.device, self.amp):
             return self.processor.step(image, prob[1:], idx_mask=False, force_permanent=True)
 
     def memory_gauges(self) -> Optional[Dict[str, Tuple[int, int]]]:

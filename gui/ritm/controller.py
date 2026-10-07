@@ -41,7 +41,7 @@ class InteractiveController:
         click = clicker.Click(is_positive=is_positive, coords=(y, x))
         self.clicker.add_click(click)
         pred = self.predictor.get_prediction(self.clicker, prev_mask=prev_mask)
-        if self.empty_cache_after_click and self.device == 'cuda':
+        if self.empty_cache_after_click and str(self.device).startswith('cuda'):
             torch.cuda.empty_cache()
         elif self.empty_cache_after_click and self.device == 'mps':
             mps.empty_cache()

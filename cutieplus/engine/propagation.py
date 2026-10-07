@@ -17,6 +17,7 @@ import torch
 from omegaconf import DictConfig, open_dict
 
 from cutie.inference.inference_core import InferenceCore
+from cutieplus.engine.device import autocast
 from gui.interactive_utils import index_numpy_to_one_hot_torch, torch_prob_to_numpy_mask
 
 Direction = str  # 'forward' | 'backward'
@@ -107,7 +108,7 @@ class PropagationRuntime:
         return self.phase == 'finished'
 
     def _autocast(self):
-        return torch.autocast(self.device, enabled=(self.amp and self.device == 'cuda'))
+        return autocast(self.device, self.amp)
 
     def _model_image(self, ti: int) -> Tuple[np.ndarray, torch.Tensor]:
         from torchvision.transforms.functional import to_tensor

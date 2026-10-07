@@ -194,3 +194,13 @@ def test_policies_reproduce_the_original_numbers():
     assert small.small_target and small.max_internal_size == 960 and small.upscale_to_internal_size
     assert not policies.choose_resolution(20000, 1080, 1920, 480).small_target
     assert policies.choose_resolution(None, 1080, 1920, 480).message() is None
+
+
+def test_mixed_precision_does_not_depend_on_the_device_spelling(device):
+    from cutieplus.engine.device import autocast, device_type
+    for spelling in (device, f'{device}:0' if device == 'cuda' else device, torch.device(device)):
+        assert device_type(spelling) == device
+        with autocast(spelling, True):
+            out = torch.nn.functional.conv2d(torch.ones((1, 1, 2, 2), device=device),
+                                             torch.ones((1, 1, 1, 1), device=device))
+        assert out.dtype == (torch.float16 if device == 'cuda' else torch.float32)

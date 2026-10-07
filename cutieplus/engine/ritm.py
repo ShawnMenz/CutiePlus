@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from torchvision.transforms.functional import to_tensor
 
+from cutieplus.engine.device import autocast, device_type
 from gui.click_controller import ClickController
 from gui.interaction import ClickInteraction
 from gui.interactive_utils import torch_prob_to_numpy_mask
@@ -109,7 +110,7 @@ class RitmEngine:
         self.active: Optional[_Interaction] = None
 
     def _autocast(self):
-        return torch.autocast(self.device, enabled=(self.amp and self.device == 'cuda'))
+        return autocast(self.device, self.amp)
 
     # interactions
     def open(self, interaction_id: str, image: np.ndarray, prev_prob: torch.Tensor,
@@ -269,8 +270,8 @@ class RitmEngine:
         interaction.snapshot, interaction.snapshot_bytes = None, 0
         interaction.live = live
         self.active = interaction
-        if kind is not None and self.device == 'cuda':
-            torch.cuda.synchronize()
+        if kind is not None and device_type(self.device) == 'cuda':
+            torch.cuda.synchronize(self.device)
         return kind, time.perf_counter() - start if kind is not None else 0.0
 
     def _restore(self, live: ClickInteraction, snapshot: dict) -> None:
