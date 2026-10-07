@@ -203,6 +203,17 @@ class RitmEngine:
         interaction.snapshot_bytes = _nbytes(snapshot, set())
         self._enforce_snapshot_budget()
 
+    def drop_live(self, interaction_id: str) -> None:
+        """Forgets an interaction's model state (e.g. after an error part way through a click);
+        its accepted clicks are replayed when it is used again."""
+        interaction = self.interactions.get(interaction_id)
+        if interaction is None:
+            return
+        if interaction is self.active:
+            self.active = None
+        interaction.live = None
+        interaction.snapshot, interaction.snapshot_bytes = None, 0
+
     def snapshot_bytes(self) -> int:
         return sum(item.snapshot_bytes for item in self.interactions.values())
 
