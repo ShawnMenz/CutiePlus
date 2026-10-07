@@ -32,8 +32,9 @@ from gui.exporter import convert_frames_to_video, convert_mask_to_binary
 from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_export import start_export
 from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, TaskLock, TaskState,
-                            export_command, labeler_name, load_task_set, submit_for_review,
-                            task_root_of, write_description_text, write_interval_text)
+                            check_intervals, export_command, format_intervals, labeler_name,
+                            load_task_set, submit_for_review, task_root_of,
+                            write_description_text, write_interval_text)
 from cutie.utils.download_models import download_models_if_needed
 
 log = logging.getLogger()
@@ -685,12 +686,16 @@ class MainController():
         self.gui.text(f'Showing {self.view_modality}.')
 
     def on_play_video_timer(self):
+        # the video plays once and stops on its last frame; an interval preview (Shift+R) on the
+        # interval's last frame
         if self.propagating:
+            return
+        if self.curr_ti >= self.gui.play_until:  # moved past it by hand, or a one-frame interval
+            self.gui.stop_playback()
             return
         self.curr_ti += 1
         self.gui.tl_slider.setValue(self.curr_ti)
-        if self.curr_ti >= self.T - 1:
-            # the video plays once: it stops on its last frame
+        if self.curr_ti >= self.gui.play_until:
             self.gui.stop_playback()
 
     def on_export_visualization(self):
@@ -720,15 +725,21 @@ class MainController():
             return
         self.res_man.save_queue.join()
         if self.task is not None:
-            # the interval and the description are saved with every submission; a number (or 'm')
-            # typed into an interval box and not confirmed yet counts (the Ctrl+S shortcut, unlike
-            # a click on the button, does not move the focus out of the box)
-            self.gui.interval_start.interpretText()
-            self.gui.interval_end.interpretText()
-            self.on_interval_change('start')
+            # the intervals and the description are saved with every submission; a number (or
+            # 'm') typed into an interval box and not confirmed yet counts (the Ctrl+S shortcut,
+            # unlike a click on the button, does not move the focus out of the box)
+            for pair in self.gui.interval_pairs:
+                for box in pair.boxes():
+                    box.interpretText()
+                pair.order('start')
+            self.save_interval_pairs()
+            unsaved = [pair for pair in self.gui.interval_pairs if pair.entry() is None or pair.invalid]
+            if unsaved:
+                self.gui.text(f'{len(unsaved)} interval{"" if len(unsaved) == 1 else "s"} not saved '
+                              '(not complete, or overlapping): the saved intervals are used.')
             self.on_description_change()
-            interval_start, interval_end, _ = self.task.interval(self.T)
-            self.task.save_interval(interval_start, interval_end)
+            intervals, _ = self.task.intervals(self.T)
+            self.task.save_intervals(intervals)
         mask_folder = path.join(self.cfg['workspace'], 'masks')
         save_folder = path.join(self.cfg['workspace'], 'binary_masks')
         if path.exists(mask_folder):
@@ -742,9 +753,13 @@ class MainController():
             self.gui.text(f'Binary masks exported to {save_folder}')
             self.gui.progressbar_update(0)
             if self.task is not None:
-                write_interval_text(save_folder, interval_start, interval_end)
-                self.gui.text(f'Interval {interval_start}-{interval_end} saved to '
-                              f'{path.join(save_folder, INTERVAL_TEXT)}')
+                write_interval_text(save_folder, intervals)
+                if len(intervals) == 1:
+                    self.gui.text(f'Interval {format_intervals(intervals)} saved to '
+                                  f'{path.join(save_folder, INTERVAL_TEXT)}')
+                else:
+                    self.gui.text(f'Intervals {format_intervals(intervals)} ({len(intervals)} clips) '
+                                  f'saved to {path.join(save_folder, INTERVAL_TEXT)}')
                 write_description_text(save_folder, self.task.description)
                 self.gui.text(f'Description saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
                 submit_for_review(self.cfg['workspace'], self.task.labeler)
@@ -755,25 +770,54 @@ class MainController():
         else:
             self.gui.text(f'No masks found in {mask_folder}')
 
-    def on_interval_change(self, edited_box: Literal['start', 'end']) -> None:
-        # the task window's interval boxes; a new interval is a change that needs a new review
+    def on_interval_change(self, edited_box: Literal['start', 'end'], pair=None) -> None:
+        # a box of the task window's intervals was confirmed (the first pair when none is named)
         if self.task is None:
             return
-        start, end = self.gui.interval_start.value(), self.gui.interval_end.value()
-        if start > end:
-            if edited_box == 'start':
-                end = start
-            else:
-                start = end
-            self.gui.interval_start.setValue(start)
-            self.gui.interval_end.setValue(end)
-        if (start, end) == self.task.interval(self.T)[:2]:
+        (pair or self.gui.interval_pairs[0]).order(edited_box)
+        self.save_interval_pairs()
+
+    def on_remove_interval(self, pair) -> None:
+        # the x of an added interval: removes it, or cancels it when it was never saved
+        if self.task is None:
             return
-        self.task.save_interval(start, end)
+        self.gui.remove_interval_pair(pair)
+        if not self.save_interval_pairs():
+            self.gui.text('Interval cancelled; nothing to save.')
+
+    def save_interval_pairs(self) -> bool:
+        """Saves the complete interval pairs when they changed and do not overlap; a pair with a
+        blank box is still being typed and is left out. A new list of intervals is a change that
+        needs a new review. Returns whether anything was saved."""
+        pairs = self.gui.interval_pairs
+        complete = [pair for pair in pairs if pair.entry() is not None]
+        intervals = sorted(pair.entry() for pair in complete)
+        problems = check_intervals(intervals, self.T)
+        overlapping = {pair for pair in complete for other in complete if other is not pair
+                       and pair.entry()[0] <= other.entry()[1]
+                       and other.entry()[0] <= pair.entry()[1]}
+        for pair in pairs:
+            pair.set_invalid(pair in overlapping)
+        if problems:
+            self.gui.text('Intervals not saved: ' + ' '.join(problems)
+                          + ' Change one, or remove it with ×.')
+            return False
+        if intervals == self.task.intervals(self.T)[0]:
+            return False
+        self.task.save_intervals(intervals)
         self.task.touch()
-        self.gui.text(f'Interval set to {start}-{end}; the task needs a new review.')
+        # the slider shows the saved intervals; Shift+R starts again from the first
+        self.gui.tl_slider.set_intervals(intervals)
+        self.gui.preview_index = 0
+        if len(intervals) == 1:
+            self.gui.text(f'Interval set to {format_intervals(intervals)}; the task needs a new '
+                          'review.')
+        else:
+            self.gui.text(f'Intervals set to {format_intervals(intervals)}, one clip each; the '
+                          'task needs a new review.')
         if self.on_task_event is not None:
             self.on_task_event(self, 'interval')
+        return True
 
     def on_description_change(self) -> None:
         # the task window's description box; a new text is a change that needs a new review

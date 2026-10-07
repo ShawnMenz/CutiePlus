@@ -1,22 +1,30 @@
 """
 A layout that places its items left to right and wraps them onto new rows when the width runs
-out (after Qt's Flow Layout example). The items of a row are spread across the width.
+out (after Qt's Flow Layout example). The items of a row are spread across the width, or packed
+to the left with spread=False.
 """
 from typing import List
 
 from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtWidgets import QLayout, QLayoutItem
+from PySide6.QtWidgets import QLayout, QLayoutItem, QWidget, QWidgetItem
 
 
 class FlowLayout(QLayout):
 
-    def __init__(self, spacing: int = 12) -> None:
+    def __init__(self, spacing: int = 12, spread: bool = True) -> None:
         super().__init__()
         self.items: List[QLayoutItem] = []
+        self.spread = spread
         self.setSpacing(spacing)
 
     def addItem(self, item: QLayoutItem) -> None:
         self.items.append(item)
+
+    def insert_widget(self, index: int, widget: QWidget) -> None:
+        # addWidget, at a position
+        self.addChildWidget(widget)
+        self.items.insert(index, QWidgetItem(widget))
+        self.invalidate()
 
     def count(self) -> int:
         return len(self.items)
@@ -91,7 +99,10 @@ class FlowLayout(QLayout):
                 spare = max(area.width() - sum(minimums) - spacing * (len(row) - 1), 0)
                 grow = min(spare / sum(wanted), 1) if sum(wanted) else 0
                 widths = [round(minimum + extra * grow) for minimum, extra in zip(minimums, wanted)]
-                gap = max((area.width() - sum(widths)) / (len(row) - 1), spacing) if len(row) > 1 else 0
+                if self.spread and len(row) > 1:
+                    gap = max((area.width() - sum(widths)) / (len(row) - 1), spacing)
+                else:
+                    gap = spacing
                 x = area.x()
                 for item, width in zip(row, widths):
                     item.setGeometry(QRect(round(x), y, width, height))

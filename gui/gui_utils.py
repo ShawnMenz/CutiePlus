@@ -1,10 +1,11 @@
 import html
-from typing import Optional
+from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QPalette, QValidator
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QPlainTextEdit, QSlider, QSpinBox,
-                               QProgressBar, QWidget)
+from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPalette, QRegion, QValidator
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QPlainTextEdit, QSizePolicy, QSlider,
+                               QSpinBox, QProgressBar, QStyle, QStyleOptionSlider, QToolButton,
+                               QWidget)
 
 # room for the title bar and borders that the window manager adds around a window
 WINDOW_FRAME = QSize(16, 48)
@@ -89,13 +90,70 @@ class LogView(QPlainTextEdit):
 
 class FrameSlider(QSlider):
     """The frame slider. Frames are stepped with A / D, so the arrow keys are left alone (a slider
-    would otherwise step on them); Home / End and PageUp / PageDown still move it."""
+    would otherwise step on them); Home / End and PageUp / PageDown still move it. In task mode it
+    shows the task's intervals as bands along the groove, the one being previewed stronger."""
+
+    # green, apart from the theme's accent (which fills the groove up to the handle)
+    BAND_COLOR = (67, 160, 71)
+    BAND_ALPHA, ACTIVE_ALPHA = 85, 170
+    BAND_GAP = 2  # px between two intervals that touch, so they read as two clips
+
+    def __init__(self, orientation) -> None:
+        super().__init__(orientation)
+        self.intervals: List[Tuple[int, int]] = []  # 1-indexed (start, end)
+        self.active_interval: Optional[Tuple[int, int]] = None
+
+    def set_intervals(self, intervals) -> None:
+        self.intervals = [tuple(interval) for interval in intervals]
+        self.update()
+
+    def set_active_interval(self, interval: Optional[Tuple[int, int]]) -> None:
+        self.active_interval = interval
+        self.update()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
             event.ignore()
             return
         super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        # the bands go on top (the theme paints an opaque background), around the handle
+        super().paintEvent(event)
+        self.paint_interval_bands()
+
+    def paint_interval_bands(self) -> None:
+        frames = self.maximum() - self.minimum() + 1
+        # one interval over every frame would only fill the bar
+        if not self.intervals or frames < 2 or self.intervals == [(1, frames)]:
+            return
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                      QStyle.SubControl.SC_SliderHandle, self)
+        span = groove.width() - handle.width()
+        step = span / (frames - 1)
+
+        def centre(frame: int) -> float:  # x of the handle's centre on that frame (1-indexed)
+            position = QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), frame - 1,
+                                                      span, option.upsideDown)
+            return groove.left() + position + handle.width() / 2
+
+        height = max(handle.height() - 2, groove.height() + 6)
+        top = groove.center().y() - height / 2
+        painter = QPainter(self)
+        # the handle stays as the theme draws it
+        painter.setClipRegion(QRegion(self.rect()) - QRegion(handle, QRegion.RegionType.Ellipse))
+        for start, end in self.intervals:
+            left = max(centre(start) - step / 2, groove.left()) + self.BAND_GAP / 2
+            right = min(centre(end) + step / 2, groove.right()) - self.BAND_GAP / 2
+            color = QColor(*self.BAND_COLOR)
+            color.setAlpha(self.ACTIVE_ALPHA if (start, end) == self.active_interval else self.BAND_ALPHA)
+            painter.fillRect(QRectF(left, top, max(right - left, 2), height), color)
+        painter.end()
 
 
 def frame_key_tip(key: str, plain: str, shift: str, alt: str, ctrl: str) -> str:
@@ -121,27 +179,107 @@ def key_box(text: str, tooltip: str) -> QLabel:
 class IntervalBox(QSpinBox):
     """A frame-number box that also takes 'm' for its limit: the first frame in the start box, the
     last frame in the end box. Confirming (Enter, or leaving the box) turns the 'm' into that
-    number."""
+    number. The box of an added interval can also be blank (value 0, shown empty with 'start' or
+    'end' in grey) until a frame number is typed."""
 
-    def __init__(self, which: str) -> None:
+    BLANK = 0
+
+    def __init__(self, which: str, blank_allowed: bool = False) -> None:
         super().__init__()
         self.which = which  # 'start' or 'end'
+        self.blank_allowed = blank_allowed
+        if blank_allowed:
+            self.lineEdit().setPlaceholderText(which)
+
+    def is_blank(self) -> bool:
+        return self.blank_allowed and self.value() == self.BLANK
 
     @staticmethod
     def is_limit_letter(text: str) -> bool:
         return text.strip().lower() == 'm'
 
+    def textFromValue(self, value: int) -> str:
+        return '' if self.blank_allowed and value == self.BLANK else super().textFromValue(value)
+
+    def valueFromText(self, text: str) -> int:
+        if self.blank_allowed and not text.strip():
+            return self.BLANK
+        return super().valueFromText(text)
+
     def validate(self, text: str, pos: int):
         if self.is_limit_letter(text):
             return QValidator.State.Intermediate, text, pos  # typed, but not a number yet
+        if self.blank_allowed and not text.strip():
+            return QValidator.State.Acceptable, text, pos  # cleared: the box is blank again
         return super().validate(text, pos)
 
     def fixup(self, text: str) -> str:
         # called on confirming a text that is not a number yet
         if self.is_limit_letter(text):
-            return str(self.minimum() if self.which == 'start' else self.maximum())
+            return str(max(self.minimum(), 1) if self.which == 'start' else self.maximum())
         super().fixup(text)
         return text
+
+
+class IntervalPair(QWidget):
+    """One kept interval of a task: [start] - [end], each interval a clip of its own. Every pair
+    but the first has a button that removes it (or cancels it, when it was never complete); an
+    added pair starts blank."""
+
+    removed = Signal(object)
+    invalid = False  # overlaps another pair, so it is not saved
+
+    def __init__(self, frame_count: int, start: Optional[int] = None, end: Optional[int] = None,
+                 removable: bool = False) -> None:
+        super().__init__()
+        self.removable = removable
+        self.start_box = IntervalBox('start', blank_allowed=removable)
+        self.end_box = IntervalBox('end', blank_allowed=removable)
+        for box, value in ((self.start_box, start), (self.end_box, end)):
+            box.setRange(IntervalBox.BLANK if removable else 1, frame_count)
+            box.setValue(value if value is not None else IntervalBox.BLANK)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.start_box)
+        layout.addWidget(QLabel('-'))
+        layout.addWidget(self.end_box)
+        self.remove_button: Optional[QToolButton] = None
+        if removable:
+            self.remove_button = QToolButton()
+            self.remove_button.setText('×')
+            self.remove_button.setAutoRaise(True)
+            self.remove_button.setToolTip('Remove this interval (cancel it, if it was never complete).')
+            self.remove_button.clicked.connect(lambda: self.removed.emit(self))
+            layout.addWidget(self.remove_button)
+        self.setLayout(layout)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def boxes(self):
+        return self.start_box, self.end_box
+
+    def entry(self) -> Optional[Tuple[int, int]]:
+        # (start, end), or None while a box is blank (an added interval not filled in yet)
+        if self.start_box.is_blank() or self.end_box.is_blank():
+            return None
+        return self.start_box.value(), self.end_box.value()
+
+    def order(self, edited_box: str) -> None:
+        # a start after the end moves the other box, as the single interval always did
+        entry = self.entry()
+        if entry is None or entry[0] <= entry[1]:
+            return
+        if edited_box == 'start':
+            self.end_box.setValue(entry[0])
+        else:
+            self.start_box.setValue(entry[1])
+
+    def set_invalid(self, invalid: bool) -> None:
+        # a red frame around a pair that overlaps another; it is not saved until fixed
+        style = 'QSpinBox { border: 1px solid #d32f2f; border-radius: 3px; }' if invalid else ''
+        for box in self.boxes():
+            box.setStyleSheet(style)
+        self.invalid = invalid
 
 
 def create_parameter_box(min_val: float, max_val: float, text: str, step: float=1, callback=None):

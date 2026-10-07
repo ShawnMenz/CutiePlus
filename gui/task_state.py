@@ -5,8 +5,10 @@ task.json     frame directories and file lists per modality (read in place), anc
               referring text
 anchors.json  frame name -> human decision {kind: mask|empty, origin: ls|ls_refined|cutie, by}
 prefill.json  frame name -> {source, path} of an existing model mask for untouched frames
-interval.json {start, end} of the dataset clip when set in Cutie (1-indexed, inclusive); saving
-              binary PNGs also writes it as interval.txt next to them
+interval.json the dataset clip(s) when set in Cutie (1-indexed, inclusive): {start, end} for one
+              interval, {intervals: [{start, end}, ...]} (sorted, never overlapping) when the sequence
+              keeps several, each a clip of its own; saving binary PNGs also writes them as
+              interval.txt next to them
 description.json {text, by, updated_at}: the referring text when tuned in Cutie, in place of
               task.json's (the curated CSV's); saving binary PNGs also writes it as description.txt
 progress.json the review workflow: {last_edited, last_edited_by, edited_by} is rewritten on every
@@ -69,9 +71,55 @@ def _write_json(file_path: str, payload) -> None:
     os.replace(temporary, file_path)
 
 
-def write_interval_text(directory: str, start: int, end: int) -> None:
+Interval = Tuple[int, int]  # (start, end) of one clip, 1-indexed, inclusive
+
+
+def intervals_payload(intervals: List[Interval]) -> dict:
+    """interval.json: the one-interval shape stays {start, end}; several are a list, with no
+    top-level start/end, so a reader that knows only one interval fails instead of dropping the
+    others."""
+    if len(intervals) == 1:
+        return {'start': intervals[0][0], 'end': intervals[0][1]}
+    return {'intervals': [{'start': start, 'end': end} for start, end in intervals]}
+
+
+def intervals_from_payload(payload: dict) -> List[Interval]:
+    if 'intervals' in payload:
+        return sorted((int(item['start']), int(item['end'])) for item in payload['intervals'])
+    return [(int(payload['start']), int(payload['end']))]
+
+
+def check_intervals(intervals: List[Interval], frame_count: int) -> List[str]:
+    """What is wrong with a list of intervals, in words; empty when it can be saved. Intervals may
+    touch (a long clip split in two) but not overlap: a frame cannot be in two clips."""
+    problems = []
+    for start, end in intervals:
+        if not 1 <= start <= end <= frame_count:
+            problems.append(f'{start}-{end} is not an interval of frames 1-{frame_count}.')
+    ordered = sorted(intervals)
+    for (start_a, end_a), (start_b, end_b) in zip(ordered, ordered[1:]):
+        if start_b <= end_a:
+            problems.append(f'{start_a}-{end_a} and {start_b}-{end_b} overlap.')
+    if not intervals:
+        problems.append('There is no interval.')
+    return problems
+
+
+def format_intervals(intervals: List[Interval]) -> str:
+    return ', '.join(f'{start}-{end}' for start, end in intervals)
+
+
+def write_interval_text(directory: str, intervals: List[Interval]) -> None:
+    """interval.txt: interval_start / interval_end for one interval; interval_count and numbered
+    keys for several (again no bare interval_start, so an old reader cannot keep only the first)."""
+    if len(intervals) == 1:
+        text = f'interval_start={intervals[0][0]}\ninterval_end={intervals[0][1]}\n'
+    else:
+        text = f'interval_count={len(intervals)}\n' + ''.join(
+            f'interval_{number}_start={start}\ninterval_{number}_end={end}\n'
+            for number, (start, end) in enumerate(intervals, start=1))
     with open(path.join(directory, INTERVAL_TEXT), 'w', encoding='utf-8') as f:
-        f.write(f'interval_start={start}\ninterval_end={end}\n')
+        f.write(text)
 
 
 def write_description_text(directory: str, text: str) -> None:
@@ -386,18 +434,21 @@ class TaskState:
             self.anchors[name] = dict(entry)
         self.save()
 
-    def interval(self, frame_count: int) -> Tuple[int, int, str]:
-        """(start, end, source) of the dataset clip, 1-indexed and inclusive: set in Cutie,
-        else the curated CSV's, else the whole sequence."""
+    def intervals(self, frame_count: int) -> Tuple[List[Interval], str]:
+        """(intervals, source) of the dataset clips, sorted, 1-indexed and inclusive: set in
+        Cutie, else the curated CSV's one, else the whole sequence."""
         saved = _read_json(path.join(self.workspace, INTERVAL_FILE), {})
         if saved:
-            return int(saved['start']), int(saved['end']), 'cutie'
+            return intervals_from_payload(saved), 'cutie'
         if self.curated_interval:
-            return self.curated_interval[0], self.curated_interval[1], 'curated'
-        return 1, frame_count, 'full'
+            return [(self.curated_interval[0], self.curated_interval[1])], 'curated'
+        return [(1, frame_count)], 'full'
+
+    def save_intervals(self, intervals: List[Interval]) -> None:
+        _write_json(path.join(self.workspace, INTERVAL_FILE), intervals_payload(sorted(intervals)))
 
     def save_interval(self, start: int, end: int) -> None:
-        _write_json(path.join(self.workspace, INTERVAL_FILE), {'start': start, 'end': end})
+        self.save_intervals([(start, end)])
 
     def save_description(self, text: str) -> None:
         _write_json(path.join(self.workspace, DESCRIPTION_FILE),

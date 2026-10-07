@@ -1,4 +1,5 @@
 import functools
+from typing import List, Optional
 
 import numpy as np
 from omegaconf import DictConfig
@@ -63,6 +64,10 @@ class GUI(QWidget):
         # set up some buttons
         self.play_button = QPushButton(PLAY_LABEL)
         self.play_button.clicked.connect(self.on_play_video)
+        self.play_button.setToolTip(
+            'R: play the video from here to the last frame; again to stop.'
+            + ('\nShift+R or Shift+click: preview the intervals, one per press.'
+               if controller.task is not None else ''))
         self.commit_button = QPushButton('Commit to permanent memory (C)')
         self.commit_button.clicked.connect(controller.on_commit)
         self.export_task_button = QPushButton('Export task masks')
@@ -141,18 +146,22 @@ class GUI(QWidget):
             self.description_edit.editingFinished.connect(controller.on_description_change)
             self.commit_button.setText('Mark as anchor (C)')
 
-            # the dataset clip, 1-indexed and inclusive; preset to the saved or curated interval
-            interval_start, interval_end, _ = task.interval(controller.T)
-            self.interval_start = IntervalBox('start')
-            self.interval_end = IntervalBox('end')
-            for box, value, which in ((self.interval_start, interval_start, 'start'),
-                                      (self.interval_end, interval_end, 'end')):
-                box.setRange(1, controller.T)
-                box.setValue(value)
-                box.setToolTip('Clip interval in frame numbers; type m for the '
-                               f'{"first" if which == "start" else "last"} frame. Saved with Save '
-                               'binary PNGs.')
-                box.editingFinished.connect(functools.partial(controller.on_interval_change, which))
+            # the dataset clips, 1-indexed and inclusive, each interval a clip of its own: one pair
+            # as preset (the saved or curated interval), more only with '+ Add interval'
+            self.interval_pairs: List[IntervalPair] = []
+            self.interval_flow = FlowLayout(spacing=10, spread=False)
+            self.interval_flow.addWidget(QLabel('Intervals'))
+            self.add_interval_button = QPushButton('+ Add interval')
+            self.add_interval_button.setToolTip(
+                'Keep another stretch of this sequence: each interval becomes a clip of its own. '
+                'Intervals may touch but not overlap.')
+            self.add_interval_button.clicked.connect(self.on_add_interval)
+            self.interval_flow.addWidget(self.add_interval_button)
+            intervals, _ = task.intervals(controller.T)
+            for start, end in intervals:
+                self.add_interval_pair(start, end)
+            # the first pair, as the single interval always was
+            self.interval_start, self.interval_end = self.interval_pairs[0].boxes()
 
         # timeline slider
         self.tl_slider = FrameSlider(Qt.Orientation.Horizontal)
@@ -162,6 +171,11 @@ class GUI(QWidget):
         self.tl_slider.setValue(0)
         self.tl_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.tl_slider.setTickInterval(1)
+        # playback stops on this frame: the last one, or the end of the interval being previewed
+        self.play_until = controller.T - 1
+        self.preview_index = 0  # the interval Shift+R plays next
+        if task is not None:
+            self.tl_slider.set_intervals(task.intervals(controller.T)[0])
 
         # combobox
         self.combo = QComboBox(self)
@@ -394,11 +408,9 @@ class GUI(QWidget):
             task_row.addWidget(self.description_edit, 1)
             # the frame label carries the mask source; the bottom row is too narrow for it
             task_row.addWidget(self.frame_name)
-            task_row.addWidget(QLabel('Interval start'))
-            task_row.addWidget(self.interval_start)
-            task_row.addWidget(QLabel('end'))
-            task_row.addWidget(self.interval_end)
             layout.addLayout(task_row)
+            # the intervals in a row of their own, which wraps when many are added
+            layout.addWidget(layout_widget(self.interval_flow))
         layout.addWidget(self.splitter, 1)
         # the frame slider between two boxes naming the keys that step it
         slider_row = QHBoxLayout()
@@ -471,6 +483,8 @@ class GUI(QWidget):
 
         # play / stop the video
         QShortcut(QKeySequence(Qt.Key.Key_R), self).activated.connect(self.on_play_video)
+        # preview the intervals, one per press
+        QShortcut(QKeySequence('Shift+R'), self).activated.connect(self.on_preview_interval)
 
         # save binary PNGs / overlay video (the keys are on the buttons)
         QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(controller.on_export_binary)
@@ -484,8 +498,10 @@ class GUI(QWidget):
         # a text or number box with the focus takes the arrow and letter keys for itself; the
         # frame slider holds the focus instead, so they reach the shortcuts: from the start, when
         # the image is clicked, and after Enter in a box
+        # (the interval boxes are connected when their pair is made, as pairs are added later too)
         for box in self.findChildren(QSpinBox) + [self.description_edit]:
-            box.editingFinished.connect(functools.partial(self.return_focus_from, box))
+            if not isinstance(box, IntervalBox):
+                box.editingFinished.connect(functools.partial(self.return_focus_from, box))
         self.tl_slider.setFocus()
 
 
@@ -526,6 +542,42 @@ class GUI(QWidget):
         # the controls in one row and at least the image plus 200 px; maximized instead when that
         # does not fit the screen
         fit_window(self, self.sizeHint().expandedTo(QSize(self.w + 200, self.h + 200)))
+
+    def add_interval_pair(self, start: Optional[int] = None,
+                          end: Optional[int] = None) -> IntervalPair:
+        # every pair but the first can be removed; a pair without values starts blank
+        first = not self.interval_pairs
+        pair = IntervalPair(self.controller.T, start, end, removable=not first)
+        for box in pair.boxes():
+            which = box.which
+            box.setToolTip(f'Interval {which} in frame numbers; type m for the '
+                           f'{"first" if which == "start" else "last"} frame. Enter or click '
+                           'elsewhere to save; each interval is a clip of its own.')
+            if first:  # the controller's handler for the single interval, unchanged
+                box.editingFinished.connect(
+                    functools.partial(self.controller.on_interval_change, which))
+            else:
+                box.editingFinished.connect(
+                    functools.partial(self.controller.on_interval_change, which, pair))
+            box.editingFinished.connect(functools.partial(self.return_focus_from, box))
+        pair.removed.connect(self.controller.on_remove_interval)
+        self.interval_pairs.append(pair)
+        # before the '+ Add interval' button, which stays last
+        self.interval_flow.insert_widget(self.interval_flow.count() - 1, pair)
+        return pair
+
+    def on_add_interval(self) -> None:
+        pair = self.add_interval_pair()
+        pair.start_box.setFocus()
+        self.text('Added an interval: type its start and end (m = first / last frame). '
+                  '× cancels it.')
+
+    def remove_interval_pair(self, pair: IntervalPair) -> None:
+        self.interval_pairs.remove(pair)
+        self.interval_flow.removeWidget(pair)
+        pair.hide()
+        pair.deleteLater()
+        self.tl_slider.setFocus()
 
     def return_focus_from(self, box: QWidget) -> None:
         # Enter; a box that lost the focus to another widget leaves it there
@@ -761,18 +813,47 @@ class GUI(QWidget):
         pass
 
     def on_play_video(self):
-        # the button and the R key; the video plays once and stops on its last frame
+        # the button and the R key; the video plays once and stops on its last frame (Shift+click
+        # on the button previews the intervals instead, as Shift+R)
+        if (self.sender() is self.play_button
+                and QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self.on_preview_interval()
+            return
         if self.timer.isActive():
             self.stop_playback()
         elif not self.controller.propagating:
             if self.tl_slider.value() >= self.tl_slider.maximum():
                 self.tl_slider.setValue(0)  # played to the end before: play it again from the start
+            self.play_until = self.tl_slider.maximum()
             self.timer.start(1000 // 30)
             self.play_button.setText(STOP_LABEL)
+
+    def on_preview_interval(self) -> None:
+        # Shift+R: the next interval only, from its start to its end; each press plays the next one
+        # (after the last, the first again), also while one is playing
+        task = self.controller.task
+        if task is None:
+            self.text('Shift+R previews the intervals of a task; R plays the video.')
+            return
+        if self.controller.propagating:
+            return
+        intervals, _ = task.intervals(self.controller.T)
+        number = self.preview_index % len(intervals)
+        start, end = intervals[number]
+        self.preview_index = number + 1
+        self.timer.stop()
+        self.tl_slider.setValue(start - 1)
+        self.play_until = end - 1
+        self.tl_slider.set_active_interval((start, end))
+        self.timer.start(1000 // 30)
+        self.play_button.setText(STOP_LABEL)
+        self.text(f'Previewing interval {number + 1} of {len(intervals)}: frames {start}-{end} '
+                  '(Shift+R: next).')
 
     def stop_playback(self) -> None:
         self.timer.stop()
         self.play_button.setText(PLAY_LABEL)
+        self.tl_slider.set_active_interval(None)
 
     def open_file(self, prompt):
         options = QFileDialog.Options()
