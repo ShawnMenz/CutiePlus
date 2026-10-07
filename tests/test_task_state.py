@@ -5,7 +5,6 @@ from os import path
 
 import pytest
 
-from gui import task_state
 from gui.annotators import annotator_for_display, display_port, save_annotators
 from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_state import (TaskLock, TaskLocked, TaskState, check_intervals, intervals_from_payload,

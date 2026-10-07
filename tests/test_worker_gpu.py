@@ -45,6 +45,9 @@ def test_hello_reports_the_device_and_a_measured_profile(worker):
     assert model['measured'] is True
     assert model['model_bytes'] > 100 << 20
     assert model['step_per_product'] > 0 and model['ritm_per_pixel'] >= 0
+    # the configured mixed precision is what the worker computes in (it once was not: an
+    # explicit 'cuda:0' turned autocast off)
+    assert hello['amp'] is True and hello['compute_dtype'] == 'torch.float16'
     kinds = {sample['kind'] for sample in model['samples']}
     assert kinds == {'ritm_click', 'cutie_run'}
     assert len(hello['model_identity']['cutie_sha256']) == 64
@@ -55,7 +58,7 @@ def test_clicks_equal_the_in_process_engine(worker, tmp_path):
     image_path = path.join(task.frame_dirs['thermal'], '000003.jpg')
     mask_path = path.join(task.masks_dir, '000003.png')
     clicks = [(50, 48, False), (70, 48, True), (40, 40, False)]
-    worker.call('ritm_open', interaction_id='a', image_path=image_path, mask_path=mask_path,
+    worker.call('ritm_open', interaction_id='a', image_path=image_path, mask={'path': mask_path},
                 num_objects=1, target_object=1)
     remote = [worker.call('ritm_click', interaction_id='a', x=x, y=y, is_negative=n)['mask']
               for x, y, n in clicks]
@@ -91,7 +94,7 @@ def test_propagation_equals_the_in_process_runtime_and_frees_its_memory(worker, 
     plan = PropagationPlan(names, 0, 'forward', job['anchors'],
                            tuple(start['plan']['permanent_tis']), True, 2)
     frames = [read_rgb(p) for p in job['frame_paths']]
-    masks = {int(ti): read_index_mask(p) for ti, p in job['anchor_mask_paths'].items()}
+    masks = {int(ti): read_index_mask(source['path']) for ti, source in job['anchor_masks'].items()}
     seed = index_numpy_to_one_hot_torch(masks[0], 2).cuda()
     runtime = PropagationRuntime(InferenceCore(cutie, cfg), plan, lambda ti: frames[ti],
                                  lambda ti: masks[ti], seed, 'cuda', True, cfg)

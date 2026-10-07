@@ -10,14 +10,14 @@ import copy
 import gc
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 from omegaconf import DictConfig
 
 from cutieplus.engine import models
-from cutieplus.engine.images import FramePrefetcher, read_index_mask, read_rgb
+from cutieplus.engine.images import FramePrefetcher, read_mask_source, read_rgb
 from cutieplus.engine.propagation import (PropagationPlan, PropagationRuntime, apply_memory_config,
                                           new_inference_core)
 from cutieplus.engine.ritm import InteractionError, RitmEngine
@@ -64,6 +64,8 @@ class TorchWorkerEngine:
         self.cfg = cfg
         self.service = service
         torch.set_grad_enabled(False)
+        if service.get('torch_threads'):
+            torch.set_num_threads(int(service['torch_threads']))
         self.hardware = hw.detect(service.get('device', 'cuda'), bool(service.get('allow_cpu')))
         self.device = self.hardware.device
         if self.hardware.backend == 'cuda':
@@ -94,7 +96,8 @@ class TorchWorkerEngine:
         else:
             self.memory_model = MemoryModel(False, self.hardware.name, self.hardware.uuid,
                                             self.model_bytes)
-        self.resources = GPUResourceManager(self.probe, self.policy, self.memory_model)
+        self.resources = GPUResourceManager(self.probe, self.policy, self.memory_model,
+                                            unlimited=self.hardware.backend != 'cuda')
         self.ritm = RitmEngine(self.click_controller, self.device, self.amp,
                                snapshot_budget_bytes=int(service.get('ritm_snapshot_mib', 2048)) << 20,
                                max_interactions=int(service.get('max_interactions', 64)))
@@ -102,8 +105,18 @@ class TorchWorkerEngine:
         self.interaction_frames: Dict[str, tuple] = {}
 
     # status
+    def compute_dtype(self) -> str:
+        """The dtype a convolution computes in under the engine's autocast: the precision the
+        models really run in (float16 with amp on CUDA)."""
+        from cutieplus.engine.device import autocast
+        with autocast(self.device, self.amp):
+            weight = torch.ones((1, 1, 1, 1), device=self.device)
+            sample = torch.ones((1, 1, 2, 2), device=self.device)
+            return str(torch.nn.functional.conv2d(sample, weight).dtype)
+
     def hello(self) -> dict:
         return {
+            'compute_dtype': self.compute_dtype(),
             'hardware': self.hardware.as_dict(),
             'memory_model': self.memory_model.as_dict(),
             'model_identity': self.identity.as_dict(),
@@ -131,13 +144,11 @@ class TorchWorkerEngine:
         }
 
     # clicks
-    def ritm_open(self, interaction_id: str, image_path: str, mask_path: Optional[str],
+    def ritm_open(self, interaction_id: str, image_path: str, mask: Optional[dict],
                   num_objects: int, target_object: int, clicks=()) -> dict:
+        """mask: the frame's committed mask before the clicks, {'path', 'binary'}; None: none."""
         image = read_rgb(image_path)
-        if mask_path is not None:
-            mask = read_index_mask(mask_path)
-        else:
-            mask = np.zeros(image.shape[:2], np.uint8)
+        mask = read_mask_source(mask, image.shape[:2])
         if mask.shape != image.shape[:2]:
             raise CommandError('invalid', f'mask {mask.shape} does not fit the image {image.shape}')
         prev = one_hot(mask, num_objects)
@@ -196,27 +207,25 @@ class TorchWorkerEngine:
         return {}
 
     # propagation
-    def prop_start(self, job: dict) -> dict:
+    def prop_start(self, job: dict, plan_only: bool = False) -> dict:
         """Admission and, when admitted, the job's propagation context. Nothing is allocated for
-        a job that is queued or rejected."""
+        a job that is queued or rejected, nor with plan_only (the decision alone)."""
         if self.job is not None:
             raise CommandError('invalid', f'propagation context {self.job.job_id} is still active')
         resolution = job['resolution']
         memory = job['memory']
-        mask_anchor_tis = sorted(int(ti) for ti in job['anchor_mask_paths'])
+        mask_anchor_tis = sorted(int(ti) for ti in job['anchor_masks'])
         # a replay after a failure keeps the job's recorded anchors: it may wait, not change
         forced = job.get('permanent_tis')
         plan = self.resources.plan_propagation(
             self._request(job, mask_anchor_tis), job.get('click_frame'),
             None if forced is None else [int(ti) for ti in forced])
-        if self.hardware.backend != 'cuda':
-            plan.decision, plan.reason = 'run', 'no GPU memory to manage (CPU development backend)'
-        if plan.decision != 'run':
+        if plan.decision != 'run' or plan_only:
             return {'decision': plan.decision, 'plan': plan.as_dict()}
 
         names = tuple(job['frame_names'])
         frame_paths = job['frame_paths']
-        anchor_paths = {int(ti): path for ti, path in job['anchor_mask_paths'].items()}
+        anchor_sources = {int(ti): source for ti, source in job['anchor_masks'].items()}
         num_objects = int(job.get('num_objects', 1))
         mask_anchor_count = len(mask_anchor_tis)
         propagation_plan = PropagationPlan(names, int(job['start_ti']), job['direction'],
@@ -224,14 +233,12 @@ class TorchWorkerEngine:
                                            mask_anchor_count, num_objects)
 
         def read_anchor_mask(ti: int) -> np.ndarray:
-            if ti not in anchor_paths:
+            if ti not in anchor_sources:
                 raise CommandError('invalid', f'anchor {names[ti]} has no mask')
-            return read_index_mask(anchor_paths[ti])
+            return read_mask_source(anchor_sources[ti])
 
-        seed_path = job.get('seed_mask_path')
         height, width = int(job['height']), int(job['width'])
-        seed_mask = (read_index_mask(seed_path) if seed_path is not None else
-                     np.zeros((height, width), np.uint8))
+        seed_mask = read_mask_source(job.get('seed_mask'), (height, width))
         try:
             job_cfg = apply_memory_config(copy.deepcopy(self.cfg), memory)
             # constructed with the default settings, then configured, as the window's processor

@@ -53,3 +53,34 @@ long_term:
 
 save_aux: False
 flip_aug: False
+
+# the shared GPU service (python -m cutieplus.coordinator; windows with --backend shared)
+service:
+  state_dir: null # default: <task root>/.cutieplus (keep it on a local disk)
+  socket: null # default: <state dir>/coordinator.sock
+  device: cuda # the one GPU of the worker: cuda = the first device CUDA_VISIBLE_DEVICES exposes
+  allow_cpu: False # development and tests only
+  allow_precision_change: False # run in float32 when the GPU lacks float16 (recorded)
+  profile: True # measure the memory of clicks and propagation at every worker start
+  profile_frame_size: [1080, 1920]
+  heartbeat_seconds: 5
+  session_timeout_seconds: 30 # a window not heard from for this long loses its tasks
+  request_timeout_seconds: 120
+  worker_start_timeout_seconds: 600
+  ritm_snapshot_mib: 2048 # CPU memory for the state of inactive click interactions
+  max_interactions: 64
+  gpu:
+    headroom_fraction: 0.05 # of the GPU's memory, never planned for
+    headroom_min_mib: 512
+    max_worker_gib: null # optional cap on the worker's PyTorch memory
+    estimate_margin: 1.25 # applied to the measured memory model
+    reserve_for_clicks: True # keep room for a click while a propagation runs
+    max_affinity_elements: 4.0e8 # quality cap on permanent anchors (the original budget)
+    allow_fewer_permanent_anchors: True # under memory limits, nearest to the start (recorded)
+    queue_wait_seconds: 600 # a job that cannot get memory for this long is rejected
+    max_oom_retries: 1
+  scheduler:
+    max_interactive_burst: 4 # clicks in a row while a propagation step waits
+    max_background_wait: 0.25 # seconds a ready propagation step waits for clicks
+    max_interactive_queue: 16
+    max_jobs: 32

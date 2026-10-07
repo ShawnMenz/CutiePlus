@@ -182,9 +182,11 @@ class TaskLock:
         self.stream = stream
 
     @classmethod
-    def acquire(cls, workspace: str, labeler: str, activity: str = '') -> 'TaskLock':
+    def acquire(cls, workspace: str, labeler: str, activity: str = '',
+                holder: Optional[dict] = None) -> 'TaskLock':
         """Raises TaskLocked when another window has the task. activity: what the holder does
-        besides labeling, e.g. 'exporting'."""
+        besides labeling, e.g. 'exporting'. holder: fields that describe the holder instead of
+        this process (the shared service holds tasks for its windows)."""
         if fcntl is None:
             return cls()
         stream = open(path.join(workspace, LOCK_FILE), 'a+', encoding='utf-8')
@@ -200,10 +202,11 @@ class TaskLock:
             raise TaskLocked(workspace, lock_holder(workspace) or {})
         stream.seek(0)
         stream.truncate()
-        json.dump({'labeler': labeler, 'display': os.environ.get('DISPLAY', ''),
-                   'host': socket.gethostname(), 'pid': os.getpid(), 'activity': activity,
-                   'opened_at': utc_now()},
-                  stream, ensure_ascii=False)
+        description = {'labeler': labeler, 'display': os.environ.get('DISPLAY', ''),
+                       'host': socket.gethostname(), 'pid': os.getpid(), 'activity': activity,
+                       'opened_at': utc_now()}
+        description.update(holder or {})
+        json.dump(description, stream, ensure_ascii=False)
         stream.flush()
         return cls(stream)
 
@@ -295,12 +298,7 @@ def summarize_task(workspace: str) -> dict:
 
 def task_status(workspace: str) -> str:
     # not started / in progress / under review / done
-    progress = _read_json(path.join(workspace, PROGRESS_FILE), {})
-    if 'done_at' in progress:
-        return 'done'
-    if 'review_at' in progress:
-        return 'under review'
-    return 'in progress' if 'last_edited' in progress else 'not started'
+    return status_of(_read_json(path.join(workspace, PROGRESS_FILE), {}))
 
 
 def export_is_current(workspace: str, task_set: dict) -> bool:
@@ -324,16 +322,59 @@ def _update_progress(workspace: str, **fields) -> None:
 def submit_for_review(workspace: str, labeler: str) -> None:
     # from any status, including done: the task waits for a new review
     progress = _read_json(path.join(workspace, PROGRESS_FILE), {})
-    progress.pop('done_at', None)
-    progress.pop('done_by', None)
-    progress['review_at'] = utc_now()
-    progress['review_by'] = labeler
-    _write_json(path.join(workspace, PROGRESS_FILE), progress)
+    _write_json(path.join(workspace, PROGRESS_FILE), submitted_progress(progress, labeler, utc_now()))
 
 
 def mark_done(workspace: str, labeler: str) -> None:
     # only for a task under review whose export is current
     _update_progress(workspace, done_at=utc_now(), done_by=labeler)
+
+
+# the rules of anchors and of the review status, shared by TaskState (local mode) and the shared
+# service's coordinator, so both record changes alike
+def next_anchor_entry(previous: Optional[dict], kind: str, edited: bool, labeler: str,
+                      now: str) -> Optional[dict]:
+    """The anchor entry after a human decision on a frame; None when nothing changes (accepting
+    the shown mask of an anchor of the same kind). An edit of a Label Studio anchor keeps its
+    source and becomes ls_refined."""
+    if previous is not None and not edited and previous['kind'] == kind:
+        return None
+    entry = {'kind': kind, 'updated_at': now, 'by': labeler}
+    if previous is not None and previous['origin'] in ('ls', 'ls_refined'):
+        entry['origin'] = 'ls_refined'
+        for key in ('ls_file', 'ls_modality'):
+            if key in previous:
+                entry[key] = previous[key]
+    else:
+        entry['origin'] = 'cutie'
+    return entry
+
+
+def touched_progress(progress: dict, anchors: Dict[str, dict], labeler: str, now: str) -> dict:
+    """progress.json after a change: back to in progress (any review or done mark dropped);
+    edited_by keeps everyone who has changed the task, in order."""
+    editors = task_annotators(progress, anchors)
+    if labeler not in editors:
+        editors.append(labeler)
+    return {'last_edited': now, 'last_edited_by': labeler, 'edited_by': editors}
+
+
+def submitted_progress(progress: dict, labeler: str, now: str) -> dict:
+    """progress.json once the task is submitted for review (from any status, including done)."""
+    progress = dict(progress)
+    progress.pop('done_at', None)
+    progress.pop('done_by', None)
+    progress['review_at'] = now
+    progress['review_by'] = labeler
+    return progress
+
+
+def status_of(progress: dict) -> str:
+    if 'done_at' in progress:
+        return 'done'
+    if 'review_at' in progress:
+        return 'under review'
+    return 'in progress' if 'last_edited' in progress else 'not started'
 
 
 class TaskState:
@@ -408,17 +449,9 @@ class TaskState:
 
     def set_anchor(self, name: str, kind: str, edited: bool) -> None:
         """Record a human decision; edited=False accepts the shown mask without changing it."""
-        previous = self.anchors.get(name)
-        if previous is not None and not edited and previous['kind'] == kind:
+        entry = next_anchor_entry(self.anchors.get(name), kind, edited, self.labeler, utc_now())
+        if entry is None:
             return
-        entry = {'kind': kind, 'updated_at': utc_now(), 'by': self.labeler}
-        if previous is not None and previous['origin'] in ('ls', 'ls_refined'):
-            entry['origin'] = 'ls_refined'
-            for key in ('ls_file', 'ls_modality'):
-                if key in previous:
-                    entry[key] = previous[key]
-        else:
-            entry['origin'] = 'cutie'
         self.anchors[name] = entry
         self.save()
 
@@ -463,8 +496,5 @@ class TaskState:
         # a change: back to in progress, dropping any review or done mark; edited_by keeps
         # everyone who has changed the task
         progress_path = path.join(self.workspace, PROGRESS_FILE)
-        editors = task_annotators(_read_json(progress_path, {}), self.anchors)
-        if self.labeler not in editors:
-            editors.append(self.labeler)
-        _write_json(progress_path, {'last_edited': utc_now(), 'last_edited_by': self.labeler,
-                                    'edited_by': editors})
+        _write_json(progress_path, touched_progress(_read_json(progress_path, {}), self.anchors,
+                                                    self.labeler, utc_now()))

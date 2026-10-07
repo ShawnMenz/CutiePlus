@@ -15,6 +15,18 @@ def read_index_mask(file_path: str) -> np.ndarray:
     return np.array(Image.open(file_path))
 
 
+def read_mask_source(source: Optional[dict], shape: Optional[tuple] = None) -> Optional[np.ndarray]:
+    """A mask given as {'path': ..., 'binary': bool}: an index mask, or a binary image (a prefill:
+    any non-zero pixel is the target, as the labeling window reads it). None gives zeros of
+    `shape` when a shape is given, else None."""
+    if source is None:
+        return None if shape is None else np.zeros(shape, np.uint8)
+    mask = read_index_mask(source['path'])
+    if source.get('binary'):
+        mask = (mask > 0).astype(np.uint8)
+    return mask
+
+
 class FramePrefetcher:
     """Reads the frames of `order` ahead of their use with a few threads; at most `depth` frames
     are read but not yet taken. get() of a frame that was not prefetched reads it directly."""

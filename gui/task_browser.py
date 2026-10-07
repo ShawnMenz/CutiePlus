@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QHBox
                                QStyledItemDelegate, QStyleOptionViewItem, QTabWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from cutieplus.backends.base import BackendError
 from gui.annotator_manager import AnnotatorManager
 from gui.gui_utils import fit_window
 from gui.main_controller import MainController, load_networks
@@ -91,11 +92,15 @@ class TargetDelegate(QStyledItemDelegate):
 
 class TaskBrowser(QWidget):
 
-    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None):
+    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None,
+                 service=None):
+        """service: the shared mode's connection (cutieplus.client.ServiceClient); without it the
+        browser loads the models itself on the first Open (local mode)."""
         super().__init__()
         self.cfg = cfg
         self.task_root = path.abspath(task_root)
         self.task_set = load_task_set(self.task_root)
+        self.service = service
         self.networks = None
         self.controller: Optional[MainController] = None
         self.exports: Dict[Tuple[str, str], QProcess] = {}
@@ -391,7 +396,11 @@ class TaskBrowser(QWidget):
             if not self.controller.gui.close():
                 self.log('The open task is exporting; switch tasks once the export finishes.')
                 return
-        if self.networks is None:
+        backend_factory = None
+        if self.service is not None:
+            from cutieplus.backends.shared import SharedTaskBackend
+            backend_factory = SharedTaskBackend.factory(self.service)
+        elif self.networks is None:
             self.log('Loading models...')
             QApplication.processEvents()
             self.networks = load_networks(self.cfg)
@@ -402,11 +411,15 @@ class TaskBrowser(QWidget):
         self.log(f'Opening {split}/{sequence}.')
         try:
             self.controller = MainController(cfg, networks=self.networks,
-                                             on_task_event=self.on_task_event)
+                                             on_task_event=self.on_task_event,
+                                             backend_factory=backend_factory)
         except TaskLocked as exc:
             # another session took it after the check above
             self.log(str(exc))
             self.refresh_task(split, sequence)
+            return
+        except BackendError as exc:
+            self.log(f'{split}/{sequence} could not be opened: {exc}')
             return
         self.controller.gui.refresh_reset_button_state()
         self.refresh_task(split, sequence)

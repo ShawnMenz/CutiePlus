@@ -10,9 +10,8 @@ Quality-sensitive settings (processing size, precision, memory sizes) are never 
 one setting the budget may lower is the number of mask anchors in the permanent memory, with the
 documented selection policy (nearest to the start frame); the plan records it.
 """
-import math
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 from cutieplus.engine import policies
 from cutieplus.gpu.hardware import MemoryProbe, MemorySnapshot
@@ -146,10 +145,14 @@ class ResourcePlan:
 
 class GPUResourceManager:
 
-    def __init__(self, probe: MemoryProbe, policy: ResourcePolicy, model: MemoryModel):
+    def __init__(self, probe: MemoryProbe, policy: ResourcePolicy, model: MemoryModel,
+                 unlimited: bool = False):
+        """unlimited: no device memory to manage (the CPU development backend); only the quality
+        cap limits the permanent anchors."""
         self.probe = probe
         self.policy = policy
         self.model = model
+        self.unlimited = unlimited
 
     def headroom(self, total: int) -> int:
         return int(max(self.policy.headroom_fraction * total, self.policy.headroom_min_bytes))
@@ -192,10 +195,12 @@ class GPUResourceManager:
         floor = min(1, want)  # like the original: at least one anchor when there is one
         budget = self.budget()
         reserve = 0
-        if self.policy.reserve_for_clicks and click_frame is not None:
+        if self.policy.reserve_for_clicks and click_frame is not None and not self.unlimited:
             reserve = self.click_requirement(*click_frame)
         room = budget.available - reserve
         ceiling = budget.ceiling - reserve
+        if self.unlimited:
+            room = ceiling = float('inf')
 
         def need(anchors: int) -> int:
             tokens = anchors * q + other

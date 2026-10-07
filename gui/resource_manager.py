@@ -209,6 +209,8 @@ class ResourceManager:
             t.daemon = True
             t.start()
         self.closed = False
+        # shared mode: the service writes the task's masks; this window only reads them
+        self.read_only = False
 
     def close(self):
         # finish pending saves and stop the save threads; safe to call more than once
@@ -322,8 +324,13 @@ class ResourceManager:
                 'The save queue is full! You need more threads or faster IO. Program might pause.')
         self.save_queue.put(item)
 
+    def _check_writable(self) -> None:
+        if self.read_only:
+            raise RuntimeError('the masks of this task are written by the CutiePlus service')
+
     def save_mask(self, ti: int, mask: np.ndarray):
         # mask should be uint8 H*W without channels
+        self._check_writable()
         assert 0 <= ti < self.length
         assert isinstance(mask, np.ndarray)
 
@@ -402,6 +409,7 @@ class ResourceManager:
 
     def delete_mask(self, ti: int) -> None:
         # wait for pending saves so a queued write cannot recreate the file
+        self._check_writable()
         self.save_queue.join()
         mask_path = path.join(self.mask_dir, self.names[ti] + '.png')
         if path.exists(mask_path):
@@ -410,6 +418,7 @@ class ResourceManager:
 
     def clear_sequence_masks(self) -> int:
         """Remove only generated mask PNGs from this sequence's workspace."""
+        self._check_writable()
         self.save_queue.join()
         directories = (self.mask_dir, path.join(self.workspace, 'binary_masks'),
                        self.soft_mask_dir)

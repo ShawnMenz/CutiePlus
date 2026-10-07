@@ -9,7 +9,7 @@ from typing import Callable, Dict
 
 import numpy as np
 
-from tests.helpers import RADII, WIDTH, HEIGHT, SyntheticTask, make_task, read_mask, strip_times
+from tests.helpers import RADII, WIDTH, HEIGHT, SyntheticTask, make_task, strip_times
 
 FRAME_COUNT = 16
 EMPTY_ANCHOR = 13

@@ -23,9 +23,9 @@ def job_for(task, start_ti=0, direction='forward', attempt='1'):
         'frame_paths': [path.join(task.frame_dirs['visual'], name + '.jpg') for name in names],
         'start_ti': start_ti, 'direction': direction,
         'anchors': {name: entry['kind'] for name, entry in anchors.items()},
-        'anchor_mask_paths': {str(names.index(name)): path.join(task.masks_dir, name + '.png')
-                              for name, entry in anchors.items() if entry['kind'] == 'mask'},
-        'seed_mask_path': path.join(task.masks_dir, names[start_ti] + '.png'),
+        'anchor_masks': {str(names.index(name)): {'path': path.join(task.masks_dir, name + '.png')}
+                         for name, entry in anchors.items() if entry['kind'] == 'mask'},
+        'seed_mask': {'path': path.join(task.masks_dir, names[start_ti] + '.png')},
         'height': 96, 'width': 128, 'num_objects': 1,
         'resolution': {'max_internal_size': 480, 'upscale_to_internal_size': False},
         'memory': {'mem_every': 5, 'top_k': 30, 'min_mem_frames': 5, 'max_mem_frames': 10,
@@ -50,7 +50,7 @@ def test_commands_round_trip(tmp_path):
         assert hello['hardware']['name'] == 'fake GPU'
         assert proxy.generation == 1
         image = path.join(task.frame_dirs['visual'], '000002.jpg')
-        proxy.call('ritm_open', interaction_id='a', image_path=image, mask_path=None,
+        proxy.call('ritm_open', interaction_id='a', image_path=image, mask=None,
                    num_objects=1, target_object=1)
         reply = proxy.call('ritm_click', interaction_id='a', x=40, y=40, is_negative=False)
         assert reply['mask'].dtype == np.uint8 and reply['mask'][40, 40] == 1

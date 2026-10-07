@@ -10,7 +10,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from cutieplus.engine.images import read_index_mask, read_rgb
+from cutieplus.engine.images import read_mask_source, read_rgb
 from cutieplus.gpu.budget import GPUResourceManager, MemoryModel, MemoryRequest, ResourcePolicy
 from cutieplus.gpu.hardware import SimulatedMemoryProbe
 from cutieplus.worker.engine import CommandError
@@ -80,12 +80,12 @@ class FakeWorkerEngine:
                                                       'last_ti': self.job['last_ti']}}
 
     # clicks
-    def ritm_open(self, interaction_id, image_path, mask_path, num_objects, target_object,
+    def ritm_open(self, interaction_id, image_path, mask, num_objects, target_object,
                   clicks=()) -> dict:
         if interaction_id in self.interactions:
             raise CommandError('invalid', f'interaction {interaction_id} is already open')
         image = read_rgb(image_path)
-        mask = read_index_mask(mask_path) if mask_path else np.zeros(image.shape[:2], np.uint8)
+        mask = read_mask_source(mask, image.shape[:2])
         self.interactions[interaction_id] = {'initial': mask, 'clicks': [tuple(c) for c in clicks],
                                              'target': int(target_object), 'live': False}
         return {}
@@ -130,10 +130,10 @@ class FakeWorkerEngine:
         return {}
 
     # propagation
-    def prop_start(self, job: dict) -> dict:
+    def prop_start(self, job: dict, plan_only: bool = False) -> dict:
         if self.job is not None:
             raise CommandError('invalid', f'propagation context {self.job["job_id"]} is still active')
-        anchor_tis = sorted(int(ti) for ti in job['anchor_mask_paths'])
+        anchor_tis = sorted(int(ti) for ti in job['anchor_masks'])
         memory = job['memory']
         resolution = job['resolution']
         request = MemoryRequest(int(job['height']), int(job['width']),
@@ -144,14 +144,12 @@ class FakeWorkerEngine:
         forced = job.get('permanent_tis')
         plan = self.resources.plan_propagation(request, job.get('click_frame'),
                                                None if forced is None else [int(t) for t in forced])
-        if plan.decision != 'run':
+        if plan.decision != 'run' or plan_only:
             return {'decision': plan.decision, 'plan': plan.as_dict()}
         resident = self.memory_model.propagation_resident(plan.query_tokens, plan.memory_tokens)
         self.probe.allocated += resident
         self.probe.reserved = max(self.probe.reserved, self.probe.allocated)
-        seed_path = job.get('seed_mask_path')
-        seed = (read_index_mask(seed_path) if seed_path else
-                np.zeros((int(job['height']), int(job['width'])), np.uint8))
+        seed = read_mask_source(job.get('seed_mask'), (int(job['height']), int(job['width'])))
         direction = 1 if job['direction'] == 'forward' else -1
         start = int(job['start_ti'])
         count = len(job['frame_names'])
@@ -199,7 +197,7 @@ class FakeWorkerEngine:
             return self._step_reply('stop', ti, finished=True, stop_reason='empty_anchor')
         state['last_ti'] = ti
         if kind == 'mask':
-            state['prev'] = read_index_mask(job['anchor_mask_paths'][str(ti)])
+            state['prev'] = read_mask_source(job['anchor_masks'][str(ti)])
             reply = self._step_reply('anchor', ti, finished=last, stop_reason='end' if last else None)
         else:
             state['prev'] = np.roll(state['prev'], 1, axis=1)
