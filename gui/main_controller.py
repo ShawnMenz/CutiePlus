@@ -24,7 +24,7 @@ from cutie.inference.inference_core import InferenceCore
 
 from gui.interaction import *
 from gui.interactive_utils import *
-from gui.resource_manager import ResourceManager
+from gui.resource_manager import ResourceManager, SaveError
 from gui.gui import GUI
 from gui.click_controller import ClickController
 from gui.reader import PropagationReader, get_data_loader
@@ -252,6 +252,7 @@ class MainController():
         if not no_mask:
             # a save still being written would be read half-finished
             self.res_man.save_queue.join()
+            self.report_save_errors()
             loaded_mask = self.res_man.get_mask(self.curr_ti)
             if loaded_mask is None:
                 self.curr_mask.fill(0)
@@ -492,6 +493,7 @@ class MainController():
             return
         self.closed = True
         self.res_man.close()
+        self.report_save_errors()
         # every save is written: another window may take the task now
         if self.task_lock is not None:
             self.task_lock.release()
@@ -967,6 +969,7 @@ class MainController():
     # undo/redo of frame edits (see gui/edit_history.py)
     def frame_state(self, ti: int) -> FrameState:
         self.res_man.save_queue.join()
+        self.report_save_errors()
         name = self.res_man.names[ti]
         mask_path = path.join(self.res_man.mask_dir, name + '.png')
         mask = None
@@ -1082,7 +1085,16 @@ class MainController():
             self.gui.torch_mem_gauge.setFormat('N/A')
             self.gui.torch_mem_gauge.setValue(0)
 
+    def report_save_errors(self) -> None:
+        # a failed background save is shown, never dropped silently
+        try:
+            self.res_man.check_saves()
+        except SaveError as exc:
+            log.error('Mask save failed: %s', exc)
+            self.gui.text(f'SAVING FAILED, the frame keeps its previous mask file: {exc}')
+
     def on_gpu_timer(self):
+        self.report_save_errors()
         self.update_gpu_gauges()
         self.gui.refresh_reset_button_state()
 

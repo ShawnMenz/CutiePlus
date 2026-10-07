@@ -71,3 +71,17 @@ torchvision = { index = "pytorch-cu130" }
 "Repository" = "https://github.com/ShawnMenz/CutiePlus"
 "Bug Tracker" = "https://github.com/ShawnMenz/CutiePlus/issues"
 "Upstream" = "https://github.com/hkchengrex/Cutie"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "models: needs the Cutie and RITM weights in weights/",
+  "gpu: needs a CUDA device (run with -m gpu)",
+  "slow: takes more than a few seconds",
+]
+addopts = "-m 'not gpu'"

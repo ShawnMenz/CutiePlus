@@ -5,6 +5,7 @@ import collections
 import logging
 from dataclasses import dataclass
 from queue import Queue
+import threading
 from threading import Thread
 from omegaconf import DictConfig, open_dict
 from typing import Dict, Optional, Tuple, Literal, Union
@@ -62,6 +63,37 @@ class SaveItem:
     type: Literal['mask', 'visualization', 'soft_mask']
     data: Union[Image.Image, np.ndarray]
     name: str = None  # only used for soft_mask
+
+
+class SaveError(Exception):
+    """One or more background saves failed; the message lists the files and the reasons."""
+
+
+def write_atomically(file_path: str, write) -> None:
+    """write(temporary path) writes the whole file; it then replaces file_path in one step, so a
+    failure leaves the previous file (or none) rather than half a file."""
+    directory, name = path.split(file_path)
+    temporary = path.join(directory, f'.{name}.{os.getpid()}.{threading.get_ident()}.tmp')
+    try:
+        write(temporary)
+        os.replace(temporary, file_path)
+    except BaseException:
+        if path.exists(temporary):
+            os.remove(temporary)
+        raise
+
+
+def imwrite_checked(file_path: str, image: np.ndarray) -> None:
+    extension = path.splitext(file_path)[1]
+
+    def write(temporary: str) -> None:
+        ok, encoded = cv2.imencode(extension, image)
+        if not ok:
+            raise OSError(f'cannot encode {file_path}')
+        with open(temporary, 'wb') as f:
+            f.write(encoded.tobytes())
+
+    write_atomically(file_path, write)
 
 
 class ResourceManager:
@@ -163,7 +195,10 @@ class ResourceManager:
 
         self.height, self.width = self.get_image(0).shape[:2]
 
-        # create the saver threads for saving the masks/visualizations
+        # create the saver threads for saving the masks/visualizations; a failed save is kept in
+        # save_errors (check_saves reports it) and never stops a thread
+        self.save_errors = []
+        self.save_errors_lock = threading.Lock()
         self.save_queue = Queue(maxsize=cfg['save_queue_size'])
         self.num_save_threads = cfg['num_save_threads']
         self.save_threads = [
@@ -195,32 +230,55 @@ class ResourceManager:
             if args is None:
                 queue.task_done()
                 break
-            if args.type == 'mask':
-                # PIL image
-                args.data.save(path.join(self.mask_dir, args.name + '.png'))
-            elif args.type.startswith('visualization'):
-                # numpy array, save with cv2
-                vis_mode = args.type.split('_')[-1]
-                os.makedirs(path.join(self.visualization_dir, vis_mode), exist_ok=True)
-                if vis_mode == 'rgba':
-                    data = cv2.cvtColor(args.data, cv2.COLOR_RGBA2BGRA).copy()
-                    cv2.imwrite(path.join(self.visualization_dir, vis_mode, args.name + '.png'),
+            try:
+                self.save_item(args)
+            except Exception as exc:  # reported by check_saves; the thread keeps serving
+                log.exception('Saving %s %s failed', args.type, args.name)
+                with self.save_errors_lock:
+                    self.save_errors.append(f'{args.type} {args.name}: {exc}')
+            finally:
+                # always, or save_queue.join() would wait forever
+                queue.task_done()
+
+    def save_item(self, args: SaveItem) -> None:
+        if args.type == 'mask':
+            # PIL image
+            mask_path = path.join(self.mask_dir, args.name + '.png')
+            try:
+                write_atomically(mask_path,
+                                 lambda temporary: args.data.save(temporary, format='PNG'))
+            except Exception as exc:
+                raise OSError(f'{path.basename(mask_path)}: {exc}') from exc
+        elif args.type.startswith('visualization'):
+            # numpy array, save with cv2
+            vis_mode = args.type.split('_')[-1]
+            os.makedirs(path.join(self.visualization_dir, vis_mode), exist_ok=True)
+            if vis_mode == 'rgba':
+                data = cv2.cvtColor(args.data, cv2.COLOR_RGBA2BGRA).copy()
+                imwrite_checked(path.join(self.visualization_dir, vis_mode, args.name + '.png'),
                                 data)
-                else:
-                    data = cv2.cvtColor(args.data, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(path.join(self.visualization_dir, vis_mode, args.name + '.jpg'),
-                                data)
-            elif args.type == 'soft_mask':
-                # numpy array, save each channel with cv2
-                num_channels = args.data.shape[0]
-                # first channel is background -- ignore
-                for i in range(1, num_channels):
-                    data = args.data[i]
-                    data = (data * 255).astype(np.uint8)
-                    cv2.imwrite(path.join(self.soft_mask_dir, f'{i}', args.name + '.png'), data)
             else:
-                raise NotImplementedError
-            queue.task_done()
+                data = cv2.cvtColor(args.data, cv2.COLOR_RGB2BGR)
+                imwrite_checked(path.join(self.visualization_dir, vis_mode, args.name + '.jpg'),
+                                data)
+        elif args.type == 'soft_mask':
+            # numpy array, save each channel with cv2
+            num_channels = args.data.shape[0]
+            # first channel is background -- ignore
+            for i in range(1, num_channels):
+                data = args.data[i]
+                data = (data * 255).astype(np.uint8)
+                imwrite_checked(path.join(self.soft_mask_dir, f'{i}', args.name + '.png'), data)
+        else:
+            raise NotImplementedError(args.type)
+
+    def check_saves(self) -> None:
+        """Raises SaveError naming the saves that failed since the last check (each is reported
+        once). Call it after save_queue.join() to know that everything queued was written."""
+        with self.save_errors_lock:
+            errors, self.save_errors = self.save_errors, []
+        if errors:
+            raise SaveError('; '.join(errors))
 
     def _extract_frames(self, video: str):
         cap = cv2.VideoCapture(video)
