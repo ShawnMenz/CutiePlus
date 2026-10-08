@@ -150,6 +150,7 @@ class InteractionManager:
                         reconstruction=result.get('reconstruction'),
                         reconstruction_seconds=result.get('reconstruction_seconds'),
                         inference_seconds=result.get('inference_seconds'),
+                        queue_seconds=result.get('queue_seconds'),
                         gpu_request_seconds=gpu_seconds,
                         commit_seconds=time.perf_counter() - commit_start)
 

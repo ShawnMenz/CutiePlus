@@ -221,7 +221,8 @@ class JobManager:
                                 replay_mismatches=job.replay_mismatches,
                                 oom_retries=job.oom_retries, worker_restarts=job.worker_restarts,
                                 run_seconds=(job.finished or self.clock()) - job.started
-                                if job.started else None),
+                                if job.started else None,
+                                elapsed_seconds=(job.finished or self.clock()) - job.created),
                 'effective': job.effective,
             }
 

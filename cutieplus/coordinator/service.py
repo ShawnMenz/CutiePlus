@@ -260,6 +260,8 @@ class Service:
             finally:
                 self.metrics.record(f'gpu.{label}', time.perf_counter() - started,
                                     started - submitted)
+            if label in ('ritm_click', 'ritm_undo') and isinstance(result, dict):
+                result['queue_seconds'] = started - submitted
             future.set_result(result)
 
         try:
@@ -565,7 +567,7 @@ class Service:
             raise ServiceError('invalid', 'test commands are disabled')
         return self.run_on_gpu(session_id, lambda: self.worker.call(command, **args), command)
 
-    def op_shutdown(self) -> dict:
+    def op_shutdown(self, session_id: Optional[str] = None) -> dict:
         threading.Thread(target=self._shutdown_soon, daemon=True).start()
         return {'stopping': True}
 

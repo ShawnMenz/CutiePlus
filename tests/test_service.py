@@ -7,6 +7,7 @@ worker, from memory errors and from a restarted coordinator.
 import json
 import multiprocessing as mp
 import os
+import threading
 import time
 from os import path
 
@@ -72,6 +73,7 @@ def test_two_windows_share_one_worker(two_tasks, env_factory):
     assert error.value.code == 'locked' and 'alice' in str(error.value)
     _, result_a = click(alice, a, '000004', 40, 40)
     _, result_b = click(bob, b, '000003', 60, 50)
+    assert 0 <= result_a['queue_seconds'] <= result_a['gpu_request_seconds']
     assert result_a['mask'][40, 40] == 1 and result_b['mask'][50, 60] == 1
     # committed by the coordinator: the legacy files show them, as anchors
     assert np.array_equal(first.mask('000004'), result_a['mask'])
@@ -84,6 +86,19 @@ def test_two_windows_share_one_worker(two_tasks, env_factory):
     assert lock_holder(first.workspace)['display'] == ':2'
 
 
+def test_shutdown_accepts_registered_client_and_sessionless_cli(two_tasks, env_factory):
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    requested = threading.Event()
+    env.service.on_shutdown = requested.set
+    client = env.client('admin', ':0')
+    assert client.call('shutdown') == {'stopping': True}
+    assert requested.wait(2)
+    requested.clear()
+    assert env.service.handle({'op': 'shutdown', 'args': {}})['ok']
+    assert requested.wait(2)
+
+
 def test_propagation_commits_frames_and_keeps_anchors(two_tasks, env_factory):
     first, _ = two_tasks
     env = env_factory(first.root)
@@ -92,6 +107,7 @@ def test_propagation_commits_frames_and_keeps_anchors(two_tasks, env_factory):
     anchor_before = first.mask('000007')
     done = run_propagation(alice, reply['task_id'], reply['lease_epoch'], '000001')
     assert done['state'] == 'finished' and done['stop_reason'] == 'empty_anchor'
+    assert done['metrics']['elapsed_seconds'] >= done['metrics']['run_seconds'] > 0
     assert done['stopped_at'] == 10
     assert done['all_frames'] == [1, 2, 3, 4, 5, 7, 8, 9]  # 6 is an anchor
     assert np.array_equal(first.mask('000007'), anchor_before)

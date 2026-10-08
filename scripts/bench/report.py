@@ -3,7 +3,7 @@ The Markdown report of a benchmark run (scripts/benchmark_service.py):
 
     python scripts/bench/report.py <results .json> <report .md>
 
-Only measured values are written; a scenario that was not run is left out.
+Measured timings and explicitly labelled resource estimates; skipped scenarios stay visible.
 """
 import json
 import sys
@@ -34,11 +34,11 @@ def stat_cells(entry) -> str:
 def job_row(name, job) -> str:
     return (f'| {name} | {job["frames"]} | {number(job["fps"])} | {ms1(job["inference_per_step"])} | '
             f'{ms1(job["commit_per_frame"])} | {number(job["queue_seconds"], 2)} | '
-            f'{job["attempts"]} | {job["state"]} ({job["stop_reason"]}) |')
+            f'{len(job["effective"])}/{job["attempts"]} | {job["state"]} ({job["stop_reason"]}) |')
 
 
 JOB_HEADER = ('| Run | Frames | Frames/s | Inference per step (ms) | Commit per frame (ms) | '
-              'Queue wait (s) | Attempts | End |\n|---|---|---|---|---|---|---|---|')
+              'Queue wait (s) | Execution/admission attempts | End |\n|---|---|---|---|---|---|---|---|')
 
 
 def main(source: str, target: str) -> None:
@@ -52,8 +52,9 @@ def main(source: str, target: str) -> None:
     model = worker.get('memory_model') or {}
     add(f'# Benchmark: shared GPU service vs. the original local mode ({r["date"][:10]})\n')
     add('Measured with `scripts/benchmark_service.py` on copies of real RGB-T tasks '
-        f'({", ".join(r["tasks"])}); frames read in place. All numbers below were measured in this '
-        'run; nothing is estimated.\n')
+        f'({", ".join(r["tasks"])}); frames read in place. Timings are measured; admission estimates '
+        'are predictions fitted from device measurements, not measured peaks. Part 1 results '
+        'are retained from the original run; subsequent runs and commands are recorded in the JSON.\n')
     add('## Hardware and service\n')
     add('| | |\n|---|---|')
     add(f'| GPU | {hardware.get("name", device["name"])} |')
@@ -75,6 +76,22 @@ def main(source: str, target: str) -> None:
             f'{model["step_per_query"] / 1024:.1f} KiB/query token + '
             f'{model["step_per_product"]:.1f} B per memory x query token |')
     add('')
+    if r.get('runs'):
+        add('### Subsequent benchmark runs\n')
+        for run in r['runs']:
+            add(f'- {run["date"]}: parts {run["parts"]}; free GPU memory '
+                f'{run["device"]["free_mib"] / 1024:.2f} GiB; worker admission cap '
+                f'{run.get("worker_cap_gib") or "none"}; external pressure '
+                f'{run.get("external_pressure", False)}; status {run.get("status", "recorded")}; '
+                f'base commit `{run["commit"]}`.')
+            if run.get('note'):
+                add('  ' + run['note'])
+        add('')
+        if r.get('annotator_maintenance'):
+            add('The three existing annotator GUI processes were suspended during the recorded '
+                'Part 2/3 maintenance runs with the owner\'s permission; their existing CUDA '
+                'allocations remained resident. They were resumed afterwards. No active task '
+                'data was modified.\n')
 
     comparison = r.get('gui_comparison')
     if comparison:
@@ -121,12 +138,18 @@ def main(source: str, target: str) -> None:
     if scenarios:
         add('## Scenarios against the service\n')
         add('Client sessions (no window) talk to one coordinator process; latencies are measured '
-            'at the client, from request to answer.\n')
+            'at the client, from request to answer. Propagation frames/s uses coordinator time '
+            'from job creation to completion, including queueing, initialization, commits and '
+            'recovery; it does not depend on when the client starts polling. Inference per step '
+            'includes permanent-anchor and seed steps. Click queue time is measured by the '
+            'dispatcher, separately from GPU execution and durable commits.\n')
     if 'A_one_annotator_clicks' in scenarios:
         a = scenarios['A_one_annotator_clicks']
         add('### A. One annotator clicks\n')
         add('| | p50 (ms) | p95 (ms) |\n|---|---|---|')
         add(f'| Click, request to answer | {stat_cells(a["latency"])} |')
+        if 'queue' in a:
+            add(f'| of which scheduler queue | {ms1(a["queue"]["p50"])} | {ms1(a["queue"]["p95"])} |')
         add(f'| of which inference in the worker | {stat_cells(a["inference"])} |')
         add(f'| of which commit (object, transaction, files) | {stat_cells(a["commit"])} |\n')
     if 'B_two_annotators_alternate' in scenarios:
@@ -163,7 +186,7 @@ def main(source: str, target: str) -> None:
                 f'{plan.get("query_tokens")} query tokens, estimate {gib(plan.get("estimate_bytes"))} GiB.')
         if 'C_one_propagation' in scenarios and scenarios['C_one_propagation'].get('worker'):
             w = scenarios['C_one_propagation']['worker']
-            add(f'- Worker peak during C: allocated {gib(w["peak_allocated"])} GiB, reserved '
+            add(f'- Cumulative worker peak through C (including warm-up and earlier clicks): allocated {gib(w["peak_allocated"])} GiB, reserved '
                 f'{gib(w["peak_reserved"])} GiB.')
         add('')
     if 'D_propagation_and_clicks' in scenarios:
@@ -177,23 +200,33 @@ def main(source: str, target: str) -> None:
             f'p50 {ms(d["click_inference"]["p50"])} ms. Masks compared with run C: '
             f'{d["masks_equal_to_C"]["differing_files"]} files differ '
             f'({d["masks_equal_to_C"]["differing_pixels"]} pixels).\n')
+        if 'click_queue' in d:
+            add(f'Click scheduler wait p50/p95: {stat_cells(d["click_queue"]).replace(" | ", "/")} ms; '
+                f'durable commit p50/p95: {stat_cells(d["click_commit"]).replace(" | ", "/")} ms.\n')
     if 'E_propagation_and_three_annotators' in scenarios:
         e = scenarios['E_propagation_and_three_annotators']
         add('### E. One propagation while three annotators click\n')
         add(JOB_HEADER)
         add(job_row('propagation (0468, 960 px)', e['propagation']))
         add('')
-        add('| Annotator | Clicks | p50 (ms) | p95 (ms) |\n|---|---|---|---|')
+        add('| Annotator | Clicks | p50 (ms) | p95 (ms) | Queue p50/p95 (ms) | Inference p50/p95 (ms) | Commit p50/p95 (ms) |\n|---|---|---|---|---|---|---|')
         for name, entry in e['click_latency'].items():
-            add(f'| {name} | {entry["count"]} | {stat_cells(entry)} |')
+            detail = [stat_cells(e.get(key, {}).get(name)).replace(' | ', '/')
+                      for key in ('click_queue', 'click_inference', 'click_commit')]
+            add(f'| {name} | {entry["count"]} | {stat_cells(entry)} | {" | ".join(detail)} |')
         add('')
+        if 'masks_equal_to_uninterrupted' in e:
+            diff = e['masks_equal_to_uninterrupted']
+            add(f'Compared with a separate uninterrupted 0468 run: {diff["differing_files"]} '
+                f'files differ ({diff["differing_pixels"]} pixels).\n')
     if 'F_queued_propagations' in scenarios:
         f = scenarios['F_queued_propagations']
         add('### F. Three propagations submitted together\n')
         add(JOB_HEADER)
         for name in ('alice', 'carol', 'dave'):
             add(job_row(name, f[name]))
-        add(f'\nAt most {f["max_running_contexts"]} propagation context ran at a time.\n')
+        add(f'\nThe 100 ms sampler saw at most {f["max_running_contexts"]} running/committing '
+            'propagation context at a time.\n')
     if 'G_open_close' in scenarios:
         g = scenarios['G_open_close']
         add('### G. Opening and closing tasks\n')
@@ -211,18 +244,35 @@ def main(source: str, target: str) -> None:
                 f'{plan.get("quality_anchor_limit")}, limited by {plan.get("limited_by")}), '
                 f'{i1["frames"]} frames at {number(i1["fps"])} frames/s, state {i1["state"]}. '
                 f'Messages: {"; ".join(i1["messages"][:2])}')
-        if 'I2_memory_held_by_another_process' in scenarios:
+            if 'masks_vs_full_anchor_run' in i1:
+                diff = i1['masks_vs_full_anchor_run']
+                add(f'  Compared with C using all 27 anchors: {diff["differing_files"]} '
+                    f'propagated masks differ ({diff["differing_pixels"]} pixels). This is a '
+                    'recorded quality-sensitive memory adaptation; human anchors remain intact.')
+        if scenarios.get('I2_memory_held_by_another_process', {}).get('state') == 'not_run':
+            add('- I2 was not run: ' + scenarios['I2_memory_held_by_another_process']['reason'])
+        elif 'I2_memory_held_by_another_process' in scenarios:
             i2 = scenarios['I2_memory_held_by_another_process']
-            add(f'- I2, another process holds {i2["ballast_gib"]:.1f} GiB of the GPU, released after '
-                f'{i2["released_after"]:.0f} s; task 1530 at 960 px: states seen '
+            add(f'- I2, another process holds {i2["ballast_gib"]:.1f} GiB of the GPU, with release '
+                f'requested on the first poll after {i2["released_after"]:.0f} s; task 1530 at 960 px: states seen '
                 f'{", ".join(i2["waited_states"])}, running after {number(i2["first_running_seconds"])} s, '
                 f'queue wait {number(i2["queue_seconds"], 1)} s, then {i2["frames"]} frames at '
                 f'{number(i2["fps"])} frames/s, state {i2["state"]}.')
+            if 'masks_equal_to_H' in i2:
+                diff = i2['masks_equal_to_H']
+                add(f'  Immutable propagated outputs vs. H: {diff["differing_files"]} files '
+                    f'differ ({diff["differing_pixels"]} pixels). The {i2["attempts"]} admission '
+                    f'checks created {len(i2["effective"])} execution context(s); no OOM retry occurred.')
         add('')
     if 'J_worker_failure' in scenarios:
         j = scenarios['J_worker_failure']
         recovery = j.get('worker_recovery_seconds') or {}
         add('### J. The GPU worker is killed during a propagation\n')
+        if r.get('scenario_j_recheck'):
+            add('This scenario was repeated alone after fixing the timer: an in-flight commit '
+                'from before the crash must not count as recovery. The timer now waits for a '
+                'new execution attempt and then an increase in its committed-frame count. '
+                'The same immutable anchor inputs and uninterrupted C baseline were used.\n')
         add(f'Killed (SIGKILL) after {j["killed_after_frames"]} committed frames of 0240. Worker '
             f'replaced in {number(recovery.get("p50"))} s (new generation {j["worker_generation"]}, '
             f'including model load and memory profile); new frames committed again after '
@@ -241,6 +291,30 @@ def main(source: str, target: str) -> None:
             f'{k["propagation"]["frames"]} frames ({k["propagation"]["error"] or k["propagation"]["stop_reason"]}). '
             f'After the store was writable again, the same click request was applied once '
             f'({k["retry_after_repair"]["clicks"]} accepted click).\n')
+    if r.get('part2_worker_status'):
+        add('## Worker memory and effective configuration\n')
+        add('| Worker lifetime | Peak allocated (GiB) | Peak reserved (GiB) | Final allocated (GiB) | Final reserved (GiB) |\n|---|---|---|---|---|')
+        for label, status in (('Part 2 final worker generation', r.get('part2_worker_status')),
+                              ('Part 3 2.2 GiB admission cap', scenarios.get('I1_memory_cap', {}).get('worker')),
+                              ('Part 3 external pressure', r.get('part3_pressure_status'))):
+            if status:
+                add(f'| {label} | {gib(status["peak_allocated"])} | {gib(status["peak_reserved"])} | '
+                    f'{gib(status["memory"]["allocated"])} | {gib(status["memory"]["reserved"])} |')
+        add('\nPeaks reset when the worker restarts; these are cumulative allocator peaks within '
+            'each worker lifetime, not per-scenario peaks. Initial and restarted worker hardware '
+            'and profiling samples, every job\'s precision/model configuration, resolution, '
+            'temporal-memory settings and effective admission plans are retained in the JSON. '
+            'The I1 admission cap applies after profiling and is not a hard allocator limit.\n')
+    if r.get('verification'):
+        add('## Verification and limits\n')
+        for item in r['verification']:
+            add(f'- {item}')
+        add('')
+    add('These are single runs on one physical GPU, with finite scripted click samples. They '
+        'do not establish a universal worst-case latency or performance improvement. Propagation '
+        'jobs run FIFO with one active context; propagation-job time slicing is not implemented. '
+        'Export compatibility is covered by automated tests; these benchmark tasks use an '
+        'isolated stub export command, not the live external export pipeline.\n')
     with open(target, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
