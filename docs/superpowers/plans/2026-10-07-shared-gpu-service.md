@@ -168,23 +168,11 @@ tests `tests/test_storage.py`, `tests/test_commits.py`.
 
 - [x] Baseline numbers of the original local mode (offscreen Qt, real controller), then scenarios
   A-K on the shared service, on copies of real RGB-T tasks.
-
-### Parts 2/3 continuation (October 7, 2026)
-
-- [x] Review `scripts/benchmark_service.py`, service scheduling/commit/recovery and Part 1 artifacts.
-- [x] Correct queued-job timing, expose measured click queue time, validate thread results and
-  immutable-mask equivalence, and require a fresh scratch root separate from active data.
-- [x] Run multi-session clicks, simultaneous propagation, FIFO queues, task switching, small-target
-  inference, worker death and failed saves on copied real tasks with one coordinator/worker.
-- [x] Run capped admission, click replay without CPU snapshots, and external memory pressure.
-  The owner authorized stopping the live GUIs; SIGSTOP/SIGCONT preserved and restored all three.
-- [x] Check default-quality equivalence, original human anchors, duplicate request handling and
-  the quality-sensitive differences caused by selecting fewer permanent anchors.
-- [x] Fix registered-client shutdown (`session_id` was rejected), add regression tests, and retain
-  measured JSON/profiling/configuration evidence and the generated report in `docs/benchmarks/`.
-
-These benchmark parts are complete; earlier unchecked phase items were not retrospectively
-audited. Propagation jobs still run FIFO, with no time slicing between propagation contexts.
+- [x] Review of the whole branch: stale legacy files after a failed write, a job stuck after an
+  unexpected step error, clicks the worker applied but the coordinator never accepted, and a
+  synced database write per request fixed, with regression tests.
+- [ ] Not done by design: time slicing between propagation jobs (FIFO, one context), pruning of
+  the mask history.
 
 ## Highest-risk changes
 

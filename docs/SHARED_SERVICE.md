@@ -337,62 +337,22 @@ worker with the original code on the GPU and runs a whole labeling session in sh
 the local mode. `tests/data/baseline_local_session.*` is the recording of the original window
 (`tests/make_baseline.py`).
 
-Benchmarks: [benchmarks/](benchmarks/) (`scripts/benchmark_service.py`).
+## Measurements
 
-### October 2026 benchmark completion
+[benchmarks/2026-10-07-NVIDIA-GeForce-RTX-4090.md](benchmarks/2026-10-07-NVIDIA-GeForce-RTX-4090.md)
+(`scripts/benchmark_service.py`, `scripts/bench/report.py`) has the full numbers of one run on an
+RTX 4090 with six real tasks. In short:
 
-The [measured report](benchmarks/2026-10-07-NVIDIA-GeForce-RTX-4090.md) and its
-[raw JSON](benchmarks/2026-10-07-NVIDIA-GeForce-RTX-4090.json) include the original Part 1
-comparison and completed Parts 2/3: scenarios A-K, CPU-snapshot and click-replay reconstruction,
-worker death, storage failure, a worker admission cap, and real memory held by another process.
-Part 2 uses socket clients rather than additional visible Qt windows; Part 1 and the separate
-GPU integration tests exercise the Qt path.
-
-The default, unchanged-quality propagation runs with one and three concurrent clickers match
-their uninterrupted baselines pixel for pixel. Recovered propagation after worker death and
-after waiting for external GPU memory also matches. Under the explicit 2.2 GiB admission cap,
-0240 uses 17 of its 27 permanent anchors: 292 propagated masks differ from the full-anchor run
-(22,618 pixels total). All original human anchors remain intact. This is a measured consequence
-of the documented anchor-selection policy, not a claim of unchanged quality under memory limits.
-
-`gpu.max_worker_gib` limits estimated allocations used for admission. It is not a hard limit on
-PyTorch's reserved memory, and startup profiling runs before this policy is applied. The report
-distinguishes admission estimates, allocated memory, reserved memory and cumulative worker peaks.
-
-Reproduce Parts 2/3 from this worktree using the existing environment and a **fresh** scratch
-directory separate from the source tasks:
-
-```bash
-uv run --no-sync python scripts/benchmark_service.py \
-  --source /path/to/cutie_tasks --scratch /tmp/cutieplus-benchmark-new \
-  --original-repo /path/to/original/checkout --parts 2,3 --output docs/benchmarks
-uv run --no-sync python scripts/bench/report.py \
-  docs/benchmarks/<date>-<gpu>.json docs/benchmarks/<date>-<gpu>.md
-```
-
-The original checkout is used only by Part 1. Parts 2/3 copy annotation inputs into scratch;
-original images are read in place. Existing Part 1 results are preserved when the JSON is updated.
-Full worker profiles (including every calibration sample), job configurations and admission plans
-are retained in the JSON; timings include scheduler queueing separately from inference and commits.
-Queued-job throughput uses coordinator creation/completion times, even if the client polls late.
-Recovery latency waits for commits from the reconstructed execution attempt; an already-computed
-frame that finishes saving just after the worker dies does not count as recovered inference.
-
-The command above records I2 as **not run**. Add `--external-pressure` only during an explicitly
-approved maintenance window: it temporarily allocates most free device memory, which can make
-other GPU applications fail. It does not stop or restart annotator windows itself. In the recorded
-run the owner authorized suspending the three original GUI processes; they were resumed with
-their existing windows afterwards. Use `--worker-cap-gib <GiB>` to record a different Part 2
-admission limit. Every changed resource configuration must be considered when comparing results.
-
-On hosts whose shell exports unrelated ROS Python packages, isolate pytest from those plugins:
-
-```bash
-env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run --no-sync pytest
-env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUTIEPLUS_TEST_GPU=1 \
-  uv run --no-sync pytest -m gpu
-```
-
-Physical memory-pressure benchmarking tests admission and resume after release; deterministic
-tests separately cover OOM errors and a lost context. The benchmark does not establish a
-worst-case latency bound, physical mid-step OOM recovery, or throughput on other GPU models.
+- The masks of the original window, the local mode and the shared mode are identical on all six
+  tasks (clicks and a forward propagation, compared pixel by pixel).
+- Shared propagation runs at 84-110 % of the original's frames per second; a click costs 3-12 ms
+  more (p50) for the requests and the durable commit. A shared window holds no GPU memory; an
+  original window holds 2.3-19.3 GiB.
+- With a propagation running, another annotator's clicks take 62 ms p50 (one clicker) and 67-85 ms
+  p50 (three clickers), against 29 ms alone; the propagated masks are the same as
+  without the clicks (compared with one clicker).
+- Propagations queue (one GPU context at a time); a worker killed mid-run is replaced in about 5 s
+  and the job resumes, replaying its confirmed frames with no difference; a failing write stops a
+  click and a propagation with an error and nothing half-written; a retried click is applied once.
+- A memory cap or another process holding the GPU reduces the permanent anchors (and says so) or
+  makes the job wait for memory, never the inference precision or resolution.
