@@ -115,7 +115,7 @@ def test_propagation_never_overwrites_anchors_and_stale_results_are_rejected(set
         return setup.tasks.commit_propagated('main/0001', setup.alice, epoch, revision, frame,
                                              mask, 'job', 'job.1', lambda: current)
 
-    reply = commit('000005')
+    commit('000005')
     assert setup.revisions() == (input_revision, content_revision + 1)  # inputs unchanged
     assert np.array_equal(setup.task.mask('000005'), mask)
     assert setup.tasks.frames('main/0001')['000005']['anchor'] is None
@@ -250,3 +250,31 @@ def test_the_database_must_be_local(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, 'filesystem_type', lambda directory: 'nfs4')
     with pytest.raises(StorageError, match='network filesystem'):
         Database(str(tmp_path / 'x.db'))
+
+
+def test_a_failed_file_update_is_not_hidden_by_later_commits(setup, monkeypatch):
+    """A frame whose legacy file could not be written stays pending until it is: later commits
+    must not mark the files current, and an export first rewrites it."""
+    setup.open()
+    stale = ellipse_mask(6, 10)
+    original_write = TaskViews.write_mask
+
+    def broken(self, frame, data):
+        if frame == '000007':
+            raise OSError('disk full')
+        return original_write(self, frame, data)
+
+    monkeypatch.setattr(TaskViews, 'write_mask', broken)
+    reply = setup.tasks.commit_frame('main/0001', setup.alice, 1, '000007', mask=stale,
+                                     anchor='edit')
+    assert reply['views_written'] is False
+    monkeypatch.undo()
+    setup.tasks.commit_frame('main/0001', setup.alice, 1, '000004', mask=ellipse_mask(3, 10),
+                             anchor='edit')
+    row = setup.tasks.task_row('main/0001')
+    assert row['view_revision'] < row['content_revision']  # 000007 is still behind
+    assert setup.task.mask('000007') is None
+    setup.tasks.begin_export('main/0001', setup.alice, 1)
+    assert np.array_equal(setup.task.mask('000007'), stale)
+    row = setup.tasks.task_row('main/0001')
+    assert row['view_revision'] == row['content_revision']

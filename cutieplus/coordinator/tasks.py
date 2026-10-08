@@ -122,6 +122,9 @@ class TaskService:
         self.default_internal_size = default_internal_size
         self.clock = clock
         self.infos: Dict[str, TaskInfo] = {}
+        # tasks with a legacy file that could not be written after its commit: their files are
+        # not current until sync_views has rewritten them
+        self.stale_views: set = set()
         self.locks: Dict[str, threading.RLock] = {}
         self.locks_guard = threading.Lock()
         self.leases: Dict[str, LeaseContext] = {}
@@ -295,6 +298,7 @@ class TaskService:
                 written += 1
         json_stats = self._write_json_views(info, row['state'], frames, JSON_FILES)
         written += len(json_stats)
+        self.stale_views.discard(info.task_id)
         self._record_views(info.task_id, stats, json_stats, row['content_revision'])
         return written
 
@@ -319,7 +323,10 @@ class TaskService:
                       json_stats: Dict[str, Optional[list]], revision: int) -> None:
         # not waiting for the disk: if this record is lost, the files (written durably, and
         # identical to the committed state) are taken for a change and imported again, which is
-        # harmless
+        # harmless. While an earlier write failed, the files are not current: view_revision stays
+        # where it was, so exports and the next open rewrite them first.
+        if task_id in self.stale_views:
+            revision = 0
         with self.db.transaction(durable=False) as conn:
             for frame, stat in mask_stats.items():
                 conn.execute('UPDATE frames SET view_stat = ? WHERE task_id = ? AND frame = ?',
@@ -549,7 +556,23 @@ class TaskService:
             return True
         except OSError:
             log.exception('%s: committed, but its legacy files were not updated', info.task_id)
+            self.stale_views.add(info.task_id)
             return False
+
+    def retry_stale_views(self) -> List[str]:
+        """Rewrites the files of held tasks whose last update failed (the maintenance loop calls
+        it); a task no longer held waits for its next open, as another program may have it."""
+        repaired = []
+        for task_id in list(self.stale_views):
+            if task_id not in self.leases:
+                continue
+            with self.lock(task_id):
+                try:
+                    self.sync_views(self.info_by_id(task_id))
+                    repaired.append(task_id)
+                except OSError as exc:
+                    log.warning('%s: its files still cannot be written: %s', task_id, exc)
+        return repaired
 
     def commit_frame(self, task_id: str, session_id: str, epoch: int, frame: str, *,
                      mask: Optional[np.ndarray] = None, mask_bytes: Optional[bytes] = None,

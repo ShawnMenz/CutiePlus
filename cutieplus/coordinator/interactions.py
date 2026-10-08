@@ -130,7 +130,13 @@ class InteractionManager:
                 return self.worker.call(op, interaction_id=record.interaction_id, **worker_args)
 
             submitted = time.perf_counter()
-            result = self.run_on_gpu(record.session_id, work, op)
+            try:
+                result = self.run_on_gpu(record.session_id, work, op)
+            except BaseException:
+                # the worker may have applied it anyway (a time-out while it ran): rebuild the
+                # interaction from the accepted clicks next time
+                record.dirty = True
+                raise
             gpu_seconds = time.perf_counter() - submitted
             if result.get('mask') is None:
                 return {'mask': None, 'clicks': len(record.clicks)}

@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from cutieplus.storage.db import Database
 
@@ -32,6 +32,9 @@ def iso_timestamp(text: str) -> float:
 
 class SessionManager:
 
+    # every request of a window counts as a heartbeat; last_seen is written at most this often
+    WRITE_INTERVAL = 1.0
+
     def __init__(self, db: Database, timeout: float = 30.0,
                  on_expire: Optional[Callable[[str], None]] = None,
                  clock: Callable[[], float] = time.time):
@@ -40,6 +43,7 @@ class SessionManager:
         self.on_expire = on_expire
         self.clock = clock
         self.lock = threading.Lock()
+        self.written: Dict[str, float] = {}  # active session -> when last_seen was last written
 
     def register(self, annotator_name: str, vnc_display: Optional[str], process_id: Optional[int],
                  host: Optional[str], session_id: Optional[str] = None) -> dict:
@@ -63,14 +67,24 @@ class SessionManager:
         return {'session_id': session_id, 'resumed': False}
 
     def heartbeat(self, session_id: str) -> bool:
-        """False when the session is not active (expired or closed)."""
-        with self.lock, self.db.transaction() as conn:
-            row = conn.execute('SELECT status FROM sessions WHERE session_id = ?',
-                               (session_id, )).fetchone()
-            if row is None or row['status'] != 'active':
-                return False
-            conn.execute('UPDATE sessions SET last_seen = ? WHERE session_id = ?',
-                         (now_iso(self.clock()), session_id))
+        """False when the session is not active (expired or closed). last_seen is written at most
+        once per WRITE_INTERVAL, without waiting for the disk: a window polls a running
+        propagation many times a second, and losing last_seen in a crash is harmless (a restarted
+        service gives every session a full timeout)."""
+        now = self.clock()
+        with self.lock:
+            last = self.written.get(session_id)
+            if last is not None and now - last < self.WRITE_INTERVAL:
+                return True
+            with self.db.transaction(durable=False) as conn:
+                row = conn.execute('SELECT status FROM sessions WHERE session_id = ?',
+                                   (session_id, )).fetchone()
+                if row is None or row['status'] != 'active':
+                    self.written.pop(session_id, None)
+                    return False
+                conn.execute('UPDATE sessions SET last_seen = ? WHERE session_id = ?',
+                             (now_iso(now), session_id))
+            self.written[session_id] = now
             return True
 
     def get(self, session_id: str) -> Optional[dict]:
@@ -86,6 +100,7 @@ class SessionManager:
 
     def _end(self, session_id: str, status: str) -> bool:
         with self.lock, self.db.transaction() as conn:
+            self.written.pop(session_id, None)
             changed = conn.execute("UPDATE sessions SET status = ? WHERE session_id = ? AND status = "
                                    "'active'", (status, session_id)).rowcount
         if changed and self.on_expire is not None:

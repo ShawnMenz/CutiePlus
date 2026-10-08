@@ -386,10 +386,11 @@ class JobManager:
         except TaskError as exc:
             if job.attempt_id != attempt_id:
                 return  # an older attempt's result; the current attempt recomputes the frame
-            job.message(f'Propagation stopped at {name}: {exc}')
-            with job.lock:
-                job.stop_reason = f'{exc.code}: {exc}'
-                job.cancel_requested = True
+            if not job.cancel_requested:  # a cancellation keeps its own reason
+                job.message(f'Propagation stopped at {name}: {exc}')
+                with job.lock:
+                    job.stop_reason = f'{exc.code}: {exc}'
+                    job.cancel_requested = True
             if job.release_needed:
                 self.scheduler.job_ready(job.job_id)  # the dispatcher frees the context
             else:
@@ -417,6 +418,16 @@ class JobManager:
         else:
             job.state = 'running'
             self.scheduler.job_ready(job.job_id)
+
+    def abort(self, job_id: str, error: str) -> None:
+        """A step went wrong in an unexpected way (dispatcher thread): the job's context is freed
+        and the job fails, rather than staying scheduled forever."""
+        job = self.jobs.get(job_id)
+        if job is None or job.done:
+            self.scheduler.remove_job(job_id)
+            return
+        self._release(job)
+        self._fail(job, error)
 
     def _fail_after_release(self, job: Job, error: str) -> None:
         job.error = error

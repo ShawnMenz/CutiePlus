@@ -3,12 +3,10 @@ Export and review through the shared service: every export is tied to the conten
 exports and verified when the command ends; Mark done needs a review and an export of the current
 content; any change reopens the task. The task browser runs the same flow in shared mode.
 """
-import json
 import subprocess
 import time
 from os import path
 
-import numpy as np
 import pytest
 
 from cutieplus.client import ClientError

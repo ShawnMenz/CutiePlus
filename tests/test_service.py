@@ -4,7 +4,6 @@ so no GPU is needed): sessions and leases, clicks and propagation through one wo
 between annotators, cancellation, stale results, idempotent retries, and recovery from a crashed
 worker, from memory errors and from a restarted coordinator.
 """
-import json
 import multiprocessing as mp
 import os
 import threading
@@ -16,8 +15,8 @@ import pytest
 
 from cutieplus.client import ClientError
 from cutieplus.coordinator.service import AlreadyRunning, Service
-from gui.task_state import TaskLock, TaskLocked, lock_holder
-from tests.helpers import ellipse_mask, make_task, read_mask
+from gui.task_state import lock_holder
+from tests.helpers import ellipse_mask, make_task
 from tests.service_env import ServiceEnv, fake_overrides, run_propagation, wait_for
 
 pytestmark = pytest.mark.slow
@@ -160,7 +159,7 @@ def test_cancel_stops_writing(two_tasks, env_factory):
     alice.call('cancel_propagation', job_id=job)
     stopped = wait_for(lambda: (lambda r: r if r['state'] in ('cancelled', 'finished') else None)(
         alice.call('poll_propagation', job_id=job)))
-    assert stopped['state'] == 'cancelled'
+    assert stopped['state'] == 'cancelled' and stopped['stop_reason'] == 'cancelled'
     committed = stopped['next']
     time.sleep(0.5)
     assert alice.call('poll_propagation', job_id=job)['next'] == committed
@@ -374,3 +373,91 @@ def test_a_worker_that_dies_while_idle_is_replaced(two_tasks, env_factory):
     reply = open_task(alice, first)
     _, result = click(alice, reply, '000004', 40, 40)
     assert result['clicks'] == 1
+
+
+def test_an_unexpected_error_in_a_step_fails_the_job_instead_of_hanging(two_tasks, env_factory,
+                                                                         monkeypatch):
+    first, second = two_tasks
+    env = env_factory(first.root, step_seconds=0.01)
+    alice = env.client('alice', ':2')
+    a = open_task(alice, first)
+    original = env.service.jobs._step
+    calls = {'count': 0}
+
+    def flaky(job):
+        calls['count'] += 1
+        if calls['count'] == 3:
+            raise RuntimeError('unexpected')
+        return original(job)
+
+    monkeypatch.setattr(env.service.jobs, '_step', flaky)
+    done = run_propagation(alice, a['task_id'], a['lease_epoch'], '000001', timeout=20)
+    assert done['state'] == 'failed' and 'unexpected' in done['error']
+    assert env.service.scheduler.snapshot()['active_job'] is None
+    assert env.service.worker.call('status')['job'] is None  # its context was freed
+    # the next propagation runs normally
+    monkeypatch.setattr(env.service.jobs, '_step', original)
+    b = open_task(alice, second)
+    assert run_propagation(alice, b['task_id'], b['lease_epoch'], '000001')['state'] == 'finished'
+
+
+def test_an_interaction_is_rebuilt_after_a_failed_gpu_request(two_tasks, env_factory,
+                                                              monkeypatch):
+    from cutieplus.coordinator.service import ServiceError
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2')
+    a = open_task(alice, first)
+    interaction, _ = click(alice, a, '000004', 40, 40)
+    record = env.service.interactions.interactions[interaction]
+    original = env.service.interactions.run_on_gpu
+
+    def ran_but_timed_out(session_id, fn, label=''):
+        original(session_id, fn, label)  # the worker applies the click ...
+        raise ServiceError('timeout', 'the GPU did not answer in time')  # ... the caller gives up
+
+    monkeypatch.setattr(env.service.interactions, 'run_on_gpu', ran_but_timed_out)
+    with pytest.raises(ClientError):
+        alice.call('click', task_id=a['task_id'], lease_epoch=a['lease_epoch'],
+                   interaction_id=interaction, x=60, y=40, is_negative=False, request_id='t1')
+    assert record.dirty and record.clicks == [(40, 40, False)]
+    monkeypatch.setattr(env.service.interactions, 'run_on_gpu', original)
+    reply = alice.call('click', task_id=a['task_id'], lease_epoch=a['lease_epoch'],
+                       interaction_id=interaction, x=60, y=40, is_negative=False, request_id='t1')
+    assert reply['clicks'] == 2 and reply['reconstruction'] == 'replay'
+
+
+def test_requests_refresh_the_session_without_a_write_each(two_tasks, env_factory, monkeypatch):
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2', heartbeat=False)
+    writes = []
+    original = env.service.db.transaction
+
+    def counting(durable=True):
+        writes.append(durable)
+        return original(durable)
+
+    monkeypatch.setattr(env.service.db, 'transaction', counting)
+    for _ in range(50):
+        alice.call('heartbeat')
+    assert len(writes) <= 2 and not any(writes)  # at most one a second, none waits for the disk
+    monkeypatch.undo()
+    env.service.sessions.close(alice.session_id)
+    assert not env.service.sessions.heartbeat(alice.session_id)  # an ended session is not cached
+
+
+def test_bad_arguments_and_internal_errors_are_told_apart(two_tasks, env_factory, monkeypatch):
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2')
+    reply = env.service.handle({'op': 'heartbeat', 'args': {'session_id': alice.session_id,
+                                                            'unknown': 1}})
+    assert reply['error']['code'] == 'invalid'
+
+    def broken(session_id):
+        raise TypeError('a bug')
+
+    monkeypatch.setattr(env.service, 'op_heartbeat', broken)
+    reply = env.service.handle({'op': 'heartbeat', 'args': {'session_id': alice.session_id}})
+    assert reply['error']['code'] == 'internal'

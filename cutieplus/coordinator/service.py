@@ -4,6 +4,7 @@ the sessions, the task leases and every write of official annotation data; it sc
 work and drives the one GPU worker, restarting it when it fails.
 """
 import fcntl
+import inspect
 import logging
 import os
 import socket
@@ -290,8 +291,13 @@ class Service:
                                         decision.waited)
             except WorkerDied as exc:
                 self._worker_failed(str(exc))
-            except Exception:
+            except Exception as exc:
                 log.exception('dispatcher')
+                if decision.kind == 'job':
+                    try:
+                        self.jobs.abort(decision.job_id, f'{type(exc).__name__}: {exc}')
+                    except WorkerDied as died:
+                        self._worker_failed(str(died))
 
     def _worker_failed(self, reason: str) -> None:
         log.error('GPU worker failed: %s', reason)
@@ -323,6 +329,10 @@ class Service:
             if now - last_health >= 5.0:
                 last_health = now
                 self._check_worker()
+                try:
+                    self.tasks.retry_stale_views()
+                except Exception:
+                    log.exception('rewriting task files')
             if now - last_prune >= 600.0:
                 last_prune = now
                 self.jobs.prune()
@@ -358,6 +368,10 @@ class Service:
         try:
             if handler is None:
                 raise ServiceError('invalid', f'unknown operation {op!r}')
+            try:
+                inspect.signature(handler).bind(**args)
+            except TypeError as exc:
+                raise ServiceError('invalid', f'{op}: {exc}') from None
             if op not in ('hello', 'status', 'register_session', 'shutdown'):
                 session_id = args.get('session_id')
                 if not session_id or not self.sessions.heartbeat(session_id):
@@ -376,8 +390,6 @@ class Service:
             response = {'ok': False, 'error': {'code': exc.kind, 'message': str(exc)}}
         except WorkerDied as exc:
             response = {'ok': False, 'error': {'code': 'worker_restarted', 'message': str(exc)}}
-        except TypeError as exc:
-            response = {'ok': False, 'error': {'code': 'invalid', 'message': str(exc)}}
         except Exception as exc:
             log.exception('request %s failed', op)
             response = {'ok': False, 'error': {'code': 'internal',

@@ -230,6 +230,9 @@ written (the service stopped in between) is completed at the next start or open.
 | GPU worker crashes or hangs (no answer within `request_timeout_seconds`) | The coordinator kills it if needed, starts a new one (new generation; results of the old one are never used), and every job that had a context starts a new attempt from its input snapshot, with the same permanent anchors, replaying its confirmed frames without writing them (and comparing them with what was committed), then continues. Jobs whose task changed in the meantime stop. A click in flight fails once and is retried by the window. |
 | Out of GPU memory | See *When memory runs short*. |
 | A commit fails (disk full, permissions) | Nothing is half written (the transaction rolls back; files follow the database). The click or edit reports the error; a propagation stops. The worker's interaction state is rebuilt from the record. |
+| A legacy file cannot be written after its commit | The commit stands and the answer says so. The task's files are marked behind (later commits do not mark them current); the coordinator retries every 5 s while it holds the task, and an export, a submission for review or the next open rewrites them first. |
+| A click request times out while the worker runs it | The interaction is rebuilt from its accepted clicks at the next click, so a click the coordinator never accepted cannot linger in the worker. |
+| An unexpected error during a propagation step | The job's context is freed and the job fails with the error (it does not stay scheduled). |
 | The coordinator stops or crashes | At start: a second coordinator for the same root is refused (lock in the state directory); a worker left behind is stopped; temporary files and unreferenced objects are removed; interrupted jobs are marked; leases are marked interrupted; sessions get a full timeout to reconnect; interrupted file updates are completed. Windows reconnect and take their task again when it has not changed. |
 | A window crashes or loses its connection | Its session expires; its lease, file lock, jobs and interaction end. Everything it committed stays. Reopening the task reads the committed state. |
 
@@ -299,7 +302,13 @@ e.g. `--set gpu.max_worker_gib=10` to cap the worker's memory.
   prevent accidental conflicts; they are not authentication. Anyone with the account can connect
   to the socket, act as any annotator, or edit the files directly.
 - One GPU. Propagation jobs run one at a time in order of submission; a long job delays the
-  next one (they are not time-sliced).
+  next one (they are not time-sliced). The `long` split has sequences of thousands of frames
+  (up to 26,490): at 15-25 frames/s such a run holds the GPU context for minutes, while the
+  others wait. Clicks are not affected (they run between its steps).
+- Nothing is pruned: every committed mask version stays as an object and in the edit history
+  (about 5 KB per mask and 1 KB of database per edit in the benchmarks).
+- After three failed restarts of the GPU worker the coordinator stops trying; windows get errors
+  until the coordinator is restarted (`status` shows the problem).
 - In shared mode a propagation starts from the committed mask of the start frame, while the
   original window used the soft probabilities of its last click on that frame. On the test
   scenario this changes 1 pixel in 2 of 8 propagated frames; everything else matches the original
