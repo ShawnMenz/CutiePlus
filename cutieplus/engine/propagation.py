@@ -17,6 +17,7 @@ import torch
 from omegaconf import DictConfig, open_dict
 
 from cutie.inference.inference_core import InferenceCore
+from cutieplus.engine import policies
 from cutieplus.engine.device import autocast
 from gui.interactive_utils import index_numpy_to_one_hot_torch, torch_prob_to_numpy_mask
 
@@ -34,6 +35,8 @@ class PropagationPlan:
     rebuild_permanent_memory: bool = True  # task mode; a plain workspace keeps its memory
     mask_anchor_count: int = 0  # mask anchors of the task, for the message
     num_objects: int = 1
+    # the frames the run may reach (0-indexed, inclusive): the interval of the start frame
+    bounds: Optional[Tuple[int, int]] = None
 
     @property
     def length(self) -> int:
@@ -45,11 +48,22 @@ class PropagationPlan:
 
     def frames_after_start(self) -> List[int]:
         """The frames the run may reach, in order (the reader of the original loop)."""
-        if self.direction == 'forward':
-            return list(range(self.start_ti + 1, self.length))
-        if self.direction == 'backward':
-            return list(range(self.start_ti - 1, -1, -1))
-        raise ValueError(f'unknown direction {self.direction}')
+        return policies.frames_after_start(self.start_ti, self.direction, self.length, self.bounds)
+
+    def interval_text(self) -> Optional[str]:
+        """'12-20' (1-indexed, as the interval boxes) when the run is kept inside an interval
+        smaller than the sequence."""
+        if self.bounds is None or (self.bounds[0] <= 0 and self.bounds[1] >= self.length - 1):
+            return None
+        return f'{self.bounds[0] + 1}-{self.bounds[1] + 1}'
+
+    def interval_end_message(self) -> List[str]:
+        """The run has read its last frame: say so when that is the edge of its interval."""
+        interval = self.interval_text()
+        if interval is None:
+            return []
+        edge = 'end' if self.direction == 'forward' else 'start'
+        return [f'Reached the {edge} of the interval {interval}.']
 
     def input_order(self) -> List[int]:
         """Every frame whose image the run reads, in the order it reads them."""
@@ -156,6 +170,8 @@ class PropagationRuntime:
         messages, self._pending_messages = self._pending_messages, []
         ti = self.plan.start_ti
         messages.append(f'Propagation started at t={ti}.')
+        if self.plan.interval_text() is not None:
+            messages.append(f'Propagation stays inside the interval {self.plan.interval_text()}.')
         image_np, image = self._model_image(ti)
         self.processor.clear_sensory_memory()
         prob = self.processor.step(image, self.seed_prob[1:], idx_mask=False)
@@ -164,6 +180,7 @@ class PropagationRuntime:
         finished = not self.frames
         if finished:
             self.phase = 'finished'
+            messages += self.plan.interval_end_message()
         return StepResult('seed', ti, prob=prob, mask=torch_prob_to_numpy_mask(prob),
                           image=image_np, finished=finished, stop_reason='end' if finished else None,
                           messages=messages)
@@ -192,6 +209,7 @@ class PropagationRuntime:
             self.phase = 'finished'
             result.finished = True
             result.stop_reason = 'end'
+            result.messages += self.plan.interval_end_message()
         return result
 
 

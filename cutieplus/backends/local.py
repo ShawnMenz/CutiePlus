@@ -138,8 +138,10 @@ class LocalTaskBackend:
         permanent = policies.select_permanent_anchors(anchor_tis, start_ti,
                                                       self.permanent_anchor_limit())
         anchors = {name: anchor['kind'] for name, anchor in self.task.anchors.items()}
+        # inside an interval, the run stays in it
+        bounds = policies.propagation_bounds(self.task.intervals(len(names))[0], start_ti)
         return PropagationPlan(names, start_ti, direction, anchors, tuple(permanent), True,
-                               len(anchor_tis), self.num_objects)
+                               len(anchor_tis), self.num_objects, bounds)
 
     def anchor_mask(self, ti: int) -> np.ndarray:
         mask = self.res_man.get_mask(ti)

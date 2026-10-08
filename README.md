@@ -20,7 +20,7 @@ All credit for the model, the original code and the interactive tool belongs to 
 The original Cutie ships a model and a GUI for interactive video segmentation. CutiePlus keeps both and extends Cutie with:
 
 - **Task-based annotation workflows**: a sequence opens as a *task* with an editable clip interval and target description and optional model-made *prefill* masks; a *task browser* lists all tasks with their status, annotators and target text, opens them one at a time, and exports them.
-- **Anchor-aware mask propagation**: every human edit makes a frame an *anchor* that propagation never overwrites; an empty anchor means the target is absent and propagation stops there; permanent memory is rebuilt from the anchors.
+- **Anchor-aware mask propagation**: every human edit makes a frame an *anchor* that propagation never overwrites; an empty anchor means the target is absent and propagation stops there; propagation started inside a clip interval stays inside it; permanent memory is rebuilt from the anchors.
 - **RGB/thermal visualization and annotation support**: a visible (RGB) / thermal toggle, with the anchors and the propagation following the anchor modality.
 - **Multi-annotator task management and locking**: per-task locks, recorded annotator names, and a *Manage annotators* page that assigns each annotator a port.
 - **One shared GPU for every annotator**: an optional service (a coordinator and one GPU worker) holds the only copy of the models and serves every window, with memory limits measured on the GPU, clicks served between propagation steps, and every change saved before it is shown.

@@ -11,6 +11,7 @@ from typing import Dict, Optional
 import numpy as np
 
 from cutieplus.engine.images import read_mask_source, read_rgb
+from cutieplus.engine.policies import frames_after_start
 from cutieplus.gpu.budget import GPUResourceManager, MemoryModel, MemoryRequest, ResourcePolicy
 from cutieplus.gpu.hardware import SimulatedMemoryProbe
 from cutieplus.worker.engine import CommandError
@@ -150,10 +151,9 @@ class FakeWorkerEngine:
         self.probe.allocated += resident
         self.probe.reserved = max(self.probe.reserved, self.probe.allocated)
         seed = read_mask_source(job.get('seed_mask'), (int(job['height']), int(job['width'])))
-        direction = 1 if job['direction'] == 'forward' else -1
-        start = int(job['start_ti'])
-        count = len(job['frame_names'])
-        frames = list(range(start + 1, count)) if direction > 0 else list(range(start - 1, -1, -1))
+        bounds = job.get('bounds')
+        frames = frames_after_start(int(job['start_ti']), job['direction'], len(job['frame_names']),
+                                    None if bounds is None else tuple(bounds))
         self.job = {'job_id': job['job_id'], 'attempt_id': job['attempt_id'], 'job': job,
                     'phase': 'anchors', 'permanent': list(plan.permanent_tis), 'cursor': 0,
                     'frames': frames, 'frame_cursor': 0, 'prev': seed, 'resident': resident,

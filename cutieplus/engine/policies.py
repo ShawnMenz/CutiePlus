@@ -5,7 +5,7 @@ memory tokens per frame, and which mask anchors go into the permanent memory. Th
 """
 import math
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -112,3 +112,27 @@ def select_permanent_anchors(anchor_tis: Iterable[int], start_ti: int, limit: in
     ordered = sorted(anchor_tis)
     nearest = sorted(ordered, key=lambda ti: abs(ti - start_ti))
     return sorted(nearest[:max(0, limit)])
+
+
+def propagation_bounds(intervals: Iterable[Tuple[int, int]],
+                       start_ti: int) -> Optional[Tuple[int, int]]:
+    """The frames a run from start_ti may reach (0-indexed, inclusive): those of the task's
+    interval (1-indexed, as stored) that holds the start frame, so that F and B stay inside it;
+    None, the whole sequence as before, when the start frame is in no interval."""
+    for start, end in intervals:
+        if start <= start_ti + 1 <= end:
+            return start - 1, end - 1
+    return None
+
+
+def frames_after_start(start_ti: int, direction: str, length: int,
+                       bounds: Optional[Tuple[int, int]] = None) -> List[int]:
+    """The frames a run reads after its start frame, in order: up to the last (forward) or the
+    first (backward) frame of the sequence, or of bounds."""
+    first, last = (0, length - 1) if bounds is None else (max(0, bounds[0]),
+                                                          min(length - 1, bounds[1]))
+    if direction == 'forward':
+        return list(range(start_ti + 1, last + 1))
+    if direction == 'backward':
+        return list(range(start_ti - 1, first - 1, -1))
+    raise ValueError(f'unknown direction {direction}')

@@ -26,6 +26,7 @@ import numpy as np
 from cutieplus.coordinator.scheduler import Decision, Scheduler
 from cutieplus.coordinator.tasks import TaskError, TaskService, encode_mask
 from cutieplus.coordinator.worker_proxy import WorkerDied, WorkerError
+from cutieplus.engine import policies
 from cutieplus.storage.db import Database, dumps, loads
 
 log = logging.getLogger(__name__)
@@ -165,6 +166,9 @@ class JobManager:
             'start_ti': info.name_to_ti[start_frame],
             'start_frame': start_frame,
             'direction': direction,
+            # inside an interval, the run stays in it (frames, 0-indexed, inclusive)
+            'bounds': policies.propagation_bounds(self.tasks.intervals(info, row['state']),
+                                                  info.name_to_ti[start_frame]),
             'seed_mask': self.tasks.mask_source(info, start_frame, frames, row['state']),
             'height': info.height,
             'width': info.width,

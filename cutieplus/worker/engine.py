@@ -228,9 +228,11 @@ class TorchWorkerEngine:
         anchor_sources = {int(ti): source for ti, source in job['anchor_masks'].items()}
         num_objects = int(job.get('num_objects', 1))
         mask_anchor_count = len(mask_anchor_tis)
+        bounds = job.get('bounds')  # absent in jobs recorded before intervals bounded runs
         propagation_plan = PropagationPlan(names, int(job['start_ti']), job['direction'],
                                            dict(job['anchors']), tuple(plan.permanent_tis), True,
-                                           mask_anchor_count, num_objects)
+                                           mask_anchor_count, num_objects,
+                                           None if bounds is None else tuple(bounds))
 
         def read_anchor_mask(ti: int) -> np.ndarray:
             if ti not in anchor_sources:

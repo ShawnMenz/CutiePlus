@@ -15,6 +15,7 @@ import pytest
 
 from cutieplus.client import ClientError
 from cutieplus.coordinator.service import AlreadyRunning, Service
+from cutieplus.storage.db import loads
 from gui.task_state import lock_holder
 from tests.helpers import ellipse_mask, make_task
 from tests.service_env import ServiceEnv, fake_overrides, run_propagation, wait_for
@@ -116,6 +117,26 @@ def test_propagation_commits_frames_and_keeps_anchors(two_tasks, env_factory):
     assert len(rows) == 8
     revision = env.service.tasks.task_row('main/0001')
     assert revision['input_revision'] == 1  # propagation never changes the inputs
+
+
+def test_a_propagation_stays_inside_the_interval_of_its_start_frame(two_tasks, env_factory):
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2')
+    reply = open_task(alice, first)
+    task_id, epoch = reply['task_id'], reply['lease_epoch']
+    # frames 1-5 and 8-12 (1-indexed, as frame 00000N is N): ti 0-4 and 7-11
+    alice.call('set_intervals', task_id=task_id, lease_epoch=epoch, intervals=[[8, 12], [1, 5]])
+    forward = run_propagation(alice, task_id, epoch, '000001')
+    assert forward['stop_reason'] == 'end' and forward['all_frames'] == [1, 2, 3, 4]
+    backward = run_propagation(alice, task_id, epoch, '000005', direction='backward')
+    assert backward['stop_reason'] == 'end' and backward['all_frames'] == [3, 2, 1]  # 0: anchor
+    # outside every interval a run goes on as before: to the empty anchor at ti 10
+    outside = run_propagation(alice, task_id, epoch, '000006')
+    assert outside['stop_reason'] == 'empty_anchor' and outside['all_frames'] == [7, 8, 9]
+    snapshots = [loads(row['snapshot'])['bounds'] for row in
+                 env.service.db.query('SELECT snapshot FROM jobs ORDER BY created_at')]
+    assert snapshots == [[0, 4], [0, 4], None]
 
 
 def test_clicks_are_served_between_propagation_steps(two_tasks, env_factory):

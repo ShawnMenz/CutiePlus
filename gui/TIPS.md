@@ -4,7 +4,7 @@
 
 1. Open a sequence from the task browser.
 2. Fix frames with clicks (or Reset), and mark good frames as anchors (C).
-3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames.
+3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames. Started inside an interval, it stays there: F stops at the interval's last frame, B at its first.
 4. Save binary PNGs (Ctrl+S): the sequence goes "under review". A reviewer accepts it with Mark done in the task browser.
 
 **Mouse**
@@ -27,7 +27,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | { / } (Shift + [ / ]) | previous / next interval start; inside an interval { goes to its own start first; at the ends they wrap around |
 | R | play / stop the video: it plays once and stops on the last frame |
 | Shift + R | preview the intervals: each press plays the next interval only, from its start to its end |
-| F / B | propagate forward / backward (press again to pause) |
+| F / B | propagate forward / backward (press again to pause); inside an interval, up to its last / first frame |
 | Space | cycle davis → mask → rgba → light visualization (other modes remain in the menu) |
 | C | mark this frame as an anchor |
 | Ctrl+S | Save binary PNGs (submits the sequence for review) |
@@ -74,7 +74,7 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 
 - Mark as anchor (C).
 - Export task masks: writes the dataset masks now. The status does not change; Mark done in the browser exports anyway.
-- Propagate forward (F) / backward (B): while running, the button reads "Pause propagation" with the same key.
+- Propagate forward (F) / backward (B): while running, the button reads "Pause propagation" with the same key. From a frame inside an interval, the run stays in that interval (use { / } to go to another one); from a frame outside every interval, it runs to the last / first frame of the sequence.
 
 **Right panel**
 

@@ -198,6 +198,10 @@ ways give exactly the original results.
   Propagation does not change `input_revision`. A propagated mask is refused when the task's
   `input_revision`, the lease or the job's attempt changed since the job started, or when the frame
   has become an anchor.
+- **Intervals**: a propagation started inside one of the task's intervals stays in it (up to its
+  last frame forward, its first backward), as in the local mode; started outside every interval it
+  runs to the end or the start of the sequence. The bound is part of the job's input snapshot, so a
+  new attempt after a failure keeps it.
 
 ## Storage
 
