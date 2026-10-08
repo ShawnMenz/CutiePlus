@@ -35,14 +35,19 @@ def get_arguments():
     parser.add_argument('--labeler', default=None,
                         help='name recorded on task edits; default $CUTIE_LABELER, else the OS user')
     parser.add_argument('--backend', choices=('local', 'shared'),
-                        default=os.environ.get('CUTIEPLUS_BACKEND', 'local'),
+                        default=os.environ.get('CUTIEPLUS_BACKEND'),
                         help='local: this process runs the models (the original mode); shared: '
                         'the CutiePlus service runs them on its GPU worker '
-                        '(python -m cutieplus.coordinator start --tasks ...)')
+                        '(python -m cutieplus.coordinator start --tasks ...). Default: '
+                        '$CUTIEPLUS_BACKEND, else the word in <task root>/.cutieplus/backend, '
+                        'else local')
     parser.add_argument('--service-socket', default=None,
                         help='the service socket; default <task root>/.cutieplus/coordinator.sock')
 
     args = parser.parse_args()
+    if args.backend is None:
+        from cutieplus.paths import chosen_backend
+        args.backend = chosen_backend(task_root_for(args))
     return args
 
 

@@ -273,6 +273,15 @@ The annotator is found from the VNC display as before. Without `--backend shared
 `CUTIEPLUS_BACKEND=shared`) the window runs in the original local mode; both modes respect each
 other's locks, so they can be mixed while migrating.
 
+Windows started by a fixed command (a VNC `xstartup` loop) can be moved without changing it: the
+word `shared` in `<task root>/.cutieplus/backend` makes every window of that task root that
+starts afterwards use the service (`--backend` and `CUTIEPLUS_BACKEND` still come first); `local`,
+or no file, keeps the original mode. Open windows keep their mode until they are restarted.
+
+```bash
+echo shared > workspace/cutie_tasks/.cutieplus/backend   # back: echo local > ...
+```
+
 ```bash
 uv run python -m cutieplus.coordinator status --tasks workspace/cutie_tasks
 ```

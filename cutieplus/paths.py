@@ -2,6 +2,7 @@
 coordinator and by the labeling windows."""
 import hashlib
 import os
+import sys
 from os import path
 from typing import Optional
 
@@ -28,3 +29,25 @@ def socket_for(task_root: str, state_dir: Optional[str] = None, socket: Optional
     if socket:
         return socket
     return default_socket_path(state_dir or default_state_dir(task_root))
+
+
+BACKENDS = ('local', 'shared')
+
+
+def chosen_backend(task_root: Optional[str]) -> str:
+    """The windows' mode when neither --backend nor $CUTIEPLUS_BACKEND names one: the word in
+    <task root>/.cutieplus/backend, so that every window of a task root moves to the service (or
+    back) without changing how the windows are started; local without it."""
+    if task_root is None:
+        return 'local'
+    choice_path = path.join(default_state_dir(task_root), 'backend')
+    try:
+        with open(choice_path, encoding='utf-8') as f:
+            choice = f.read().strip()
+    except FileNotFoundError:
+        return 'local'
+    if choice not in BACKENDS:
+        print(f'{choice_path} says {choice!r}, not one of {BACKENDS}; using local',
+              file=sys.stderr)
+        return 'local'
+    return choice
