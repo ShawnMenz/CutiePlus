@@ -74,7 +74,7 @@ Guards and clean-up for opening many tasks in one session:
 
 ## Shared GPU service
 
-Files: `cutieplus/` (new), `interactive_demo.py` (`--backend`), `gui/main_controller.py`,
+Files: `cutieplus/` (new), `interactive_demo.py` (`--backend`, or the task root's `.cutieplus/backend`), `gui/main_controller.py`,
 `gui/task_browser.py`, `gui/click_controller.py`, `gui/ritm/controller.py`,
 `gui/interactive_utils.py`, `gui/resource_manager.py`, `gui/task_state.py`,
 `cutie/config/gui_config.yaml` (section `service`). See [SHARED_SERVICE.md](SHARED_SERVICE.md).

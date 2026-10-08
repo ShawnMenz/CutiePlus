@@ -23,6 +23,7 @@ The original Cutie ships a model and a GUI for interactive video segmentation. C
 - **Anchor-aware mask propagation**: every human edit makes a frame an *anchor* that propagation never overwrites; an empty anchor means the target is absent and propagation stops there; permanent memory is rebuilt from the anchors.
 - **RGB/thermal visualization and annotation support**: a visible (RGB) / thermal toggle, with the anchors and the propagation following the anchor modality.
 - **Multi-annotator task management and locking**: per-task locks, recorded annotator names, and a *Manage annotators* page that assigns each annotator a port.
+- **One shared GPU for every annotator**: an optional service (a coordinator and one GPU worker) holds the only copy of the models and serves every window, with memory limits measured on the GPU, clicks served between propagation steps, and every change saved before it is shown.
 - **Review and export workflows**: not started, in progress, under review, done; masks are exported through an external command.
 - **Undo/redo and improved interactive editing**: undo/redo of clicks, *Reset frame*, *Import mask* and anchor changes; the click model runs without a click limit.
 - **A modern uv-based environment**: Python 3.12 and PyTorch with CUDA 13, with a lockfile.
@@ -48,6 +49,8 @@ uv sync
 ```
 
 This creates `.venv` from `uv.lock`. Training and benchmark evaluation need extra packages: `uv sync --extra train`, `uv sync --extra eval`, or `uv sync --all-extras`.
+
+**Tests** (pytest comes with `uv sync`): `uv run pytest` runs the CPU tests; `CUTIEPLUS_TEST_GPU=1 uv run pytest -m gpu` the ones that need the GPU. If a system-wide `PYTHONPATH` (ROS, for example) brings its own pytest plugins, run them with `env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`.
 
 **Download the pretrained models** (they come from the original Cutie [release](https://github.com/hkchengrex/Cutie/releases/tag/v1.0) and are not stored in this repository):
 
@@ -158,6 +161,7 @@ uv run python interactive_demo.py --tasks <task root> --task_split main
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `task_set.json`   | `splits` (the browser's tabs), `export_command` (a command as a list, with `{split}` and `{sequence}` placeholders, run by the *Export* button), `export_tree` (where an export lands; a template ending in `cutie_masks_{modality}/{sequence}`), `curated_csv` (a CSV with a `split` column: row *n*, counting from 1, is the sequence `n` padded to four digits, and *Reset all frame masks* is disabled for a sequence whose row says `done`, or when the file cannot be read) |
 | `annotators.json` | port → annotator name, edited with *Manage annotators*                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `.cutieplus/`     | the shared service's state (see [One shared GPU for every annotator](#one-shared-gpu-for-every-annotator)): `service.db` (SQLite: tasks, revisions, edit history, sessions, jobs, exports), `objects/` (every committed mask, never changed), `logs/`, the socket, and `backend` (the windows' mode) |
 
 
 Cutie never imports the code that creates tasks or consumes exports: both are plain files and an external command. Task folders are created by a separate labeling pipeline, which is not part of this repository.
@@ -166,36 +170,43 @@ Cutie never imports the code that creates tasks or consumes exports: both are pl
 
 Several Cutie sessions can share one task root, for example one virtual screen per annotator on a shared workstation.
 
-- A task is open in one window at a time (`lock.json`, an exclusive file lock that the operating system drops if the process dies). The browser's *Open by* column shows who has which task and refreshes every 10 seconds. The lock uses `fcntl`, so tasks are not locked on Windows.
+- A task is open in one window at a time (`lock.json`, an exclusive file lock that the operating system drops if the process dies; in shared mode the coordinator holds it for the window that has the task). The browser's *Open by* column shows who has which task and refreshes every 10 seconds. The lock uses `fcntl`, so tasks are not locked on Windows.
 - The annotator's name is recorded on anchors, description changes and review steps. It is, in order: `--labeler`, the annotator assigned to this screen's port in `annotators.json`, `$CUTIE_LABELER`, the account name.
 - **Manage annotators** (button in the task browser) edits `annotators.json`: rows of `Port: [5902] --> [name]`, where port 59NN is virtual screen `:NN`. Add, edit and remove rows, look one up by port or name, and press **Save** to make everything effective; nothing is written before that. The next task opened on any screen records the new names without a restart.
 - `annotators.json` holds people's names, so it is listed in `.gitignore`.
 
 ### One shared GPU for every annotator
 
-Each window normally loads its own copy of the models onto the GPU. With the shared service, one
-coordinator and one GPU worker hold the only copies; the windows send clicks and propagations to
-them, clicks are served between the steps of a running propagation, and the coordinator alone
-writes the tasks' annotation data (SQLite and immutable mask files, with the usual task files kept
-up to date for the export pipeline). GPU memory limits are measured on the GPU at start.
+Each window normally loads its own copy of Cutie and RITM onto the GPU (2.3-19.3 GiB per window on our tasks). With the shared service, one **coordinator** (CPU) and one **GPU worker** that it starts hold the only copies; the windows send clicks and propagations to them and use no GPU memory. Clicks are served between the steps of a running propagation, propagations queue for the GPU, and the coordinator alone writes the tasks' annotation data: every click and propagated frame is saved (SQLite and immutable mask files, with the task files above kept up to date for the export pipeline) before the window shows it. The GPU's memory limits are measured when the worker starts; when memory runs short, a propagation keeps fewer permanent anchors (and says so) or waits, and never runs at lower precision or resolution.
+
+Start the coordinator once per task root, in a terminal that outlives your login (here a `tmux` session):
 
 ```bash
-uv run python -m cutieplus.coordinator start --tasks workspace/cutie_tasks
+tmux new -d -s cutieplus "uv run python -m cutieplus.coordinator start --tasks workspace/cutie_tasks"
+uv run python -m cutieplus.coordinator status --tasks workspace/cutie_tasks   # worker, sessions, jobs
+uv run python -m cutieplus.coordinator stop --tasks workspace/cutie_tasks
 ```
+
+Then start windows in shared mode, one way or another:
 
 ```bash
-uv run python interactive_demo.py --tasks workspace/cutie_tasks --backend shared
+uv run python interactive_demo.py --tasks workspace/cutie_tasks --backend shared   # this window
+CUTIEPLUS_BACKEND=shared uv run python interactive_demo.py --tasks workspace/cutie_tasks
+echo shared > workspace/cutie_tasks/.cutieplus/backend   # every window of the root that starts afterwards
 ```
 
-Without `--backend shared` a window works as before; both kinds respect each other's task locks.
-See [docs/SHARED_SERVICE.md](docs/SHARED_SERVICE.md) for the design, settings, recovery and
-limitations, and [docs/benchmarks](docs/benchmarks/) for measurements.
+The last one moves windows started by a fixed command (such as a VNC `xstartup` loop) without changing it; `echo local > ...` moves them back, and open windows keep their mode until they restart. Without any of these a window runs in the original local mode. Both modes respect each other's task locks and read and write the same task files, so they can be mixed, and work done in one is there in the other.
+
+What to expect, measured on an RTX 4090 with real tasks ([report](docs/benchmarks/2026-10-07-NVIDIA-GeForce-RTX-4090.md)): the same masks as the local mode; a click 3-12 ms slower when labeling alone (about 35-80 ms in all), and 60-90 ms while a propagation runs for someone else; propagation at 84-110 % of the local speed; a crashed GPU worker replaced in about 5 s, with the running propagation resuming where it was. In shared mode the window's permanent-memory controls and *Clear memory* have no effect.
+
+[docs/SHARED_SERVICE.md](docs/SHARED_SERVICE.md) describes the design, settings (`service` in `cutie/config/gui_config.yaml`), recovery, diagnosis and limitations.
 
 
 ## Documentation
 
 - [docs/MODIFICATIONS.md](docs/MODIFICATIONS.md): what CutiePlus changes relative to the original Cutie, file by file.
 - [docs/SHARED_SERVICE.md](docs/SHARED_SERVICE.md): the shared GPU service (coordinator and GPU worker): design, running it, recovery, limitations.
+- [docs/benchmarks/](docs/benchmarks/): measurements of the shared service against the original local mode (`scripts/benchmark_service.py`).
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the labeling window worked before the shared service (the local mode).
 - [gui/TIPS.md](gui/TIPS.md): the labeling guide (keys and controls); also in the window with **F1**.
 - [docs/INTERACTIVE.md](docs/INTERACTIVE.md): instructions for the interactive demo (from the original Cutie).
