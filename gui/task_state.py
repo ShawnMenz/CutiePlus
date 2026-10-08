@@ -109,6 +109,16 @@ def format_intervals(intervals: List[Interval]) -> str:
     return ', '.join(f'{start}-{end}' for start, end in intervals)
 
 
+def interval_index_from(intervals: List[Interval], frame: int, direction: int) -> int:
+    """The interval whose start is the nearest after (direction 1) or before (-1) the 1-indexed
+    frame, around the ends: inside an interval, back goes to its own start first. intervals are
+    sorted."""
+    starts = [start for start, _ in intervals]
+    if direction > 0:
+        return next((i for i, start in enumerate(starts) if start > frame), 0)
+    return next((i for i in reversed(range(len(starts))) if starts[i] < frame), len(starts) - 1)
+
+
 def write_interval_text(directory: str, intervals: List[Interval]) -> None:
     """interval.txt: interval_start / interval_end for one interval; interval_count and numbered
     keys for several (again no bare interval_start, so an old reader cannot keep only the first)."""

@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
+from gui.task_state import interval_index_from
 from gui.tips_window import TipsWindow
 from gui.interactive_utils import (CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR,
                                    POSITIVE_CLICK_COLOR, color_map_np)
@@ -67,6 +68,7 @@ class GUI(QWidget):
         self.play_button.setToolTip(
             'R: play the video from here to the last frame; again to stop.'
             + ('\nShift+R or Shift+click: preview the intervals, one per press.'
+               '\n{ / }: go to the previous / next interval start.'
                if controller.task is not None else ''))
         self.commit_button = QPushButton('Commit to permanent memory (C)')
         self.commit_button.clicked.connect(controller.on_commit)
@@ -150,7 +152,10 @@ class GUI(QWidget):
             # as preset (the saved or curated interval), more only with '+ Add interval'
             self.interval_pairs: List[IntervalPair] = []
             self.interval_flow = FlowLayout(spacing=10, spread=False)
-            self.interval_flow.addWidget(QLabel('Intervals'))
+            intervals_label = QLabel('Intervals')
+            intervals_label.setToolTip('{ / }: go to the previous / next interval start; '
+                                       'Shift+R: play the intervals, one per press.')
+            self.interval_flow.addWidget(intervals_label)
             self.add_interval_button = QPushButton('+ Add interval')
             self.add_interval_button.setToolTip(
                 'Keep another stretch of this sequence: each interval becomes a clip of its own. '
@@ -469,6 +474,11 @@ class GUI(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_BracketLeft), self).activated.connect(controller.on_prev_anchor)
         QShortcut(QKeySequence('Ctrl+D'), self).activated.connect(controller.on_next_anchor)
         QShortcut(QKeySequence('Ctrl+A'), self).activated.connect(controller.on_prev_anchor)
+        # { / } (Shift + [ / ]): the previous / next interval start
+        QShortcut(QKeySequence(Qt.Key.Key_BraceRight),
+                  self).activated.connect(functools.partial(self.on_jump_interval, 1))
+        QShortcut(QKeySequence(Qt.Key.Key_BraceLeft),
+                  self).activated.connect(functools.partial(self.on_jump_interval, -1))
         QShortcut(QKeySequence(Qt.Key.Key_T), self).activated.connect(controller.on_toggle_modality)
 
         # undo/redo of clicks and frame edits
@@ -849,6 +859,24 @@ class GUI(QWidget):
         self.play_button.setText(STOP_LABEL)
         self.text(f'Previewing interval {number + 1} of {len(intervals)}: frames {start}-{end} '
                   '(Shift+R: next).')
+
+    def on_jump_interval(self, direction: int) -> None:
+        # { / }: the start of the previous / next interval, from the current frame and around the
+        # ends; Shift+R then plays the interval jumped to
+        task = self.controller.task
+        if task is None:
+            self.text('{ and } move between the intervals of a task.')
+            return
+        if self.controller.propagating:
+            return
+        intervals, _ = task.intervals(self.controller.T)
+        number = interval_index_from(intervals, self.tl_slider.value() + 1, direction)
+        start, end = intervals[number]
+        self.stop_playback()
+        self.tl_slider.setValue(start - 1)
+        self.preview_index = number
+        self.text(f'Interval {number + 1} of {len(intervals)}: frames {start}-{end} '
+                  '(Shift+R plays it).')
 
     def stop_playback(self) -> None:
         self.timer.stop()

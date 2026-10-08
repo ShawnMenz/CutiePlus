@@ -24,6 +24,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | Shift + A / D | 10 frames back / forward |
 | Alt + A / D | first / last frame |
 | Ctrl + A / D | previous / next anchor frame (also [ / ]) |
+| { / } (Shift + [ / ]) | previous / next interval start; inside an interval { goes to its own start first; at the ends they wrap around |
 | R | play / stop the video: it plays once and stops on the last frame |
 | Shift + R | preview the intervals: each press plays the next interval only, from its start to its end |
 | F / B | propagate forward / backward (press again to pause) |
@@ -48,7 +49,7 @@ Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot b
   - propagated (teal): written by Cutie.
   - prefill (olive-gold): sam3 / bb2seg. Not reviewed yet.
   - no mask (gray): nothing yet.
-- Intervals (the row under the description): the dataset clip, start and end in frame numbers. It is preset from the curated CSV (long sequences: all frames). Press Enter or click elsewhere to save. Changing it needs a new review. The saved intervals are shown as bands on the frame slider. Type `m` in a start box for the first frame, or in an end box for the last frame: once you confirm, the `m` becomes the frame number (e.g. `1` and `139` for a 139-frame sequence).
+- Intervals (the row under the description): the dataset clip, start and end in frame numbers. It is preset from the curated CSV (long sequences: all frames). Press Enter or click elsewhere to save. Changing it needs a new review. The saved intervals are shown as bands on the frame slider; { and } jump to the previous / next interval start. Type `m` in a start box for the first frame, or in an end box for the last frame: once you confirm, the `m` becomes the frame number (e.g. `1` and `139` for a 139-frame sequence).
 - Several intervals (optional): when a sequence has more than one good stretch, press **+ Add interval** and type the new start and end; each interval becomes a clip of its own. The new interval is saved once both boxes are filled. **×** cancels an interval that is not complete, or removes a saved one. Intervals may touch (to split a clip in two) but not overlap: an overlapping one turns red and is not saved until you change it. To drop the first interval, type the second one's numbers into it and remove the second.
 - Keyboard: the frame slider has it when the window opens, so A / D move frames (the two boxes beside the slider name them; hover over one for the Shift, Alt and Ctrl combinations). The slider also takes Home / End (first / last frame) and PageUp / PageDown (10 frames). While the description or a number box has the cursor, the keys type into it; Enter or a click on the image gives them back to the slider.
 
@@ -60,7 +61,7 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 
 - Counter (e.g. 20 / 90), Play video (R), Reset frame (whole frame empty = "target absent" anchor), Reset object.
 - Current object ID: tasks have one object.
-- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again.
+- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to.
 
 *Display and files*
 
