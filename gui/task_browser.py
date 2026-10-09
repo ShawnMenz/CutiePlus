@@ -16,7 +16,7 @@ from typing import Dict, Optional, Tuple
 
 from omegaconf import DictConfig, open_dict
 from PySide6.QtCore import QProcess, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QPlainTextEdit, QPushButton, QStyle,
                                QStyledItemDelegate, QStyleOptionViewItem, QTabWidget,
@@ -156,8 +156,12 @@ class TaskBrowser(QWidget):
         open_button.clicked.connect(self.on_open)
         export_button = QPushButton('Export')
         export_button.clicked.connect(self.on_export)
-        done_button = QPushButton('Mark done')
+        done_button = QPushButton('Mark done (D)')
+        done_button.setToolTip('D: mark the selected sequence done (it is exported first when '
+                               'its export is missing or older than its last change).')
         done_button.clicked.connect(self.on_mark_done)
+        # the filter box keeps the letter for itself while it has the focus
+        QShortcut(QKeySequence(Qt.Key.Key_D), self).activated.connect(self.on_mark_done)
         refresh_button = QPushButton('Refresh')
         refresh_button.clicked.connect(self.refresh)
         manage_button = QPushButton('Manage annotators')

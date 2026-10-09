@@ -91,7 +91,7 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 
 **Status in the task browser**
 
-not started, then in progress (any change), then under review (Save binary PNGs), then done (Mark done in the browser, which exports first). Any change reopens a sequence. A sequence whose Need Attention is on shows Attention (red) instead, whatever its review status, until someone turns it off in the labeling window. Hover over a status to see who last edited it (and who asked for attention). Tick Hide done (next to the filter box) to hide the done sequences in every tab; the counts at the bottom still include them. In the Target column the category is in bold.
+not started, then in progress (any change), then under review (Save binary PNGs), then done (Mark done in the browser, or the D key there, which exports first). Any change reopens a sequence. A sequence whose Need Attention is on shows Attention (red) instead, whatever its review status, until someone turns it off in the labeling window. Hover over a status to see who last edited it (and who asked for attention). Tick Hide done (next to the filter box) to hide the done sequences in every tab; the counts at the bottom still include them. In the Target column the category is in bold.
 
 **Several labelers at once**
 

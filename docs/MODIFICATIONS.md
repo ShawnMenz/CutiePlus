@@ -39,7 +39,7 @@ File: `gui/task_browser.py` (`--tasks`).
 
 - Tabs per split; columns for sequence, frames, anchors, status (colored), annotators, who has it open, modality and target (the category in bold); sortable; the models are loaded once and reused for every task.
 - A filter box (sequence, annotator or target text) and a *Hide done* checkbox; counts of each status for the current tab, and the number of sequences each annotator has worked on.
-- *Open*, *Export*, *Mark done*, *Refresh* and *Manage annotators*.
+- *Open*, *Export*, *Mark done* (key D), *Refresh* and *Manage annotators*.
 - A *Theme* button at the top right cycles Auto (follows the desktop), Light and Dark for every window of the program. The choice is kept for the screen it was made on (in the user's Qt settings, per `DISPLAY`) and applied at the next start; `gui/theme.py`.
 
 ## Several annotators
