@@ -379,21 +379,25 @@ def layout_widget(layout: QLayout) -> QWidget:
     return widget
 
 
-def fit_window(window: QWidget, preferred: QSize) -> None:
+def fit_window(window: QWidget, preferred: QSize, fill: bool = False) -> None:
     """Shows a top-level window at its preferred size, centred on the screen, or maximized when
     that does not fit. A window that stops fitting later, e.g. when a VNC viewer shrinks the
-    remote desktop to its own window, is maximized then."""
+    remote desktop to its own window, is maximized then. fill: maximized from the start (the VNC
+    desktop follows the viewer's window, so the window fills that); un-maximized from its title
+    bar, it has the preferred size, centred."""
     screen = window.screen()
     available = screen.availableGeometry()
     outer = preferred + WINDOW_FRAME
-    if outer.width() <= available.width() and outer.height() <= available.height():
+    fits = outer.width() <= available.width() and outer.height() <= available.height()
+    if fits:
         window.resize(preferred)
         frame = QRect(QPoint(0, 0), outer)
         frame.moveCenter(available.center())
         window.move(frame.topLeft())
-        window.show()
-    else:
+    if fill or not fits:
         window.showMaximized()
+    else:
+        window.show()
     ScreenFollower(window, screen)
 
 

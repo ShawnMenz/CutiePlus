@@ -562,9 +562,11 @@ class GUI(QWidget):
             self.set_frame_label(*self.frame_label_args)
 
     def show_fitted(self) -> None:
-        # the controls in one row and at least the image plus 200 px; maximized instead when that
+        # a task fills the screen (the VNC desktop, which follows the viewer's window); otherwise
+        # the controls in one row and at least the image plus 200 px, maximized instead when that
         # does not fit the screen
-        fit_window(self, self.sizeHint().expandedTo(QSize(self.w + 200, self.h + 200)))
+        fit_window(self, self.sizeHint().expandedTo(QSize(self.w + 200, self.h + 200)),
+                   fill=self.controller.task is not None)
 
     def add_interval_pair(self, start: Optional[int] = None,
                           end: Optional[int] = None) -> IntervalPair:
