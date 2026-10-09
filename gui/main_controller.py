@@ -111,6 +111,7 @@ class MainController():
         self.res_man = ResourceManager(cfg)
         self.task = self.res_man.task
         self.view_modality = self.res_man.default_modality
+        self.propagation_modality = self.view_modality  # the frames the last run read
         if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
             return
         try:
@@ -300,6 +301,17 @@ class MainController():
 
         self.gui.update_slider(self.curr_ti)
         self.gui.set_frame_label(*self.res_man.frame_parts(self.curr_ti, self.view_modality))
+        if not fast and self.task is not None:
+            # every change of an anchor shows its frame again; a propagation (fast) changes none
+            self.show_slider_anchors()
+
+    def show_slider_anchors(self) -> None:
+        # the anchors as lines on the frame slider
+        name_to_ti = self.res_man.name_to_ti
+        kinds = [(name_to_ti[name], anchor['kind']) for name, anchor in self.task.anchors.items()
+                 if name in name_to_ti]
+        self.gui.tl_slider.set_anchors([ti for ti, kind in kinds if kind == 'mask'],
+                                       [ti for ti, kind in kinds if kind == 'empty'])
 
     def set_vis_mode(self):
         self.vis_mode = self.gui.combo.currentText()
@@ -369,12 +381,19 @@ class MainController():
         self.gui.stop_playback()
 
         self.convert_current_image_mask_torch()
+        # the run reads the frames of the modality shown (T switches it; not during a run): the
+        # anchors' masks fit both, which are aligned
+        self.propagation_modality = self.view_modality
         try:
-            self.backend.start_propagation(self.curr_ti, self.propagate_direction, self.curr_prob)
+            self.backend.start_propagation(self.curr_ti, self.propagate_direction, self.curr_prob,
+                                           self.propagation_modality)
         except BackendError as exc:
             self.gui.text(f'Propagation not started: {exc}')
             self.on_pause()
             return
+        if self.task is not None and self.task.other_modality is not None:
+            shown = 'RGB' if self.propagation_modality == 'visual' else self.propagation_modality
+            self.gui.text(f'Propagating on the {shown} frames.')
         # clear
         self.interacted_prob = None
         self.reset_this_interaction()
@@ -443,8 +462,8 @@ class MainController():
         # the frame comes from the backend, never from the slider: a key pressed mid-run moves
         # the slider, and the mask would be saved under that other frame
         self.curr_ti = frame.ti
-        if frame.image is not None and self.view_modality == self.res_man.default_modality:
-            self.curr_image_np = frame.image
+        if frame.image is not None and self.view_modality == self.propagation_modality:
+            self.curr_image_np = frame.image  # the frame the run read
         else:
             self.curr_image_np = self.res_man.get_image(self.curr_ti, self.view_modality)
         self.curr_image_torch = None

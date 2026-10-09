@@ -1,8 +1,9 @@
 """
 Propagation jobs of the shared service.
 
-A job is created from an immutable snapshot of its inputs (frames, anchors and their committed
-masks, the start frame and its mask, direction, processing size, memory settings, model identity)
+A job is created from an immutable snapshot of its inputs (frames of the modality the window
+shows, anchors and their committed masks, the start frame and its mask, direction, the interval
+that bounds it, processing size, memory settings, model identity)
 taken at one input revision of the task. It runs in attempts: each attempt builds a fresh Cutie
 context in the GPU worker and steps it. A propagated mask is committed before the job may take its
 next step; a commit that is refused (the lease is gone, a human input changed, the attempt is
@@ -116,7 +117,10 @@ class JobManager:
 
     # creation ------------------------------------------------------------------------------
     def create(self, task_id: str, session_id: str, epoch: int, start_frame: str, direction: str,
-               memory: dict, request_id: Optional[str] = None) -> dict:
+               memory: dict, request_id: Optional[str] = None,
+               modality: Optional[str] = None) -> dict:
+        """modality: the frames the run reads, the one the window shows (the anchor masks fit
+        both, which are aligned); None: the task's anchor modality."""
         if request_id is not None:
             stored = self.db.query_one('SELECT response FROM requests WHERE request_id = ?',
                                        (request_id, ))
@@ -128,6 +132,9 @@ class JobManager:
             raise JobError('invalid', f'unknown direction {direction!r}')
         if start_frame not in info.name_to_ti:
             raise JobError('invalid', f'{task_id} has no frame {start_frame}')
+        modality = modality or info.anchor_modality
+        if modality not in info.frame_dirs:
+            raise JobError('invalid', f'{task_id} has no {modality!r} frames')
         with self.lock:
             for job in self.jobs.values():
                 if job.task_id == task_id and not job.done:
@@ -156,7 +163,8 @@ class JobManager:
             'model_identity': hello.get('model_identity'),
             'model_configuration': hello.get('model_configuration'),
             'frame_names': list(info.names),
-            'frame_paths': [info.image_path(name) for name in info.names],
+            'frame_paths': [info.image_path(name, modality) for name in info.names],
+            'modality': modality,
             'anchors': anchors,
             'anchor_snapshot': {frame: {'kind': entry['anchor']['kind'],
                                         'mask_object': entry['mask_object']}

@@ -545,10 +545,11 @@ class Service:
 
     def op_start_propagation(self, session_id: str, task_id: str, lease_epoch: int,
                              start_frame: str, direction: str, memory: dict,
-                             request_id: Optional[str] = None) -> dict:
+                             request_id: Optional[str] = None,
+                             modality: Optional[str] = None) -> dict:
         try:
             return self.jobs.create(task_id, session_id, lease_epoch, start_frame, direction,
-                                    memory, request_id)
+                                    memory, request_id, modality=modality)
         except QueueFull as exc:
             raise ServiceError('queue_full', str(exc)) from None
 

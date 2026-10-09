@@ -176,10 +176,12 @@ class SharedTaskBackend:
         self.clicks = 0
 
     # propagation ------------------------------------------------------------------------------
-    def start_propagation(self, start_ti: int, direction: str, seed_prob: torch.Tensor) -> None:
+    def start_propagation(self, start_ti: int, direction: str, seed_prob: torch.Tensor,
+                          modality: Optional[str] = None) -> None:
         # the start frame's committed mask is the seed (the window shows nothing uncommitted)
         reply = self._call('start_propagation', start_frame=self.res_man.names[start_ti],
-                           direction=direction, memory=self.memory, request_id=new_request_id())
+                           direction=direction, memory=self.memory, modality=modality,
+                           request_id=new_request_id())
         self.job_id = reply['job_id']
         self.job_next = self.job_messages = 0
         self.job_done = False

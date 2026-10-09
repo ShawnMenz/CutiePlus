@@ -4,7 +4,7 @@
 
 1. Open a sequence from the task browser.
 2. Fix frames with clicks (or Reset), and mark good frames as anchors (C).
-3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames. Started inside an interval, it stays there: F stops at the interval's last frame, B at its first.
+3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames. Started inside an interval, it stays there: F stops at the interval's last frame, B at its first. It runs on the modality shown: press T first to propagate on the thermal (or RGB) frames, with every anchor you have labeled.
 4. Save binary PNGs (Ctrl+S): the sequence goes "under review". A reviewer accepts it with Mark done in the task browser.
 
 **Mouse**
@@ -33,7 +33,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | Ctrl+S | Save binary PNGs (submits the sequence for review) |
 | Ctrl+E | Save overlay video |
 | Delete | remove this frame's anchor (back to its prefill) |
-| T | show RGB / thermal |
+| T | show RGB / thermal; F / B then propagate on the frames shown |
 | Ctrl+Z | undo the last click, otherwise the last frame edit |
 | Ctrl+Shift+Z or Ctrl+Y | redo |
 | Q | close this window |
@@ -51,6 +51,7 @@ Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot b
   - no mask (gray): nothing yet.
 - Intervals (the row under the description): the dataset clip, start and end in frame numbers. It is preset from the curated CSV (long sequences: all frames). Press Enter or click elsewhere to save. Changing it needs a new review. The saved intervals are shown as bands on the frame slider; { and } jump to the previous / next interval start. Type `m` in a start box for the first frame, or in an end box for the last frame: once you confirm, the `m` becomes the frame number (e.g. `1` and `139` for a 139-frame sequence).
 - Several intervals (optional): when a sequence has more than one good stretch, press **+ Add interval** and type the new start and end; each interval becomes a clip of its own. The new interval is saved once both boxes are filled. **×** cancels an interval that is not complete, or removes a saved one. Intervals may touch (to split a clip in two) but not overlap: an overlapping one turns red and is not saved until you change it. To drop the first interval, type the second one's numbers into it and remove the second.
+- Anchors on the frame slider: a black line (white in the dark theme) at each anchor, a magenta line at each empty anchor; they follow every change (a click, C, Delete, undo).
 - Keyboard: the frame slider has it when the window opens, so A / D move frames (the two boxes beside the slider name them; hover over one for the Shift, Alt and Ctrl combinations). The slider also takes Home / End (first / last frame) and PageUp / PageDown (10 frames). While the description or a number box has the cursor, the keys type into it; Enter or a click on the image gives them back to the slider.
 
 **Bottom controls**

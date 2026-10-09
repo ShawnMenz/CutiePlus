@@ -91,17 +91,29 @@ class LogView(QPlainTextEdit):
 class FrameSlider(QSlider):
     """The frame slider. Frames are stepped with A / D, so the arrow keys are left alone (a slider
     would otherwise step on them); Home / End and PageUp / PageDown still move it. In task mode it
-    shows the task's intervals as bands along the groove, the one being previewed stronger."""
+    shows the task's intervals as bands along the groove, the one being previewed stronger, and
+    its anchors as vertical lines: black (white in a dark theme) for a mask anchor, magenta for an
+    empty one."""
 
     # green, apart from the theme's accent (which fills the groove up to the handle)
     BAND_COLOR = (67, 160, 71)
     BAND_ALPHA, ACTIVE_ALPHA = 85, 170
     BAND_GAP = 2  # px between two intervals that touch, so they read as two clips
+    ANCHOR_WIDTH = 2  # px
+    MASK_ANCHOR_COLORS = ('#000000', '#ffffff')  # light, dark theme
 
     def __init__(self, orientation) -> None:
         super().__init__(orientation)
         self.intervals: List[Tuple[int, int]] = []  # 1-indexed (start, end)
         self.active_interval: Optional[Tuple[int, int]] = None
+        self.mask_anchors: Tuple[int, ...] = ()  # 0-indexed frames
+        self.empty_anchors: Tuple[int, ...] = ()
+
+    def set_anchors(self, mask_tis, empty_tis) -> None:
+        mask_tis, empty_tis = tuple(sorted(mask_tis)), tuple(sorted(empty_tis))
+        if (mask_tis, empty_tis) != (self.mask_anchors, self.empty_anchors):
+            self.mask_anchors, self.empty_anchors = mask_tis, empty_tis
+            self.update()
 
     def set_intervals(self, intervals) -> None:
         self.intervals = [tuple(interval) for interval in intervals]
@@ -118,15 +130,57 @@ class FrameSlider(QSlider):
         super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:
-        # the bands go on top (the theme paints an opaque background), around the handle
+        # the bands and the anchor lines go on top (the theme paints an opaque background), around
+        # the handle
         super().paintEvent(event)
         self.paint_interval_bands()
+        self.paint_anchor_lines()
+
+    def paint_anchor_lines(self) -> None:
+        if not (self.mask_anchors or self.empty_anchors) or self.maximum() <= self.minimum():
+            return
+        centre, _, top, height, handle = self.frame_geometry()
+        painter = self.mark_painter(handle)
+        dark = int(is_dark(self))
+        for frames, color in ((self.mask_anchors, self.MASK_ANCHOR_COLORS[dark]),
+                              (self.empty_anchors, STATUS_COLORS['empty anchor'][dark])):
+            for ti in frames:
+                x = centre(ti + 1) - self.ANCHOR_WIDTH / 2
+                painter.fillRect(QRectF(x, top, self.ANCHOR_WIDTH, height), QColor(color))
+        painter.end()
 
     def paint_interval_bands(self) -> None:
         frames = self.maximum() - self.minimum() + 1
         # one interval over every frame would only fill the bar
         if not self.intervals or frames < 2 or self.intervals == [(1, frames)]:
             return
+        centre, step, top, height, handle = self.frame_geometry()
+        painter = self.mark_painter(handle)
+        groove = self.groove_rect()
+        for start, end in self.intervals:
+            left = max(centre(start) - step / 2, groove.left()) + self.BAND_GAP / 2
+            right = min(centre(end) + step / 2, groove.right()) - self.BAND_GAP / 2
+            color = QColor(*self.BAND_COLOR)
+            color.setAlpha(self.ACTIVE_ALPHA if (start, end) == self.active_interval else self.BAND_ALPHA)
+            painter.fillRect(QRectF(left, top, max(right - left, 2), height), color)
+        painter.end()
+
+    def groove_rect(self):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        return self.style().subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                           QStyle.SubControl.SC_SliderGroove, self)
+
+    def mark_painter(self, handle) -> QPainter:
+        # paints around the handle, which stays as the theme draws it
+        painter = QPainter(self)
+        painter.setClipRegion(QRegion(self.rect()) - QRegion(handle, QRegion.RegionType.Ellipse))
+        return painter
+
+    def frame_geometry(self):
+        """(centre(frame) -> x of the handle's centre on that 1-indexed frame, px per frame, top
+        and height of the marks, the handle's rectangle)."""
+        frames = self.maximum() - self.minimum() + 1
         option = QStyleOptionSlider()
         self.initStyleOption(option)
         style = self.style()
@@ -135,7 +189,7 @@ class FrameSlider(QSlider):
         handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, option,
                                       QStyle.SubControl.SC_SliderHandle, self)
         span = groove.width() - handle.width()
-        step = span / (frames - 1)
+        step = span / max(1, frames - 1)
 
         def centre(frame: int) -> float:  # x of the handle's centre on that frame (1-indexed)
             position = QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), frame - 1,
@@ -144,16 +198,7 @@ class FrameSlider(QSlider):
 
         height = max(handle.height() - 2, groove.height() + 6)
         top = groove.center().y() - height / 2
-        painter = QPainter(self)
-        # the handle stays as the theme draws it
-        painter.setClipRegion(QRegion(self.rect()) - QRegion(handle, QRegion.RegionType.Ellipse))
-        for start, end in self.intervals:
-            left = max(centre(start) - step / 2, groove.left()) + self.BAND_GAP / 2
-            right = min(centre(end) + step / 2, groove.right()) - self.BAND_GAP / 2
-            color = QColor(*self.BAND_COLOR)
-            color.setAlpha(self.ACTIVE_ALPHA if (start, end) == self.active_interval else self.BAND_ALPHA)
-            painter.fillRect(QRectF(left, top, max(right - left, 2), height), color)
-        painter.end()
+        return centre, step, top, height, handle
 
 
 def frame_key_tip(key: str, plain: str, shift: str, alt: str, ctrl: str) -> str:

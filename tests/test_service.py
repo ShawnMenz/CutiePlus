@@ -353,21 +353,39 @@ def test_concurrent_opens_of_one_task_give_one_lease(two_tasks, env_factory):
     assert len(env.service.tasks.leases) == 1
 
 
-def test_clicks_use_the_shown_modality_and_propagation_the_anchor_modality(tmp_path, env_factory):
+def test_clicks_and_propagation_use_the_shown_modality(tmp_path, env_factory):
     visual = make_task(str(tmp_path / 'a'), sequence='0001', frame_count=6, mask_anchors=(0, ))
     thermal = make_task(str(tmp_path / 'a'), sequence='0002', frame_count=6, mask_anchors=(0, ),
                         anchor_modality='thermal')
     env = env_factory(visual.root)
     alice = env.client('alice', ':2')
-    for task, anchor_modality in ((visual, 'visual'), (thermal, 'thermal')):
+
+    def frames_read(reply, **modality):
+        memory = {'mem_every': 5, 'top_k': 30, 'min_mem_frames': 4, 'max_mem_frames': 9,
+                  'max_num_tokens': 10000}
+        job = alice.call('start_propagation', task_id=reply['task_id'],
+                         lease_epoch=reply['lease_epoch'], start_frame='000001',
+                         direction='forward', memory=memory, **modality)['job_id']
+        wait_for(lambda: env.service.jobs.jobs[job].done, 30)
+        snapshot = env.service.jobs.jobs[job].snapshot
+        read = snapshot['modality']
+        assert all(f'{path.sep}{read}{path.sep}' in p for p in snapshot['frame_paths'])
+        return read
+
+    for task, anchor_modality, other in ((visual, 'visual', 'thermal'),
+                                         (thermal, 'thermal', 'visual')):
         reply = open_task(alice, task)
         interaction, _ = click(alice, reply, '000002', 40, 40)  # clicked on the thermal view
         record = env.service.interactions.interactions[interaction]
         assert f'{path.sep}thermal{path.sep}' in record.image_path
-        done = run_propagation(alice, reply['task_id'], reply['lease_epoch'], '000001')
-        snapshot = env.service.jobs.jobs[done['job_id']].snapshot
-        assert snapshot['anchor_modality'] == anchor_modality
-        assert all(f'{path.sep}{anchor_modality}{path.sep}' in p for p in snapshot['frame_paths'])
+        alice.call('close_interaction', interaction_id=interaction)
+        # the frames of the modality the window shows; the anchor modality when it names none
+        assert frames_read(reply) == anchor_modality
+        assert frames_read(reply, modality=other) == other
+        assert frames_read(reply, modality=anchor_modality) == anchor_modality
+        with pytest.raises(ClientError) as error:
+            frames_read(reply, modality='infrared')
+        assert error.value.code == 'invalid'
         alice.call('close_task', task_id=reply['task_id'], lease_epoch=reply['lease_epoch'])
 
 

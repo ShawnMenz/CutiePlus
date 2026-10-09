@@ -150,14 +150,17 @@ class LocalTaskBackend:
                                'remove the anchor or import its mask.')
         return mask
 
-    def start_propagation(self, start_ti: int, direction: str, seed_prob: torch.Tensor) -> None:
+    def start_propagation(self, start_ti: int, direction: str, seed_prob: torch.Tensor,
+                          modality: Optional[str] = None) -> None:
         self.release_propagation()
         # a mask still being saved would be read half-finished
         self.res_man.save_queue.join()
         plan = self.plan(start_ti, direction)
         workers = int(self.cfg.get('num_read_workers', 0))
-        self.prefetcher = FramePrefetcher(self.res_man._get_image_unbuffered, plan.input_order(),
-                                          depth=PREFETCH_FRAMES, threads=max(1, min(workers, 4)))
+        # the frames of the modality shown: the anchors' masks fit both, which are aligned
+        self.prefetcher = FramePrefetcher(
+            lambda ti: self.res_man._get_image_unbuffered(ti, modality), plan.input_order(),
+            depth=PREFETCH_FRAMES, threads=max(1, min(workers, 4)))
         self.runtime = PropagationRuntime(self.processor, plan, self.prefetcher.get,
                                           self.anchor_mask, seed_prob, self.device, self.amp,
                                           self.cfg if self.task is not None else None)

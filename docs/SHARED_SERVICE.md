@@ -202,6 +202,9 @@ ways give exactly the original results.
   last frame forward, its first backward), as in the local mode; started outside every interval it
   runs to the end or the start of the sequence. The bound is part of the job's input snapshot, so a
   new attempt after a failure keeps it.
+- **Modality**: a propagation reads the frames of the modality the window shows (`modality` of
+  `start_propagation`; the anchor modality when it names none), with the same anchors and masks
+  (the two modalities of a task are aligned). The frame paths are part of the snapshot too.
 
 ## Storage
 
