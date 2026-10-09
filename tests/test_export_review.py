@@ -10,7 +10,8 @@ from os import path
 import pytest
 
 from cutieplus.client import ClientError
-from gui.task_state import export_command, load_task_set, task_status
+from gui.task_state import (TaskState, attention_of, export_command, load_task_set,
+                            summarize_task, task_status)
 from tests.conftest import compose_gui_config
 from tests.helpers import ellipse_mask, make_task
 from tests.service_env import ServiceEnv, fake_overrides
@@ -88,6 +89,51 @@ def test_an_export_during_a_change_or_a_failed_one_is_not_accepted(env):
     assert result['status'] == 'failed' and 'metadata.json' in result['detail']
     rows = env.service.db.query('SELECT status, content_revision FROM exports ORDER BY started_at')
     assert [row['status'] for row in rows] == ['stale', 'failed', 'failed']
+
+
+def test_a_sequence_that_needs_attention_is_not_marked_done(env):
+    task = env.task
+    client = env.client('alice', ':2')
+    lease = client.call('open_task', workspace=task.workspace)
+    ids = dict(task_id=lease['task_id'], lease_epoch=lease['lease_epoch'])
+    client.call('commit_frame', frame='000003', mask=ellipse_mask(2, 8), anchor='edit', **ids)
+    client.call('submit_for_review', target_objects=[1], **ids)
+    export = client.call('begin_export', **ids)
+    time.sleep(1.1)  # exported_at has one-second resolution
+    assert client.call('finish_export', export_id=export['export_id'],
+                       exit_ok=run_export(task))['status'] == 'complete'
+    revision = env.service.tasks.task_row(lease['task_id'])['content_revision']
+
+    reply = client.call('set_attention', flagged=True, request_id='attention-on', **ids)
+    assert reply['attention']['by'] == 'alice' and attention_of(task.workspace)['by'] == 'alice'
+    assert summarize_task(task.workspace)['status'] == 'Attention'
+    # not a change of the task: the review and the export stay current
+    assert reply['content_revision'] == revision
+    assert task_status(task.workspace) == 'under review'
+    status = client.call('export_status', task_id=lease['task_id'])
+    assert status['review_current'] and status['export_current']
+    assert client.call('set_attention', flagged=True, request_id='attention-on',
+                       **ids).get('replayed')
+    with pytest.raises(ClientError) as error:
+        client.call('mark_done', **ids)
+    assert error.value.code == 'invalid' and 'attention' in str(error.value)
+
+    client.call('set_attention', flagged=False, request_id='attention-off', **ids)
+    assert attention_of(task.workspace) is None
+    client.call('mark_done', **ids)
+    assert task_status(task.workspace) == 'done'
+
+
+def test_a_flag_set_by_a_local_window_reaches_the_service(env):
+    task = env.task
+    TaskState(task.workspace, 'bob').save_attention(True)  # a window in local mode
+    client = env.client('alice', ':2')
+    lease = client.call('open_task', workspace=task.workspace)
+    ids = dict(task_id=lease['task_id'], lease_epoch=lease['lease_epoch'])
+    state = env.service.tasks.task_row(lease['task_id'])['state']
+    assert state['attention']['by'] == 'bob'
+    client.call('set_attention', flagged=False, **ids)
+    assert attention_of(task.workspace) is None
 
 
 def test_the_browser_exports_and_marks_done_through_the_service(env, qapp):

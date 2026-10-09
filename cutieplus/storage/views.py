@@ -11,10 +11,11 @@ from os import path
 from typing import Dict, List, Optional
 
 from cutieplus.storage.objects import write_file_durably
-from gui.task_state import (ANCHORS_FILE, DESCRIPTION_FILE, INTERVAL_FILE, PREFILL_FILE,
-                            PROGRESS_FILE)
+from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, INTERVAL_FILE,
+                            PREFILL_FILE, PROGRESS_FILE)
 
-JSON_FILES = (ANCHORS_FILE, PREFILL_FILE, PROGRESS_FILE, INTERVAL_FILE, DESCRIPTION_FILE)
+JSON_FILES = (ANCHORS_FILE, PREFILL_FILE, PROGRESS_FILE, INTERVAL_FILE, DESCRIPTION_FILE,
+              ATTENTION_FILE)
 MASKS_DIR = 'masks'
 
 Stat = Optional[List[int]]  # [size, mtime_ns]; None: no file

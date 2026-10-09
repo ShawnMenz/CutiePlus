@@ -7,9 +7,9 @@ import pytest
 
 from gui.annotators import annotator_for_display, display_port, save_annotators
 from gui.edit_history import Edit, EditHistory, FrameState
-from gui.task_state import (TaskLock, TaskLocked, TaskState, check_intervals, intervals_from_payload,
-                            intervals_payload, lock_holder, mark_done, submit_for_review,
-                            task_status)
+from gui.task_state import (ATTENTION_FILE, TaskLock, TaskLocked, TaskState, attention_of,
+                            check_intervals, intervals_from_payload, intervals_payload,
+                            lock_holder, mark_done, submit_for_review, summarize_task, task_status)
 from tests.helpers import make_task
 
 
@@ -104,3 +104,23 @@ def test_edit_history_limit_and_redo():
     assert history.redo() is edits[1]
     history.record(edits[0])
     assert history.redo() is None
+
+
+def test_need_attention_shows_as_the_status_and_stays_through_edits(tmp_path):
+    task = make_task(str(tmp_path), mask_anchors=(0, ))
+    state = TaskState(task.workspace, 'alice')
+    assert state.attention is None and summarize_task(task.workspace)['status'] == 'not started'
+    state.save_attention(True)
+    assert attention_of(task.workspace)['by'] == 'alice'
+    summary = summarize_task(task.workspace)
+    assert summary['status'] == 'Attention' and summary['attention']['by'] == 'alice'
+    assert task_status(task.workspace) == 'not started'  # the review status itself is unchanged
+    # only the button clears it: an edit and a submission keep it
+    state.set_anchor('000003', 'empty', edited=True)
+    state.save()
+    submit_for_review(task.workspace, 'bob')
+    assert summarize_task(task.workspace)['status'] == 'Attention'
+    assert TaskState(task.workspace, 'bob').attention['by'] == 'alice'
+    state.save_attention(False)
+    assert not path.exists(path.join(task.workspace, ATTENTION_FILE))
+    assert summarize_task(task.workspace)['status'] == 'under review'

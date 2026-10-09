@@ -256,6 +256,9 @@ class LocalTaskBackend:
         self.task.save_description(text)
         self.task.touch()
 
+    def set_attention(self, flagged: bool) -> None:
+        self.task.save_attention(flagged)
+
     def export_binary(self, target_objects: List[int],
                       progress: Callable[[float], None]) -> Optional[BinaryExport]:
         """Binary PNGs of the masks in binary_masks/; a task also writes its intervals and

@@ -67,6 +67,7 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 
 - Visualization mode: how the mask is drawn on screen.
 - Save binary PNGs (Ctrl+S): writes binary PNGs of the saved masks, `interval.txt` and `description.txt` into `binary_masks/`, and submits the sequence for review. These files are not the dataset; Export task masks writes that.
+- Need Attention (orange, beside Save binary PNGs): click it when the sequence needs further attention, for example a problem you cannot solve or a question for someone else. While it is on, the button is filled orange, the task browser shows the status Attention in red, and Mark done refuses the sequence. Click again to clear it. Edits and Save binary PNGs leave it as it is; hover over the button to see who turned it on and when.
 - Save overlay video (Ctrl+E): a video from saved visualizations (not the dataset). Output FPS and bitrate apply to it.
 - Save visualization and Save soft mask during propagation: write a file per frame into the task folder. Keep them off unless needed.
 
@@ -90,7 +91,7 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 
 **Status in the task browser**
 
-not started, then in progress (any change), then under review (Save binary PNGs), then done (Mark done in the browser, which exports first). Any change reopens a sequence. Hover over a status to see who last edited it. Tick Hide done (next to the filter box) to hide the done sequences in every tab; the counts at the bottom still include them. In the Target column the category is in bold.
+not started, then in progress (any change), then under review (Save binary PNGs), then done (Mark done in the browser, which exports first). Any change reopens a sequence. A sequence whose Need Attention is on shows Attention (red) instead, whatever its review status, until someone turns it off in the labeling window. Hover over a status to see who last edited it (and who asked for attention). Tick Hide done (next to the filter box) to hide the done sequences in every tab; the counts at the bottom still include them. In the Target column the category is in bold.
 
 **Several labelers at once**
 

@@ -33,8 +33,9 @@ from cutieplus.storage.db import Database, dumps, loads
 from cutieplus.storage.objects import ObjectStore
 from cutieplus.storage.views import JSON_FILES, TaskViews
 from gui.exporter import convert_mask_to_binary
-from gui.task_state import (ANCHORS_FILE, DESCRIPTION_FILE, INTERVAL_FILE, PREFILL_FILE,
-                            PROGRESS_FILE, TASK_FILE, TaskLock, TaskLocked, intervals_from_payload,
+from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, INTERVAL_FILE,
+                            PREFILL_FILE, PROGRESS_FILE, TASK_FILE, TaskLock, TaskLocked,
+                            intervals_from_payload,
                             load_task_set,
                             intervals_payload, next_anchor_entry, status_of, submitted_progress,
                             touched_progress, utc_now, write_description_text, write_interval_text)
@@ -222,6 +223,7 @@ class TaskService:
             'interval': views.read_json(INTERVAL_FILE),
             'description': views.read_json(DESCRIPTION_FILE),
             'progress': views.read_json(PROGRESS_FILE, {}) or {},
+            'attention': views.read_json(ATTENTION_FILE),
         }
         mask_stats = views.scan_masks()
         known = set(info.names)
@@ -311,6 +313,7 @@ class TaskService:
             PROGRESS_FILE: state['progress'] or None,
             INTERVAL_FILE: state['interval'],
             DESCRIPTION_FILE: state['description'],
+            ATTENTION_FILE: state.get('attention'),  # tasks imported before the flag have no key
         }
 
     def _write_json_views(self, info: TaskInfo, state: dict, frames: Dict[str, dict],
@@ -739,6 +742,18 @@ class TaskService:
 
         return self._task_change(task_id, session_id, epoch, request_id, 'description', mutate)
 
+    def set_attention(self, task_id, session_id, epoch, flagged, request_id=None) -> dict:
+        """The sequence needs further attention (Need Attention), or no longer does. Not a change
+        of the task: no new revision, and the review status stays."""
+
+        def mutate(conn, state, labeler, changes):
+            state['attention'] = {'at': self.clock(), 'by': labeler} if flagged else None
+            changes.json_files[ATTENTION_FILE] = state['attention']
+            return {'attention': state['attention']}
+
+        return self._task_change(task_id, session_id, epoch, request_id, 'attention', mutate,
+                                 touch=False)
+
     def intervals(self, info: TaskInfo, state: dict) -> List[tuple]:
         """As TaskState.intervals: set in Cutie, else curated, else the whole sequence."""
         if state['interval']:
@@ -903,6 +918,9 @@ class TaskService:
 
         def mutate(conn, state, labeler, changes):
             revision = self._revisions(conn, task_id)['content_revision']
+            if state.get('attention'):
+                raise TaskError('invalid', 'the task needs attention: toggle Need Attention off '
+                                'in its window first')
             status = status_of(state['progress'])
             if status != 'under review':
                 raise TaskError('invalid', f'the task is {status}; save its binary PNGs to submit '

@@ -27,7 +27,8 @@ from gui.annotator_manager import AnnotatorManager
 from gui.gui_utils import fit_window
 from gui.main_controller import MainController, load_networks
 from gui.task_export import start_export
-from gui.task_state import (TASK_FILE, TaskLock, TaskLocked, describe_holder, export_command,
+from gui.task_state import (ATTENTION_STATUS, TASK_FILE, TaskLock, TaskLocked, attention_of,
+                            describe_attention, describe_holder, export_command,
                             export_is_current, labeler_name, load_task_set, lock_holder, mark_done,
                             summarize_task, task_status)
 from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_theme,
@@ -41,6 +42,7 @@ STATUS_COLORS = {
     'in progress': QColor(230, 150, 30),
     'under review': QColor(70, 130, 230),
     'done': QColor(60, 170, 80),
+    ATTENTION_STATUS: QColor(211, 47, 47),  # Need Attention in the labeling window
 }
 
 
@@ -286,8 +288,12 @@ class TaskBrowser(QWidget):
             item.setData(Qt.ItemDataRole.DisplayRole, value)  # numbers sort numerically
             if column == STATUS_COLUMN:
                 item.setForeground(STATUS_COLORS[value])
+                tips = []
+                if summary['attention']:
+                    tips.append(f'needs attention, {describe_attention(summary["attention"])}')
                 if summary['last_edited_by']:
-                    item.setToolTip(f'last edited by {summary["last_edited_by"]}')
+                    tips.append(f'last edited by {summary["last_edited_by"]}')
+                item.setToolTip('\n'.join(tips))
             if column == ANNOTATORS_COLUMN:
                 # the names, for the per-annotator counts
                 item.setData(Qt.ItemDataRole.UserRole, summary['annotators'])
@@ -442,6 +448,10 @@ class TaskBrowser(QWidget):
         if selection is None:
             return
         split, sequence = selection
+        if attention_of(self.task_dir(split, sequence)):
+            self.log(f'{split}/{sequence} needs attention: open it and toggle Need Attention off '
+                     'first.')
+            return
         self.refresh_identity()
         if self.window_exporting(split, sequence):
             self.log(f'{split}/{sequence} is being exported from its labeling window; '
@@ -517,7 +527,10 @@ class TaskBrowser(QWidget):
 
     def finish_mark_done(self, split: str, sequence: str) -> None:
         workspace = self.task_dir(split, sequence)
-        if task_status(workspace) == 'under review':
+        if attention_of(workspace):  # flagged while it was being exported
+            self.log(f'{split}/{sequence} is exported, but it needs attention: it is not marked '
+                     'done.')
+        elif task_status(workspace) == 'under review':
             mark_done(workspace, self.labeler)
             self.log(f'{split}/{sequence} is done.')
         else:

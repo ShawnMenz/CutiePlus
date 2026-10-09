@@ -528,6 +528,10 @@ class Service:
                            request_id: Optional[str] = None) -> dict:
         return self.tasks.set_description(task_id, session_id, lease_epoch, text, request_id)
 
+    def op_set_attention(self, session_id: str, task_id: str, lease_epoch: int, flagged: bool,
+                         request_id: Optional[str] = None) -> dict:
+        return self.tasks.set_attention(task_id, session_id, lease_epoch, flagged, request_id)
+
     def op_submit_for_review(self, session_id: str, task_id: str, lease_epoch: int,
                              target_objects, request_id: Optional[str] = None) -> dict:
         self._no_running_job(task_id)

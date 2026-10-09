@@ -11,6 +11,9 @@ interval.json the dataset clip(s) when set in Cutie (1-indexed, inclusive): {sta
               interval.txt next to them
 description.json {text, by, updated_at}: the referring text when tuned in Cutie, in place of
               task.json's (the curated CSV's); saving binary PNGs also writes it as description.txt
+attention.json {at, by}: the sequence needs further attention (the window's Need Attention
+              button, which also removes it); the task browser shows its status as Attention, and
+              Mark done waits until it is removed. Edits and reviews leave it alone
 progress.json the review workflow: {last_edited, last_edited_by, edited_by} is rewritten on every
               change (so a change always needs a new review); edited_by lists everyone who has
               changed the task, in order of their first change; saving binary PNGs adds
@@ -52,6 +55,8 @@ INTERVAL_FILE = 'interval.json'
 INTERVAL_TEXT = 'interval.txt'
 DESCRIPTION_FILE = 'description.json'
 DESCRIPTION_TEXT = 'description.txt'
+ATTENTION_FILE = 'attention.json'
+ATTENTION_STATUS = 'Attention'  # the status the task browser shows for a flagged sequence
 TASK_SET_FILE = 'task_set.json'
 LOCK_FILE = 'lock.json'
 
@@ -143,6 +148,11 @@ def saved_description(workspace: str) -> Optional[str]:
     return saved.get('text') or None
 
 
+def attention_of(workspace: str) -> Optional[dict]:
+    # {at, by} while the sequence needs attention, else None
+    return _read_json(path.join(workspace, ATTENTION_FILE), {}) or None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
@@ -154,6 +164,18 @@ def labeler_name(argument: Optional[str] = None, task_root: Optional[str] = None
         return argument
     assigned = annotator_for_display(task_root) if task_root is not None else None
     return assigned or os.environ.get('CUTIE_LABELER') or getpass.getuser()
+
+
+def describe_attention(entry: Optional[dict]) -> str:
+    """e.g. 'flagged by alice at 10:32' (local time)."""
+    if not entry:
+        return ''
+    text = f'flagged by {entry.get("by", "?")}'
+    try:
+        text += f' at {datetime.fromisoformat(entry["at"]).astimezone():%H:%M}'
+    except (KeyError, TypeError, ValueError):
+        pass
+    return text
 
 
 def describe_holder(holder: dict) -> str:
@@ -294,7 +316,9 @@ def summarize_task(workspace: str) -> dict:
         'frames': task.get('frame_count', len(frame_files)),
         'mask_anchors': kinds.count('mask'),
         'empty_anchors': kinds.count('empty'),
-        'status': task_status(workspace),
+        # a sequence that needs attention shows that instead of its review status
+        'status': ATTENTION_STATUS if attention_of(workspace) else task_status(workspace),
+        'attention': attention_of(workspace),
         'last_edited_by': progress.get('last_edited_by'),
         'annotators': task_annotators(progress, anchors),
         'open_by': lock_holder(workspace),
@@ -407,6 +431,7 @@ class TaskState:
         self.anchors: Dict[str, dict] = _read_json(path.join(workspace, ANCHORS_FILE))
         prefill_path = path.join(workspace, PREFILL_FILE)
         self.prefill: Dict[str, dict] = _read_json(prefill_path) if path.exists(prefill_path) else {}
+        self.attention: Optional[dict] = attention_of(workspace)
 
     @staticmethod
     def is_task(workspace: Optional[str]) -> bool:
@@ -497,6 +522,17 @@ class TaskState:
         _write_json(path.join(self.workspace, DESCRIPTION_FILE),
                     {'text': text, 'by': self.labeler, 'updated_at': utc_now()})
         self.description = text
+
+    def save_attention(self, flagged: bool) -> None:
+        # not a change of the task: the review status and progress.json stay as they are
+        attention_path = path.join(self.workspace, ATTENTION_FILE)
+        if flagged:
+            self.attention = {'at': utc_now(), 'by': self.labeler}
+            _write_json(attention_path, self.attention)
+        else:
+            self.attention = None
+            if path.exists(attention_path):
+                os.remove(attention_path)
 
     def save(self) -> None:
         _write_json(path.join(self.workspace, ANCHORS_FILE), dict(sorted(self.anchors.items())))

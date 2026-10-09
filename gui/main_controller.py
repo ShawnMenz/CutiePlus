@@ -53,7 +53,8 @@ class MainController():
                  backend_factory: Optional[Callable[..., TaskBackend]] = None) -> None:
         """networks: models loaded by load_networks, to reuse them across tasks (local mode).
         on_task_event: called with 'exported' after an export, 'under review' once the task is
-        submitted, and 'closed' once the window has closed and every pending save is written.
+        submitted, 'attention' when Need Attention is toggled, and 'closed' once the window has
+        closed and every pending save is written.
         backend_factory: the shared service's backend (cutieplus.backends.shared); without it
         the window runs the models itself (local mode).
         Raises TaskLocked when another window has the task open."""
@@ -672,6 +673,19 @@ class MainController():
             self.gui.progressbar_update(0)
         else:
             self.gui.text(f'No visualization images found in {image_folder}')
+
+    def on_toggle_attention(self, flagged: bool) -> None:
+        # Need Attention: the sequence needs further attention; the task browser shows it as
+        # Attention and Mark done waits until it is off. Not a change of the task
+        try:
+            self.backend.set_attention(flagged)
+        except BackendError as exc:
+            self.gui.text(f'Need Attention not saved: {exc}')
+        else:
+            self.gui.text('Marked as needing attention.' if flagged else 'Attention cleared.')
+            if self.on_task_event is not None:
+                self.on_task_event(self, 'attention')
+        self.gui.refresh_attention_button()  # the saved state, also after a failure
 
     def on_export_binary(self):
         # export masks in binary format for other applications, e.g., ProPainter

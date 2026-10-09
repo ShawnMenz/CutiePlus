@@ -280,6 +280,10 @@ class SharedTaskBackend:
         self.content_revision = reply['content_revision']
         self.task.description = text
 
+    def set_attention(self, flagged: bool) -> None:
+        reply = self._call('set_attention', flagged=bool(flagged), request_id=new_request_id())
+        self.task.attention = reply['attention']
+
     def export_binary(self, target_objects: List[int],
                       progress: Callable[[float], None]) -> Optional[BinaryExport]:
         reply = self._call('submit_for_review', target_objects=list(target_objects),

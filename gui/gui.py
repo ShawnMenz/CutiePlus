@@ -15,10 +15,15 @@ from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
-from gui.task_state import interval_index_from
+from gui.task_state import describe_attention, interval_index_from
 from gui.tips_window import TipsWindow
 from gui.interactive_utils import (CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR,
                                    POSITIVE_CLICK_COLOR, color_map_np)
+
+# Need Attention: orange text, filled orange while the sequence is flagged
+ATTENTION_COLOR = '#ef6c00'
+ATTENTION_STYLE = (f'QPushButton {{ color: {ATTENTION_COLOR}; font-weight: bold; }}'
+                   f'QPushButton:checked {{ color: white; background: {ATTENTION_COLOR}; }}')
 
 # canvas view: Ctrl + wheel zooms at the cursor, the wheel scrolls (with Alt: sideways)
 ZOOM_STEP = 1.25  # per wheel notch
@@ -89,6 +94,12 @@ class GUI(QWidget):
                 'Writes binary PNGs of the task masks into binary_masks/ and submits the task '
                 'for review; the task browser\'s Mark done then accepts it. Not the dataset: that '
                 'comes from Export task masks / Mark done.')
+            # a toggle: the sequence needs further attention (orange; filled while on)
+            self.attention_button = QPushButton('Need Attention')
+            self.attention_button.setCheckable(True)
+            self.attention_button.setStyleSheet(ATTENTION_STYLE)
+            self.attention_button.clicked.connect(controller.on_toggle_attention)
+            self.refresh_attention_button()
 
         self.forward_run_button = QPushButton(FORWARD_LABEL)
         self.forward_run_button.clicked.connect(controller.on_forward_propagation)
@@ -327,6 +338,8 @@ class GUI(QWidget):
         overlay_topbox.addWidget(QLabel('Save soft mask during propagation'))
         overlay_topbox.addWidget(self.save_soft_mask_checkbox)
         overlay_topbox.addWidget(self.export_binary_button)
+        if task is not None:
+            overlay_topbox.addWidget(self.attention_button)
         overlay_botbox.addWidget(QLabel('Save visualization'))
         overlay_botbox.addWidget(self.save_visualization_combo)
         overlay_botbox.addWidget(self.export_video_button)
@@ -877,6 +890,16 @@ class GUI(QWidget):
         self.preview_index = number
         self.text(f'Interval {number + 1} of {len(intervals)}: frames {start}-{end} '
                   '(Shift+R plays it).')
+
+    def refresh_attention_button(self) -> None:
+        # checked while the task needs attention; who flagged it, in the tooltip
+        attention = self.controller.task.attention
+        self.attention_button.setChecked(attention is not None)
+        tip = ('This sequence needs further attention: the task browser shows it as Attention, '
+               'and Mark done waits until it is off. Click to toggle.')
+        if attention is not None:
+            tip += f'\nOn: {describe_attention(attention)}.'
+        self.attention_button.setToolTip(tip)
 
     def stop_playback(self) -> None:
         self.timer.stop()
