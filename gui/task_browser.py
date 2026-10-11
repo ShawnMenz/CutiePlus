@@ -15,20 +15,22 @@ from os import path
 from typing import Dict, Optional, Tuple
 
 from omegaconf import DictConfig, open_dict
-from PySide6.QtCore import QProcess, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QProcess, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton, QStyle,
+                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+                               QStyle,
                                QStyledItemDelegate, QStyleOptionViewItem, QTabWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from cutieplus.backends.base import BackendError
 from gui.annotator_manager import AnnotatorManager
-from gui.gui_utils import fit_window
+from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
 from gui.task_export import start_export
-from gui.task_state import (ATTENTION_STATUS, TASK_FILE, TaskLock, TaskLocked, attention_of,
-                            describe_attention, describe_holder, export_command,
+from gui.task_state import (ATTENTION_STATUS, DISCARDED_STATUS, TASK_FILE, TaskLock, TaskLocked,
+                            attention_of, curated_split, describe_attention, describe_holder,
+                            discard_of, discard_task, export_command,
                             export_is_current, labeler_name, load_task_set, lock_holder, mark_done,
                             summarize_task, task_status)
 from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_theme,
@@ -43,7 +45,11 @@ STATUS_COLORS = {
     'under review': QColor(70, 130, 230),
     'done': QColor(60, 170, 80),
     ATTENTION_STATUS: QColor(211, 47, 47),  # Need Attention in the labeling window
+    DISCARDED_STATUS: QColor(100, 100, 100),  # Discard, left out of the dataset; shown in italics
 }
+# discarded: dark gray, lighter in a dark theme where dark gray would vanish
+DISCARDED_COLORS = (STATUS_COLORS[DISCARDED_STATUS], QColor(150, 150, 150))
+HIDDEN_BY_HIDE_DONE = ('done', DISCARDED_STATUS)
 
 
 def theme_button_text(theme: str) -> str:
@@ -117,8 +123,8 @@ class TaskBrowser(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText('Filter by sequence, annotator or target text')
         self.search.textChanged.connect(self.apply_filter)
-        self.hide_done = QCheckBox('Hide done')
-        self.hide_done.setToolTip('Hide the sequences that are done (in every tab).')
+        self.hide_done = QCheckBox('Hide done / discarded')
+        self.hide_done.setToolTip('Hide the sequences that are done or discarded (in every tab).')
         self.hide_done.toggled.connect(self.apply_filter)
         # top right: cycles Auto, Light, Dark for every window of this program
         self.theme = saved_theme()
@@ -146,6 +152,7 @@ class TaskBrowser(QWidget):
             table.verticalHeader().setVisible(False)
             table.horizontalHeader().setSectionResizeMode(TARGET_COLUMN, QHeaderView.ResizeMode.Stretch)
             table.doubleClicked.connect(self.on_open)
+            table.itemSelectionChanged.connect(self.show_discard_action)
             table.setItemDelegateForColumn(TARGET_COLUMN, self.target_delegate)
             # sorting moves the rows, but the view keeps its hidden rows by position
             table.model().layoutChanged.connect(self.apply_filter)
@@ -162,6 +169,13 @@ class TaskBrowser(QWidget):
         done_button.clicked.connect(self.on_mark_done)
         # the filter box keeps the letter for itself while it has the focus
         QShortcut(QKeySequence(Qt.Key.Key_D), self).activated.connect(self.on_mark_done)
+        # leaves the selected sequence out of the dataset; Restore on a discarded one
+        self.discard_button = QPushButton('Discard')
+        self.discard_button.setToolTip(
+            'Leave the selected sequence out of the dataset: its done mark and Need Attention are '
+            'removed, and it cannot be exported or marked done. On a discarded sequence the '
+            'button restores it.')
+        self.discard_button.clicked.connect(self.on_discard)
         refresh_button = QPushButton('Refresh')
         refresh_button.clicked.connect(self.refresh)
         manage_button = QPushButton('Manage annotators')
@@ -174,10 +188,12 @@ class TaskBrowser(QWidget):
         self.stats.setTextFormat(Qt.TextFormat.RichText)
         self.stats.setWordWrap(True)
         self.tabs.currentChanged.connect(self.update_stats)
+        self.tabs.currentChanged.connect(self.show_discard_action)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        for button in (open_button, export_button, done_button, refresh_button, manage_button):
+        for button in (open_button, export_button, done_button, self.discard_button,
+                       refresh_button, manage_button):
             buttons.addWidget(button)
         layout = QVBoxLayout()
         filter_row = QHBoxLayout()
@@ -211,6 +227,22 @@ class TaskBrowser(QWidget):
         if self.windowTitle() != title:
             self.setWindowTitle(title)
         return self.labeler
+
+    def status_color(self, status: str) -> QColor:
+        if status == DISCARDED_STATUS:
+            return DISCARDED_COLORS[int(is_dark(self))]
+        return STATUS_COLORS[status]
+
+    def changeEvent(self, event) -> None:
+        # a new theme: the discarded gray follows it
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange and hasattr(self, 'stats'):
+            for table in self.tables.values():
+                for row in range(table.rowCount()):
+                    item = table.item(row, STATUS_COLUMN)
+                    if item is not None and item.text() == DISCARDED_STATUS:
+                        item.setForeground(self.status_color(DISCARDED_STATUS))
+            self.update_stats()
 
     def show_theme(self) -> None:
         self.theme_button.setText(theme_button_text(self.theme))
@@ -255,8 +287,8 @@ class TaskBrowser(QWidget):
             self.stats.clear()
             return
         counts = Counter(table.item(row, STATUS_COLUMN).text() for row in range(table.rowCount()))
-        parts = [f'<span style="color:{color.name()}">{status} {counts[status]}</span>'
-                 for status, color in reversed(STATUS_COLORS.items())]
+        parts = [f'<span style="color:{self.status_color(status).name()}">{status} '
+                 f'{counts[status]}</span>' for status in reversed(STATUS_COLORS)]
         # the sequences each annotator has worked on, whatever their status now; a sequence
         # counts for each of its annotators
         annotators = Counter()
@@ -291,8 +323,15 @@ class TaskBrowser(QWidget):
             item = QTableWidgetItem()
             item.setData(Qt.ItemDataRole.DisplayRole, value)  # numbers sort numerically
             if column == STATUS_COLUMN:
-                item.setForeground(STATUS_COLORS[value])
+                item.setForeground(self.status_color(value))
+                if value == DISCARDED_STATUS:
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
                 tips = []
+                if summary['discard']:
+                    tips.append('left out of the dataset, '
+                                f'{describe_attention(summary["discard"], "discarded")}')
                 if summary['attention']:
                     tips.append(f'needs attention, {describe_attention(summary["attention"])}')
                 if summary['last_edited_by']:
@@ -340,6 +379,7 @@ class TaskBrowser(QWidget):
                 table.setSortingEnabled(True)
                 self.apply_filter()  # e.g. a sequence just marked done leaves a list that hides done
                 self.update_stats()
+                self.show_discard_action()
                 return
 
     def apply_filter(self) -> None:
@@ -352,7 +392,8 @@ class TaskBrowser(QWidget):
                 searched = ' '.join(table.item(row, column).text().lower() for column in
                                     (SEQUENCE_COLUMN, ANNOTATORS_COLUMN, TARGET_COLUMN))
                 hidden = ((bool(text) and text not in searched)
-                          or (hide_done and table.item(row, STATUS_COLUMN).text() == 'done'))
+                          or (hide_done
+                              and table.item(row, STATUS_COLUMN).text() in HIDDEN_BY_HIDE_DONE))
                 table.setRowHidden(row, hidden)
             # a hidden row cannot stay selected: Open / Export / Mark done would act on it unseen
             if any(table.isRowHidden(index.row()) for index in table.selectionModel().selectedRows()):
@@ -452,6 +493,9 @@ class TaskBrowser(QWidget):
         if selection is None:
             return
         split, sequence = selection
+        if discard_of(self.task_dir(split, sequence)):
+            self.log(f'{split}/{sequence} is discarded: restore it first.')
+            return
         if attention_of(self.task_dir(split, sequence)):
             self.log(f'{split}/{sequence} needs attention: open it and toggle Need Attention off '
                      'first.')
@@ -489,6 +533,75 @@ class TaskBrowser(QWidget):
             self.finish_mark_done(split, sequence)
         else:
             self.export_task(split, sequence, then_mark_done=True)
+
+    def selected_status(self) -> Optional[str]:
+        # the Status of the selected row, without asking for a selection
+        table = self.tabs.currentWidget()
+        rows = table.selectionModel().selectedRows() if table is not None else []
+        return table.item(rows[0].row(), STATUS_COLUMN).text() if rows else None
+
+    def show_discard_action(self) -> None:
+        # Discard, or Restore on a discarded sequence
+        self.discard_button.setText('Restore' if self.selected_status() == DISCARDED_STATUS
+                                    else 'Discard')
+
+    def confirm_discard(self, split: str, sequence: str) -> bool:
+        answer = QMessageBox.question(
+            self, 'Discard', f'Discard {split}/{sequence}?\n\nIt is left out of the dataset: its '
+            'done mark and Need Attention are removed, and it cannot be exported or marked done. '
+            'Its masks and anchors stay; Restore brings it back.',
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        return answer == QMessageBox.StandardButton.Discard
+
+    def on_discard(self) -> None:
+        # the selected sequence is left out of the dataset, or restored when it is discarded
+        from cutieplus.client import ClientError, new_request_id
+        selection = self.selected_task()
+        if selection is None:
+            return
+        split, sequence = selection
+        workspace = self.task_dir(split, sequence)
+        discarded = discard_of(workspace) is None  # what this click does
+        action = 'discard it' if discarded else 'restore it'
+        if self.refuse_if_held_elsewhere(split, sequence, action):
+            return
+        if (split, sequence) in self.exports or self.window_exporting(split, sequence):
+            self.log(f'{split}/{sequence} is being exported; {action} once that finishes.')
+            return
+        if self.is_open(split, sequence) and self.controller.propagating:
+            self.log('Pause the propagation first.')
+            return
+        if discarded and not self.confirm_discard(split, sequence):
+            return
+        self.refresh_identity()
+        if self.service is not None:
+            lease = self.service_lease(split, sequence)
+            if lease is None:
+                return
+            task_id, epoch, taken = lease
+            try:
+                self.service.call('set_discard', task_id=task_id, lease_epoch=epoch,
+                                  discarded=discarded, request_id=new_request_id())
+            except ClientError as exc:
+                self.log(f'{split}/{sequence}: not {"discarded" if discarded else "restored"}: '
+                         f'{exc}')
+                return
+            finally:
+                self.release_service_lease(task_id, epoch, taken)
+        else:
+            discard_task(workspace, self.labeler, discarded)
+        if discarded:
+            if self.is_open(split, sequence):
+                self.controller.task.attention = None  # its window's Need Attention is off
+                self.controller.gui.refresh_attention_button()
+            self.log(f'{split}/{sequence} is discarded: it is left out of the dataset.')
+            if curated_split(self.task_root, sequence) == 'done':
+                self.log(f'Its row in the curated CSV says done: {split}/{sequence} stays in the '
+                         'dataset until that row changes (Cutie never edits the CSV).')
+        else:
+            self.log(f'{split}/{sequence} is restored; it needs a review and Mark done again.')
+        self.refresh_task(split, sequence)
 
     def service_lease(self, split: str, sequence: str) -> Optional[Tuple[str, int, bool]]:
         """(task id, lease epoch, taken here) of a task the browser exports or marks done in shared
@@ -542,6 +655,9 @@ class TaskBrowser(QWidget):
         self.refresh_task(split, sequence)
 
     def export_task(self, split: str, sequence: str, then_mark_done: bool) -> None:
+        if discard_of(self.task_dir(split, sequence)):
+            self.log(f'{split}/{sequence} is discarded: it is not exported.')
+            return
         if (split, sequence) in self.exports or self.window_exporting(split, sequence):
             self.log(f'{split}/{sequence} is already being exported.')
             return

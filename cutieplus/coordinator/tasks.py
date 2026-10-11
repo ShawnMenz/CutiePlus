@@ -33,9 +33,9 @@ from cutieplus.storage.db import Database, dumps, loads
 from cutieplus.storage.objects import ObjectStore
 from cutieplus.storage.views import JSON_FILES, TaskViews
 from gui.exporter import convert_mask_to_binary
-from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, INTERVAL_FILE,
-                            PREFILL_FILE, PROGRESS_FILE, TASK_FILE, TaskLock, TaskLocked,
-                            intervals_from_payload,
+from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, DISCARD_FILE,
+                            INTERVAL_FILE, PREFILL_FILE, PROGRESS_FILE, TASK_FILE, TaskLock,
+                            TaskLocked, discarded_progress, intervals_from_payload,
                             load_task_set,
                             intervals_payload, next_anchor_entry, status_of, submitted_progress,
                             touched_progress, utc_now, write_description_text, write_interval_text)
@@ -224,6 +224,7 @@ class TaskService:
             'description': views.read_json(DESCRIPTION_FILE),
             'progress': views.read_json(PROGRESS_FILE, {}) or {},
             'attention': views.read_json(ATTENTION_FILE),
+            'discard': views.read_json(DISCARD_FILE),
         }
         mask_stats = views.scan_masks()
         known = set(info.names)
@@ -314,6 +315,7 @@ class TaskService:
             INTERVAL_FILE: state['interval'],
             DESCRIPTION_FILE: state['description'],
             ATTENTION_FILE: state.get('attention'),  # tasks imported before the flag have no key
+            DISCARD_FILE: state.get('discard'),
         }
 
     def _write_json_views(self, info: TaskInfo, state: dict, frames: Dict[str, dict],
@@ -747,11 +749,37 @@ class TaskService:
         of the task: no new revision, and the review status stays."""
 
         def mutate(conn, state, labeler, changes):
+            if flagged and state.get('discard'):
+                raise TaskError('invalid', 'the task is discarded: restore it in the task browser '
+                                'first')
             state['attention'] = {'at': self.clock(), 'by': labeler} if flagged else None
             changes.json_files[ATTENTION_FILE] = state['attention']
             return {'attention': state['attention']}
 
         return self._task_change(task_id, session_id, epoch, request_id, 'attention', mutate,
+                                 touch=False)
+
+    def set_discard(self, task_id, session_id, epoch, discarded, request_id=None) -> dict:
+        """Discard (the task browser): the sequence is left out of the dataset. Its done mark goes
+        (the dataset's done list reads it) and Need Attention is turned off; masks, anchors and
+        the review stay, and there is no new revision. Restore (discarded False) only removes the
+        discard."""
+
+        def mutate(conn, state, labeler, changes):
+            state['discard'] = {'at': self.clock(), 'by': labeler} if discarded else None
+            changes.json_files[DISCARD_FILE] = state['discard']
+            if discarded:
+                if state.get('attention'):
+                    state['attention'] = None
+                    changes.json_files[ATTENTION_FILE] = None
+                progress = discarded_progress(state['progress'])
+                if progress != state['progress']:
+                    state['progress'] = progress
+                    state.pop('done_revision', None)
+                    changes.json_files[PROGRESS_FILE] = progress or None
+            return {'discard': state['discard']}
+
+        return self._task_change(task_id, session_id, epoch, request_id, 'discard', mutate,
                                  touch=False)
 
     def intervals(self, info: TaskInfo, state: dict) -> List[tuple]:
@@ -850,6 +878,8 @@ class TaskService:
             with self.db.transaction() as conn:
                 self.check_lease(conn, task_id, session_id, epoch)
             row = self.task_row(task_id)
+            if row['state'].get('discard'):
+                raise TaskError('invalid', 'the task is discarded: it is not exported')
             if row['view_revision'] < row['content_revision']:
                 self.sync_views(info)
             export_id = uuid.uuid4().hex[:16]
@@ -918,6 +948,8 @@ class TaskService:
 
         def mutate(conn, state, labeler, changes):
             revision = self._revisions(conn, task_id)['content_revision']
+            if state.get('discard'):
+                raise TaskError('invalid', 'the task is discarded: restore it first')
             if state.get('attention'):
                 raise TaskError('invalid', 'the task needs attention: toggle Need Attention off '
                                 'in its window first')

@@ -26,8 +26,8 @@ from gui.exporter import convert_frames_to_video
 from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_export import start_export
 from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, TaskLock, TaskState,
-                            check_intervals, export_command, format_intervals, labeler_name,
-                            load_task_set, task_root_of)
+                            check_intervals, discard_of, export_command, format_intervals,
+                            labeler_name, load_task_set, task_root_of)
 
 log = logging.getLogger()
 
@@ -547,6 +547,10 @@ class MainController():
         if (self.task is None or self.propagating or self.export_process is not None
                 or self.browser_exporting):
             return
+        if discard_of(self.task.workspace):
+            self.gui.text('This sequence is discarded: it is not exported (Restore in the task '
+                          'browser brings it back).')
+            return
         task_set = self.task_set()
         if task_set is None:
             return
@@ -696,6 +700,10 @@ class MainController():
     def on_toggle_attention(self, flagged: bool) -> None:
         # Need Attention: the sequence needs further attention; the task browser shows it as
         # Attention and Mark done waits until it is off. Not a change of the task
+        if flagged and discard_of(self.task.workspace):
+            self.gui.text('This sequence is discarded: restore it in the task browser first.')
+            self.gui.refresh_attention_button()
+            return
         try:
             self.backend.set_attention(flagged)
         except BackendError as exc:

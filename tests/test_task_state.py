@@ -8,8 +8,9 @@ import pytest
 from gui.annotators import annotator_for_display, display_port, save_annotators
 from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_state import (ATTENTION_FILE, TaskLock, TaskLocked, TaskState, attention_of,
-                            check_intervals, intervals_from_payload, intervals_payload,
-                            lock_holder, mark_done, submit_for_review, summarize_task, task_status)
+                            check_intervals, discard_of, discard_task, intervals_from_payload,
+                            intervals_payload, lock_holder, mark_done, submit_for_review,
+                            summarize_task, task_status)
 from tests.helpers import make_task
 
 
@@ -124,3 +125,25 @@ def test_need_attention_shows_as_the_status_and_stays_through_edits(tmp_path):
     state.save_attention(False)
     assert not path.exists(path.join(task.workspace, ATTENTION_FILE))
     assert summarize_task(task.workspace)['status'] == 'under review'
+
+
+def test_discard_drops_the_done_mark_and_attention_and_restore_brings_the_review_back(tmp_path):
+    task = make_task(str(tmp_path), mask_anchors=(0, ))
+    state = TaskState(task.workspace, 'alice')
+    state.set_anchor('000003', 'empty', edited=True)
+    state.save()
+    submit_for_review(task.workspace, 'bob')
+    mark_done(task.workspace, 'carol')
+    state.save_attention(True)
+    anchors = task.anchors()
+    discard_task(task.workspace, 'dave', True)
+    summary = summarize_task(task.workspace)
+    assert summary['status'] == 'discarded' and summary['discard']['by'] == 'dave'
+    assert attention_of(task.workspace) is None  # Need Attention is turned off
+    with open(path.join(task.workspace, 'progress.json')) as f:
+        progress = json.load(f)
+    assert 'done_at' not in progress and 'review_at' in progress  # never listed as done again
+    assert task.anchors() == anchors  # the labels stay
+    discard_task(task.workspace, 'dave', False)
+    assert discard_of(task.workspace) is None
+    assert summarize_task(task.workspace)['status'] == 'under review'  # Mark done again

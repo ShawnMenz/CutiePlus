@@ -14,6 +14,9 @@ description.json {text, by, updated_at}: the referring text when tuned in Cutie,
 attention.json {at, by}: the sequence needs further attention (the window's Need Attention
               button, which also removes it); the task browser shows its status as Attention, and
               Mark done waits until it is removed. Edits and reviews leave it alone
+discard.json  {at, by}: the sequence is left out of the dataset (the task browser's Discard,
+              which Restore undoes); its status is discarded, its done mark and Need Attention are
+              removed, and Mark done and Export refuse it
 progress.json the review workflow: {last_edited, last_edited_by, edited_by} is rewritten on every
               change (so a change always needs a new review); edited_by lists everyone who has
               changed the task, in order of their first change; saving binary PNGs adds
@@ -57,6 +60,8 @@ DESCRIPTION_FILE = 'description.json'
 DESCRIPTION_TEXT = 'description.txt'
 ATTENTION_FILE = 'attention.json'
 ATTENTION_STATUS = 'Attention'  # the status the task browser shows for a flagged sequence
+DISCARD_FILE = 'discard.json'
+DISCARDED_STATUS = 'discarded'  # before any other status
 TASK_SET_FILE = 'task_set.json'
 LOCK_FILE = 'lock.json'
 
@@ -153,6 +158,25 @@ def attention_of(workspace: str) -> Optional[dict]:
     return _read_json(path.join(workspace, ATTENTION_FILE), {}) or None
 
 
+def discard_of(workspace: str) -> Optional[dict]:
+    # {at, by} while the sequence is discarded, else None
+    return _read_json(path.join(workspace, DISCARD_FILE), {}) or None
+
+
+def curated_split(task_root: str, sequence_id: str) -> Optional[str]:
+    """The split of the sequence's row in the curated CSV (row n is sequence n), None when it
+    cannot be read."""
+    try:
+        csv_path = load_task_set(task_root)['curated_csv']
+        with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+            for index, row in enumerate(csv.DictReader(stream), 1):
+                if f'{index:04d}' == sequence_id:
+                    return (row.get('split') or '').strip()
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
@@ -166,11 +190,11 @@ def labeler_name(argument: Optional[str] = None, task_root: Optional[str] = None
     return assigned or os.environ.get('CUTIE_LABELER') or getpass.getuser()
 
 
-def describe_attention(entry: Optional[dict]) -> str:
-    """e.g. 'flagged by alice at 10:32' (local time)."""
+def describe_attention(entry: Optional[dict], verb: str = 'flagged') -> str:
+    """e.g. 'flagged by alice at 10:32' (local time); also for a discard."""
     if not entry:
         return ''
-    text = f'flagged by {entry.get("by", "?")}'
+    text = f'{verb} by {entry.get("by", "?")}'
     try:
         text += f' at {datetime.fromisoformat(entry["at"]).astimezone():%H:%M}'
     except (KeyError, TypeError, ValueError):
@@ -316,9 +340,11 @@ def summarize_task(workspace: str) -> dict:
         'frames': task.get('frame_count', len(frame_files)),
         'mask_anchors': kinds.count('mask'),
         'empty_anchors': kinds.count('empty'),
-        # a sequence that needs attention shows that instead of its review status
-        'status': ATTENTION_STATUS if attention_of(workspace) else task_status(workspace),
+        # a discarded sequence shows that, else one that needs attention, else its review status
+        'status': (DISCARDED_STATUS if discard_of(workspace) else
+                   ATTENTION_STATUS if attention_of(workspace) else task_status(workspace)),
         'attention': attention_of(workspace),
+        'discard': discard_of(workspace),
         'last_edited_by': progress.get('last_edited_by'),
         'annotators': task_annotators(progress, anchors),
         'open_by': lock_holder(workspace),
@@ -364,6 +390,26 @@ def mark_done(workspace: str, labeler: str) -> None:
     _update_progress(workspace, done_at=utc_now(), done_by=labeler)
 
 
+def discard_task(workspace: str, labeler: str, discarded: bool) -> None:
+    """Discard: the sequence is left out of the dataset. Its done mark goes (the dataset's done
+    list reads it) and Need Attention is turned off; masks, anchors and the review stay. Restore
+    (discarded False) only removes the discard."""
+    discard_path = path.join(workspace, DISCARD_FILE)
+    if not discarded:
+        if path.exists(discard_path):
+            os.remove(discard_path)
+        return
+    _write_json(discard_path, {'at': utc_now(), 'by': labeler})
+    progress_path = path.join(workspace, PROGRESS_FILE)
+    if path.exists(progress_path):
+        progress = _read_json(progress_path)
+        if discarded_progress(progress) != progress:
+            _write_json(progress_path, discarded_progress(progress))
+    attention_path = path.join(workspace, ATTENTION_FILE)
+    if path.exists(attention_path):
+        os.remove(attention_path)
+
+
 # the rules of anchors and of the review status, shared by TaskState (local mode) and the shared
 # service's coordinator, so both record changes alike
 def next_anchor_entry(previous: Optional[dict], kind: str, edited: bool, labeler: str,
@@ -401,6 +447,11 @@ def submitted_progress(progress: dict, labeler: str, now: str) -> dict:
     progress['review_at'] = now
     progress['review_by'] = labeler
     return progress
+
+
+def discarded_progress(progress: dict) -> dict:
+    """progress.json of a discarded sequence: no done mark."""
+    return {key: value for key, value in progress.items() if key not in ('done_at', 'done_by')}
 
 
 def status_of(progress: dict) -> str:

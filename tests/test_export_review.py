@@ -10,7 +10,7 @@ from os import path
 import pytest
 
 from cutieplus.client import ClientError
-from gui.task_state import (TaskState, attention_of, export_command, load_task_set,
+from gui.task_state import (TaskState, attention_of, discard_of, export_command, load_task_set,
                             summarize_task, task_status)
 from tests.conftest import compose_gui_config
 from tests.helpers import ellipse_mask, make_task
@@ -121,6 +121,43 @@ def test_a_sequence_that_needs_attention_is_not_marked_done(env):
     client.call('set_attention', flagged=False, request_id='attention-off', **ids)
     assert attention_of(task.workspace) is None
     client.call('mark_done', **ids)
+    assert task_status(task.workspace) == 'done'
+
+
+def test_a_discarded_sequence_is_never_done_or_exported_until_it_is_restored(env):
+    task = env.task
+    client = env.client('alice', ':2')
+    lease = client.call('open_task', workspace=task.workspace)
+    ids = dict(task_id=lease['task_id'], lease_epoch=lease['lease_epoch'])
+
+    def export_and_mark_done():
+        export = client.call('begin_export', **ids)
+        time.sleep(1.1)  # exported_at has one-second resolution
+        assert client.call('finish_export', export_id=export['export_id'],
+                           exit_ok=run_export(task))['status'] == 'complete'
+        client.call('mark_done', **ids)
+
+    client.call('commit_frame', frame='000003', mask=ellipse_mask(2, 8), anchor='edit', **ids)
+    client.call('submit_for_review', target_objects=[1], **ids)
+    export_and_mark_done()
+    client.call('set_attention', flagged=True, **ids)
+    revision = env.service.tasks.task_row(lease['task_id'])['content_revision']
+
+    reply = client.call('set_discard', discarded=True, request_id='discard-1', **ids)
+    assert reply['discard']['by'] == 'alice' and reply['content_revision'] == revision
+    assert summarize_task(task.workspace)['status'] == 'discarded'
+    assert task_status(task.workspace) == 'under review'  # the done mark is gone
+    assert attention_of(task.workspace) is None
+    assert client.call('set_discard', discarded=True, request_id='discard-1', **ids).get('replayed')
+    for op, args in (('mark_done', {}), ('begin_export', {}), ('set_attention', {'flagged': True})):
+        with pytest.raises(ClientError) as error:
+            client.call(op, **args, **ids)
+        assert error.value.code == 'invalid' and 'discarded' in str(error.value), op
+
+    client.call('set_discard', discarded=False, **ids)
+    assert discard_of(task.workspace) is None
+    assert summarize_task(task.workspace)['status'] == 'under review'
+    export_and_mark_done()
     assert task_status(task.workspace) == 'done'
 
 
