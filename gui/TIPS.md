@@ -9,10 +9,12 @@
 
 **Mouse**
 
-- Left click: add to the target (green dot).
-- Right click: remove from the target (red dot).
-- Ctrl + wheel: zoom in / out at the cursor (back to fit at the smallest zoom).
-- Wheel / Alt + wheel: scroll up-down / left-right when zoomed in.
+- Left click (or , with the pointer on the image): add to the target (green dot).
+- Right click (or . with the pointer on the image): remove from the target (red dot).
+- Ctrl + wheel (or Ctrl + + / Ctrl + -): zoom in / out at the cursor (back to fit at the smallest zoom); Ctrl + 0 shows the whole image again.
+- Wheel / Alt + wheel (or the arrow keys): scroll up-down / left-right when zoomed in.
+
+Without a mouse (a touchpad): move the pointer with the touchpad and press , and . instead of the buttons; the keys work alongside the mouse.
 
 The dots belong to the current frame's clicks. They clear when you change frame, mark an anchor, or reset.
 
@@ -20,7 +22,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 
 | Key | Action |
 |---|---|
-| A / D | previous / next frame (the arrow keys do not move frames) |
+| A / D | previous / next frame (the arrow keys do not move frames: they scroll a zoomed image) |
 | Shift + A / D | 10 frames back / forward |
 | Alt + A / D | first / last frame |
 | Ctrl + A / D | previous / next anchor frame (also [ / ]) |
@@ -36,6 +38,9 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | T | show RGB / thermal; F / B then propagate on the frames shown |
 | Ctrl+Z | undo the last click, otherwise the last frame edit |
 | Ctrl+Shift+Z or Ctrl+Y | redo |
+| , / . | left / right click at the pointer: add to / remove from the target |
+| Ctrl + + / Ctrl + - / Ctrl + 0 | zoom in / out / show the whole image |
+| Arrow keys | scroll the image when zoomed in |
 | Q | close this window |
 
 Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot be undone; propagate again instead.

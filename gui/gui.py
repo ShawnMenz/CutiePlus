@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
                                QMessageBox, QFrame, QLineEdit, QScrollArea, QSplitter, QStyle)
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QPainter,
-                           QColor)
+                           QColor, QCursor)
 from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
@@ -494,6 +494,23 @@ class GUI(QWidget):
                   self).activated.connect(functools.partial(self.on_jump_interval, -1))
         QShortcut(QKeySequence(Qt.Key.Key_T), self).activated.connect(controller.on_toggle_modality)
 
+        # without a mouse (a touchpad): , and . click at the pointer as the left and right buttons
+        # do; Ctrl + + / Ctrl + - zoom as Ctrl + wheel, Ctrl+0 fits the image, and the arrows
+        # scroll a zoomed view as the wheel. The mouse works as before
+        for key, action in ((Qt.Key.Key_Comma, 'left'), (Qt.Key.Key_Period, 'right')):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setAutoRepeat(False)  # a held key adds one click, not a burst
+            shortcut.activated.connect(functools.partial(self.on_key_click, action))
+        for keys, factor in ((('Ctrl+=', 'Ctrl++'), ZOOM_STEP), (('Ctrl+-', ), 1 / ZOOM_STEP)):
+            for keys_text in keys:
+                QShortcut(QKeySequence(keys_text),
+                          self).activated.connect(functools.partial(self.on_key_zoom, factor))
+        QShortcut(QKeySequence('Ctrl+0'), self).activated.connect(self.on_fit_view)
+        for key, notches_x, notches_y in ((Qt.Key.Key_Left, 1, 0), (Qt.Key.Key_Right, -1, 0),
+                                          (Qt.Key.Key_Up, 0, 1), (Qt.Key.Key_Down, 0, -1)):
+            QShortcut(QKeySequence(key), self).activated.connect(
+                functools.partial(self.on_key_scroll, notches_x, notches_y))
+
         # undo/redo of clicks and frame edits
         QShortcut(QKeySequence('Ctrl+Z'), self).activated.connect(controller.on_undo)
         for keys in ('Ctrl+Shift+Z', 'Ctrl+Y'):
@@ -761,6 +778,44 @@ class GUI(QWidget):
         self.view_center = (image_x - (position.x() - self.main_canvas.width() / 2) / scale,
                             image_y - (position.y() - self.main_canvas.height() / 2) / scale)
         self.render_canvas()
+
+    def pointer_on_canvas(self) -> QPointF:
+        # where the pointer is, in canvas coordinates (outside the canvas too)
+        return QPointF(self.main_canvas.mapFromGlobal(QCursor.pos()))
+
+    def on_key_click(self, action: str) -> None:
+        # , and .: a left / right click at the pointer, for a touchpad without buttons
+        if self.canvas_image is None:
+            return
+        pointer = self.pointer_on_canvas()
+        if (not self.main_canvas.rect().contains(pointer.toPoint())
+                or self.is_pos_out_of_bound(pointer.x(), pointer.y())):
+            self.text('Move the pointer over the image, then press , (add) or . (remove).')
+            return
+        self.click_fn(action, *self.get_scaled_pos(pointer.x(), pointer.y()))
+
+    def on_key_zoom(self, factor: float) -> None:
+        # Ctrl + + / Ctrl + -: at the pointer when it is on the canvas (as Ctrl + wheel), else at
+        # the centre
+        if self.canvas_image is None:
+            return
+        pointer = self.pointer_on_canvas()
+        if not self.main_canvas.rect().contains(pointer.toPoint()):
+            pointer = QPointF(self.main_canvas.width() / 2, self.main_canvas.height() / 2)
+        self.zoom_at(pointer, factor)
+
+    def on_fit_view(self) -> None:
+        # Ctrl+0: the whole image again
+        if self.canvas_image is None:
+            return
+        self.zoom = 1.0
+        self.view_center = None
+        self.render_canvas()
+
+    def on_key_scroll(self, notches_x: float, notches_y: float) -> None:
+        # the arrows, one wheel notch each; an image that fits the canvas does not move
+        if self.canvas_image is not None:
+            self.scroll_view(notches_x, notches_y)
 
     def scroll_view(self, notches_x: float, notches_y: float) -> None:
         # wheel up / left moves the view up / left
