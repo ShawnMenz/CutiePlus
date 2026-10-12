@@ -39,6 +39,8 @@ from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_
 
 COLUMNS = ('Sequence', 'Frames', 'Anchors', 'Status', 'Annotators', 'Open by', 'Modality', 'Target')
 SEQUENCE_COLUMN, STATUS_COLUMN, ANNOTATORS_COLUMN, OPEN_BY_COLUMN, TARGET_COLUMN = 0, 3, 4, 5, 7
+# on a Status item: how many intervals the sequence adds to the dataset (0 unless marked done)
+CONFIRMED_INTERVALS_ROLE = Qt.ItemDataRole.UserRole + 1
 LOCK_REFRESH_MS = 10000  # Open by follows the other sessions
 STATUS_COLORS = {
     'not started': QColor(140, 140, 140),
@@ -251,6 +253,10 @@ class TaskBrowser(QWidget):
         self.stats = QLabel()
         self.stats.setTextFormat(Qt.TextFormat.RichText)
         self.stats.setWordWrap(True)
+        self.stats.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.stats.setToolTip(f'Total Intervals: the intervals of the sequences marked done, in '
+                              f'every tab ({", ".join(self.task_set["splits"])}); each is a clip '
+                              'of the dataset. Discarded sequences never count.')
         self.tabs.currentChanged.connect(self.update_stats)
         self.tabs.currentChanged.connect(self.show_discard_action)
 
@@ -274,11 +280,12 @@ class TaskBrowser(QWidget):
         tasks.addWidget(self.tabs, 1)
         tasks.addLayout(buttons)
         layout.addWidget(Card(tasks, stretch=True), 1)
-        messages = QVBoxLayout()
-        messages.setSpacing(GAP)
-        messages.addWidget(self.console)
-        messages.addWidget(self.stats)
-        layout.addWidget(Card(messages, title='Messages'))
+        # the messages and the statistics, side by side so the table keeps its height
+        bottom = QHBoxLayout()
+        bottom.setSpacing(10)
+        bottom.addWidget(Card(self.console, title='Messages'), 3)
+        bottom.addWidget(Card(self.stats, title='Statistics'), 2)
+        layout.addLayout(bottom)
         self.setLayout(layout)
 
         self.refresh()
@@ -379,7 +386,13 @@ class TaskBrowser(QWidget):
         if unrecorded:
             by_annotator.append(f'not recorded {unrecorded}')
         self.stats.setText(f'<b>{split}</b>: {table.rowCount()} tasks · ' + ' · '.join(parts) +
-                           '<br>By annotator: ' + (' · '.join(by_annotator) or 'none yet'))
+                           '<br>By annotator: ' + (' · '.join(by_annotator) or 'none yet') +
+                           f'<br>Total Intervals: {self.confirmed_intervals()}')
+
+    def confirmed_intervals(self) -> int:
+        """The intervals of the sequences marked done, in every tab: the dataset's clips."""
+        return sum(table.item(row, STATUS_COLUMN).data(CONFIRMED_INTERVALS_ROLE) or 0
+                   for table in self.tables.values() for row in range(table.rowCount()))
 
     @staticmethod
     def open_by_text(holder: Optional[dict]) -> str:
@@ -400,6 +413,8 @@ class TaskBrowser(QWidget):
             item.setData(Qt.ItemDataRole.DisplayRole, value)  # numbers sort numerically
             if column == STATUS_COLUMN:
                 item.setForeground(self.status_color(value))
+                item.setData(CONFIRMED_INTERVALS_ROLE,
+                             summary['intervals'] if summary['done'] else 0)
                 if value == DISCARDED_STATUS:
                     font = item.font()
                     font.setItalic(True)

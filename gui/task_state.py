@@ -387,6 +387,7 @@ def summarize_task(workspace: str) -> dict:
     progress = _read_json(path.join(workspace, PROGRESS_FILE), {})
     kinds = [anchor['kind'] for anchor in anchors.values()]
     frame_files = task.get('frame_files', {}).get(task['anchor_modality'], [])
+    interval_payload = _read_json(path.join(workspace, INTERVAL_FILE), {})
     return {
         'split': task['split'],
         'sequence': task['sequence_id'],
@@ -398,6 +399,10 @@ def summarize_task(workspace: str) -> dict:
                    ATTENTION_STATUS if attention_of(workspace) else task_status(workspace)),
         'attention': attention_of(workspace),
         'discard': discard_of(workspace),
+        # marked done (also when flagged later; a discard removes the mark), and its clips: the
+        # saved intervals, else the curated one or the whole sequence
+        'done': status_of(progress) == 'done',
+        'intervals': len(intervals_from_payload(interval_payload)) if interval_payload else 1,
         'last_edited_by': progress.get('last_edited_by'),
         'annotators': task_annotators(progress, anchors),
         'open_by': lock_holder(workspace),

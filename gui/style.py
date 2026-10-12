@@ -246,8 +246,9 @@ class Card(QFrame):
             self.body.setObjectName('cardBody')  # transparent on the card (the style sheet)
         if stretch:
             layout.addWidget(self.body, 1)
-        else:  # a card taller than its content keeps it at the top
-            layout.addWidget(self.body, 0, Qt.AlignmentFlag.AlignTop)
+        else:  # a card taller than its content keeps the title and the content at the top
+            layout.addWidget(self.body)
+            layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         if collapsible:
             self.toggle.setChecked(expanded)
             self.set_expanded(expanded)
