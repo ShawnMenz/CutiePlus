@@ -2,7 +2,7 @@ import html
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPalette, QRegion, QValidator
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPalette, QPen, QRegion, QValidator
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QPushButton,
                                QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
                                QStyleOptionSlider, QToolButton, QWidget)
@@ -94,15 +94,16 @@ class FrameSlider(QSlider):
     """The frame slider. Frames are stepped with A / D, so the arrow keys are left alone (a slider
     would otherwise step on them); Home / End and PageUp / PageDown still move it. In task mode it
     shows the task's intervals as bands along the groove, the one being previewed stronger, and
-    its anchors as vertical lines: black (white in a dark theme) for a mask anchor, magenta for an
-    empty one."""
+    its anchors as small hollow rings on the groove: black (white in a dark theme) for a mask anchor,
+    magenta for an empty one."""
 
     # the secondary green (gui/style.py), as rounded segments on the groove
     BAND_COLOR = (80, 158, 47)
     BAND_ALPHA, ACTIVE_ALPHA = 110, 210
     BAND_HEIGHT = 10  # px
     BAND_GAP = 2  # px between two intervals that touch, so they read as two clips
-    ANCHOR_WIDTH = 2  # px
+    ANCHOR_DIAMETER = 10  # px: a ring smaller than the handle
+    ANCHOR_PEN = 2  # px: its outline
     MASK_ANCHOR_COLORS = ('#000000', '#ffffff')  # light, dark theme
 
     def __init__(self, orientation) -> None:
@@ -133,23 +134,31 @@ class FrameSlider(QSlider):
         super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:
-        # the bands and the anchor lines go on top (the theme paints an opaque background), around
+        # the bands and the anchor rings go on top (the theme paints an opaque background), around
         # the handle
         super().paintEvent(event)
         self.paint_interval_bands()
-        self.paint_anchor_lines()
+        self.paint_anchor_marks()
 
-    def paint_anchor_lines(self) -> None:
+    def anchor_ring(self, ti: int, centre) -> QRectF:
+        # the ring's path for frame ti (0-indexed), centred on the groove; the pen straddles it
+        radius = (self.ANCHOR_DIAMETER - self.ANCHOR_PEN) / 2
+        y = QRectF(self.groove_rect()).center().y()
+        return QRectF(centre(ti + 1) - radius, y - radius, 2 * radius, 2 * radius)
+
+    def paint_anchor_marks(self) -> None:
         if not (self.mask_anchors or self.empty_anchors) or self.maximum() <= self.minimum():
             return
-        centre, _, top, height, handle = self.frame_geometry()
+        centre, _, _, _, handle = self.frame_geometry()
         painter = self.mark_painter(handle)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         dark = int(is_dark(self))
         for frames, color in ((self.mask_anchors, self.MASK_ANCHOR_COLORS[dark]),
                               (self.empty_anchors, STATUS_COLORS['empty anchor'][dark])):
+            painter.setPen(QPen(QColor(color), self.ANCHOR_PEN))
             for ti in frames:
-                x = centre(ti + 1) - self.ANCHOR_WIDTH / 2
-                painter.fillRect(QRectF(x, top, self.ANCHOR_WIDTH, height), QColor(color))
+                painter.drawEllipse(self.anchor_ring(ti, centre))
         painter.end()
 
     def paint_interval_bands(self) -> None:
