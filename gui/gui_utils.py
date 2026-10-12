@@ -1,8 +1,8 @@
 import html
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPalette, QRegion, QValidator
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPalette, QRegion, QValidator
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QPushButton,
                                QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
                                QStyleOptionSlider, QToolButton, QWidget)
@@ -221,6 +221,70 @@ def key_box(text: str, tooltip: str) -> QLabel:
     return box
 
 
+class TextBox(QLineEdit):
+    """A description box. While it has the cursor it keeps the keys: the usual text keys edit the
+    text (Ctrl+C / X / V, Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, Ctrl+A, Home / End, Ctrl + arrows, Shift
+    to select), and no window shortcut acts on the frames, anchors, zoom or masks, except Ctrl+S
+    (save, which saves the text too) and F1 (tips). From a Mac, the Command key (Meta here, when
+    the VNC viewer passes it on) and Option (Alt) work as in a Mac text field."""
+
+    # the window shortcuts that still work while typing
+    WINDOW_KEYS = (QKeySequence('Ctrl+S'), QKeySequence(Qt.Key.Key_F1))
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        # what a Linux text box lacks: Ctrl+Y (the window's redo key) and the Mac keys
+        keys = {
+            'Ctrl+Y': self.redo,
+            'Meta+Z': self.undo,
+            'Meta+Shift+Z': self.redo,
+            'Meta+X': self.cut,
+            'Meta+C': self.copy,
+            'Meta+V': self.paste,
+            'Meta+A': self.selectAll,
+            'Meta+Left': lambda: self.home(False),
+            'Meta+Right': lambda: self.end(False),
+            'Meta+Shift+Left': lambda: self.home(True),
+            'Meta+Shift+Right': lambda: self.end(True),
+            'Meta+Backspace': self.delete_to_start,
+            # (Option + Shift + arrows never arrive: the VNC desktop's openbox takes them)
+            'Alt+Left': lambda: self.cursorWordBackward(False),
+            'Alt+Right': lambda: self.cursorWordForward(False),
+            'Alt+Backspace': self.delete_word_back,
+            # one line: up / down go to its start / end, as on a Mac
+            'Up': lambda: self.home(False),
+            'Down': lambda: self.end(False),
+        }
+        self.extra_keys = {QKeySequence(text).toString(): action for text, action in keys.items()}
+
+    def event(self, event) -> bool:
+        # a key that is a window shortcut comes here first: the box keeps it (but the window keys)
+        if (event.type() == QEvent.Type.ShortcutOverride
+                and QKeySequence(event.keyCombination()) not in self.WINDOW_KEYS):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event) -> None:
+        action = self.extra_keys.get(QKeySequence(event.keyCombination()).toString())
+        if action is None:
+            super().keyPressEvent(event)
+        else:
+            action()
+            event.accept()
+
+    def delete_to_start(self) -> None:
+        self.home(True)
+        if self.hasSelectedText():
+            self.del_()
+
+    def delete_word_back(self) -> None:
+        if not self.hasSelectedText():
+            self.cursorWordBackward(True)
+        if self.hasSelectedText():
+            self.del_()
+
+
 class IntervalBox(QSpinBox):
     """A frame-number box that also takes 'm' for its limit: the first frame in the start box, the
     last frame in the end box. Confirming (Enter, or leaving the box) turns the 'm' into that
@@ -290,7 +354,7 @@ class IntervalPair(QWidget):
         # the text an emptied description box gets back: the last one kept
         self.kept_description = description or ''
         if removable:
-            self.description_edit = QLineEdit()
+            self.description_edit = TextBox()
             self.set_description(self.kept_description)
         self.start_box = IntervalBox('start', blank_allowed=removable)
         self.end_box = IntervalBox('end', blank_allowed=removable)

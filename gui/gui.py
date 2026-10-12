@@ -153,7 +153,7 @@ class GUI(QWidget):
 
         # the target of a task: its category, and the referring text as a box to tune it
         self.task_label = QLabel()
-        self.description_edit = QLineEdit()
+        self.description_edit = TextBox()
         if task is not None:
             self.task_label.setText(f'<b>{task.category}</b>:')
             self.set_description(task.description)
