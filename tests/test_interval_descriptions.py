@@ -151,6 +151,7 @@ def test_each_added_interval_has_its_own_description(tmp_path, open_window):
     added = gui.interval_pairs[1]
     assert added.description() == 'The red car, shown.'
     assert row_widgets(gui, 1)[1:4] == [added.description_edit, added, added.remove_button]
+    assert added.remove_button.text() == '- Remove interval'  # under '+ Add interval'
     controller.on_interval_change('end', added)  # blank boxes: nothing is saved yet
     assert read_json(interval_file) == {'start': 1, 'end': 10}
     added.start_box.setValue(15)

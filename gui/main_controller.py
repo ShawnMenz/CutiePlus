@@ -21,6 +21,7 @@ from cutieplus.engine import models
 from gui.interactive_utils import *
 from gui.resource_manager import ResourceManager, SaveError
 from gui.gui import GUI
+from gui.gui_utils import REMOVE_INTERVAL_TEXT
 from gui.click_controller import ClickController
 from gui.exporter import convert_frames_to_video
 from gui.edit_history import Edit, EditHistory, FrameState
@@ -810,7 +811,7 @@ class MainController():
             pair.set_invalid(pair in overlapping)
         if problems:
             self.gui.text('Intervals not saved: ' + ' '.join(problems)
-                          + ' Change one, or remove it with ×.')
+                          + f' Change one, or remove it with {REMOVE_INTERVAL_TEXT}.')
             return False
         # the first pair's interval is described by the sequence's description
         descriptions = {pair.entry(): pair.description() for pair in complete

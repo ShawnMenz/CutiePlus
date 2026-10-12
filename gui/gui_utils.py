@@ -3,9 +3,9 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPalette, QRegion, QValidator
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QSizePolicy,
-                               QSlider, QSpinBox, QProgressBar, QStyle, QStyleOptionSlider,
-                               QToolButton, QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QPushButton,
+                               QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
+                               QStyleOptionSlider, QToolButton, QWidget)
 
 # room for the title bar and borders that the window manager adds around a window
 WINDOW_FRAME = QSize(16, 48)
@@ -266,6 +266,12 @@ class IntervalBox(QSpinBox):
         return text
 
 
+REMOVE_INTERVAL_LABEL = '- Remove interval'
+# the label in a message, kept on one line when the line wraps: a word joiner (no break after
+# the '-') and a no-break space
+REMOVE_INTERVAL_TEXT = REMOVE_INTERVAL_LABEL.replace('- ', '-\u2060\u00a0', 1)
+
+
 class IntervalPair(QWidget):
     """One kept interval of a task: [start] - [end], each interval a clip of its own. Every pair
     but the first has a button that removes it (or cancels it, when it was never complete); an
@@ -297,11 +303,9 @@ class IntervalPair(QWidget):
         layout.addWidget(self.start_box)
         layout.addWidget(QLabel('-'))
         layout.addWidget(self.end_box)
-        self.remove_button: Optional[QToolButton] = None
+        self.remove_button: Optional[QPushButton] = None
         if removable:
-            self.remove_button = QToolButton()
-            self.remove_button.setText('×')
-            self.remove_button.setAutoRaise(True)
+            self.remove_button = QPushButton(REMOVE_INTERVAL_LABEL)
             self.remove_button.setToolTip('Remove this interval (cancel it, if it was never complete).')
             self.remove_button.clicked.connect(lambda: self.removed.emit(self))
         self.setLayout(layout)

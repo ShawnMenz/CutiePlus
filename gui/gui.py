@@ -177,7 +177,8 @@ class GUI(QWidget):
                 'with a description of its own (it starts as the sequence\'s). Intervals may touch '
                 'but not overlap.')
             self.add_interval_button.clicked.connect(self.on_add_interval)
-            self.interval_grid.addWidget(self.add_interval_button, 0, 3, Qt.AlignmentFlag.AlignLeft)
+            # its column also holds the added rows' '- Remove interval' buttons, all as wide
+            self.interval_grid.addWidget(self.add_interval_button, 0, 3)
             # the frame label carries the mask source; the bottom row is too narrow for it
             self.interval_grid.addWidget(self.frame_name, 0, 4)
             intervals, _ = task.intervals(controller.T)
@@ -629,7 +630,7 @@ class GUI(QWidget):
 
     def place_interval_rows(self) -> None:
         # the added intervals, a row each under the top row, in the order they were added: the
-        # description, the pair, its remove button (under '+ Add interval')
+        # description, the pair, its '- Remove interval' button (under '+ Add interval')
         added = self.interval_pairs[1:]
         for pair in added:
             for widget in (pair.description_edit, pair, pair.remove_button):
@@ -637,14 +638,14 @@ class GUI(QWidget):
         for row, pair in enumerate(added, start=1):
             self.interval_grid.addWidget(pair.description_edit, row, 1)
             self.interval_grid.addWidget(pair, row, 2, Qt.AlignmentFlag.AlignLeft)
-            self.interval_grid.addWidget(pair.remove_button, row, 3, Qt.AlignmentFlag.AlignLeft)
+            self.interval_grid.addWidget(pair.remove_button, row, 3)
 
     def on_add_interval(self) -> None:
         pair = self.add_interval_pair()
         pair.start_box.setFocus()
         self.text('Added an interval on a new row: type its start and end (m = first / last '
                   'frame). Its description starts as the sequence\'s: change it in the box on its '
-                  'left. × cancels it.')
+                  f'left. {REMOVE_INTERVAL_TEXT} cancels it.')
 
     def remove_interval_pair(self, pair: IntervalPair) -> None:
         # the rows below move up
