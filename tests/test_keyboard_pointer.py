@@ -64,6 +64,7 @@ def test_ctrl_plus_minus_zero_zoom_and_the_arrows_scroll(window):
     press(gui, 'Ctrl+-')
     assert gui.zoom == pytest.approx(1.25)
     press(gui, 'Ctrl++')
+    press(gui, 'Ctrl++')  # room to scroll a whole step each way, however tall the canvas is
     zoomed = gui.view_center
     press(gui, 'Right')
     assert gui.view_center[0] > zoomed[0]

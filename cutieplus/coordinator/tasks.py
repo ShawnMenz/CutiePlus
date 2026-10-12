@@ -35,8 +35,8 @@ from cutieplus.storage.views import JSON_FILES, TaskViews
 from gui.exporter import convert_mask_to_binary
 from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, DISCARD_FILE,
                             INTERVAL_FILE, PREFILL_FILE, PROGRESS_FILE, TASK_FILE, TaskLock,
-                            TaskLocked, discarded_progress, intervals_from_payload,
-                            load_task_set,
+                            TaskLocked, added_interval_descriptions, discarded_progress,
+                            interval_descriptions, intervals_from_payload, load_task_set,
                             intervals_payload, next_anchor_entry, status_of, submitted_progress,
                             touched_progress, utc_now, write_description_text, write_interval_text)
 
@@ -723,10 +723,19 @@ class TaskService:
             return response
 
     def set_intervals(self, task_id, session_id, epoch, intervals, request_id=None) -> dict:
-        intervals = sorted((int(start), int(end)) for start, end in intervals)
+        """intervals: [start, end] entries; an added interval's has its description as a third
+        element (the first interval's is the sequence's)."""
+        descriptions = {}
+        for entry in intervals:
+            if len(entry) > 2:
+                text = str(entry[2] or '').strip()
+                if not text:
+                    raise TaskError('invalid', 'an interval\'s description cannot be empty')
+                descriptions[(int(entry[0]), int(entry[1]))] = text
+        intervals = sorted((int(entry[0]), int(entry[1])) for entry in intervals)
 
         def mutate(conn, state, labeler, changes):
-            state['interval'] = intervals_payload(intervals)
+            state['interval'] = intervals_payload(intervals, descriptions)
             changes.json_files[INTERVAL_FILE] = state['interval']
             return {'intervals': intervals}
 
@@ -794,6 +803,11 @@ class TaskService:
         saved = (state['description'] or {}).get('text')
         return saved or info.original_description
 
+    def interval_descriptions(self, info: TaskInfo, state: dict) -> dict:
+        """As TaskState.interval_descriptions: each interval's referring text."""
+        return interval_descriptions(self.intervals(info, state), state['interval'] or {},
+                                     self.description(info, state))
+
     def submit_for_review(self, task_id, session_id, epoch, target_objects,
                           request_id=None) -> dict:
         """Save binary PNGs: binary masks of the committed masks, the intervals and description
@@ -804,15 +818,19 @@ class TaskService:
             if row['view_revision'] < row['content_revision']:
                 self.sync_views(info)
             intervals = self.intervals(info, row['state'])
+            descriptions = self.interval_descriptions(info, row['state'])
+            added = added_interval_descriptions(intervals, row['state']['interval'] or {},
+                                                self.description(info, row['state']))
             folder = path.join(info.workspace, 'binary_masks')
             os.makedirs(folder, exist_ok=True)
             convert_mask_to_binary(path.join(info.workspace, 'masks'), folder, list(target_objects))
             write_interval_text(folder, intervals)
-            write_description_text(folder, self.description(info, row['state']))
+            write_description_text(folder, [descriptions[interval] for interval in intervals])
 
             def mutate(conn, state, labeler, changes):
-                # the intervals are saved with every submission, as in the window
-                state['interval'] = intervals_payload(intervals)
+                # the intervals (with their descriptions) are saved with every submission, as in
+                # the window
+                state['interval'] = intervals_payload(intervals, added)
                 changes.json_files[INTERVAL_FILE] = state['interval']
                 state['progress'] = submitted_progress(state['progress'], labeler, self.clock())
                 revision = self._revisions(conn, task_id)['content_revision']

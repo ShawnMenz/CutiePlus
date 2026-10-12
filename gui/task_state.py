@@ -7,10 +7,12 @@ anchors.json  frame name -> human decision {kind: mask|empty, origin: ls|ls_refi
 prefill.json  frame name -> {source, path} of an existing model mask for untouched frames
 interval.json the dataset clip(s) when set in Cutie (1-indexed, inclusive): {start, end} for one
               interval, {intervals: [{start, end}, ...]} (sorted, never overlapping) when the sequence
-              keeps several, each a clip of its own; saving binary PNGs also writes them as
-              interval.txt next to them
+              keeps several, each a clip of its own; an added interval's entry also carries its
+              description (the first interval's has none: description.json describes it); saving
+              binary PNGs also writes them as interval.txt next to them
 description.json {text, by, updated_at}: the referring text when tuned in Cutie, in place of
               task.json's (the curated CSV's); saving binary PNGs also writes it as description.txt
+              (numbered, one per interval, when there are several)
 attention.json {at, by}: the sequence needs further attention (the window's Need Attention
               button, which also removes it); the task browser shows its status as Attention, and
               Mark done waits until it is removed. Edits and reviews leave it alone
@@ -84,19 +86,62 @@ def _write_json(file_path: str, payload) -> None:
 Interval = Tuple[int, int]  # (start, end) of one clip, 1-indexed, inclusive
 
 
-def intervals_payload(intervals: List[Interval]) -> dict:
+def intervals_payload(intervals: List[Interval],
+                      descriptions: Optional[Dict[Interval, str]] = None) -> dict:
     """interval.json: the one-interval shape stays {start, end}; several are a list, with no
     top-level start/end, so a reader that knows only one interval fails instead of dropping the
-    others."""
+    others. descriptions: the texts of the added intervals; the first interval has none (the
+    sequence's description describes it), and neither has a single interval."""
     if len(intervals) == 1:
         return {'start': intervals[0][0], 'end': intervals[0][1]}
-    return {'intervals': [{'start': start, 'end': end} for start, end in intervals]}
+    entries = []
+    for start, end in sorted(intervals):
+        entry = {'start': start, 'end': end}
+        if descriptions and descriptions.get((start, end)):
+            entry['description'] = descriptions[(start, end)]
+        entries.append(entry)
+    return {'intervals': entries}
 
 
 def intervals_from_payload(payload: dict) -> List[Interval]:
     if 'intervals' in payload:
         return sorted((int(item['start']), int(item['end'])) for item in payload['intervals'])
     return [(int(payload['start']), int(payload['end']))]
+
+
+def first_interval(payload: dict) -> Optional[Interval]:
+    """The interval the sequence's description describes: the entry without a description of its
+    own, else the first; None when interval.json is not saved."""
+    if not payload:
+        return None
+    if 'intervals' not in payload:
+        return intervals_from_payload(payload)[0]
+    entries = sorted(payload['intervals'], key=lambda item: (int(item['start']), int(item['end'])))
+    plain = [item for item in entries if not item.get('description')] or entries
+    return int(plain[0]['start']), int(plain[0]['end'])
+
+
+def interval_descriptions(intervals: List[Interval], payload: dict,
+                          sequence_description: str) -> Dict[Interval, str]:
+    """Each interval's referring text: the first interval's is the sequence's; an added one has
+    its own, else (saved before intervals had descriptions) the sequence's."""
+    first = first_interval(payload) if payload else None
+    own = {} if first is None or 'intervals' not in payload else {
+        (int(item['start']), int(item['end'])): item['description']
+        for item in payload['intervals'] if item.get('description')}
+    return {interval: (sequence_description if interval == first
+                       else own.get(interval) or sequence_description)
+            for interval in intervals}
+
+
+def added_interval_descriptions(intervals: List[Interval], payload: dict,
+                                sequence_description: str) -> Dict[Interval, str]:
+    """The texts saved with the intervals: every interval's but the first's (which the sequence's
+    description is); an interval saved without one gets the sequence's, from then on its own."""
+    first = first_interval(payload) or intervals[0]
+    return {interval: text for interval, text in
+            interval_descriptions(intervals, payload, sequence_description).items()
+            if interval != first}
 
 
 def check_intervals(intervals: List[Interval], frame_count: int) -> List[str]:
@@ -142,9 +187,17 @@ def write_interval_text(directory: str, intervals: List[Interval]) -> None:
         f.write(text)
 
 
-def write_description_text(directory: str, text: str) -> None:
+def write_description_text(directory: str, texts: List[str]) -> None:
+    """description.txt: description= for one interval; with several, one numbered text per
+    interval as in interval.txt (no bare description, so an old reader cannot give one text to
+    every clip)."""
+    if len(texts) == 1:
+        text = f'description={texts[0]}\n'
+    else:
+        text = ''.join(f'description_{number}={description}\n'
+                       for number, description in enumerate(texts, start=1))
     with open(path.join(directory, DESCRIPTION_TEXT), 'w', encoding='utf-8') as f:
-        f.write(f'description={text}\n')
+        f.write(text)
 
 
 def saved_description(workspace: str) -> Optional[str]:
@@ -556,15 +609,35 @@ class TaskState:
     def intervals(self, frame_count: int) -> Tuple[List[Interval], str]:
         """(intervals, source) of the dataset clips, sorted, 1-indexed and inclusive: set in
         Cutie, else the curated CSV's one, else the whole sequence."""
-        saved = _read_json(path.join(self.workspace, INTERVAL_FILE), {})
+        saved = self.interval_payload()
         if saved:
             return intervals_from_payload(saved), 'cutie'
         if self.curated_interval:
             return [(self.curated_interval[0], self.curated_interval[1])], 'curated'
         return [(1, frame_count)], 'full'
 
-    def save_intervals(self, intervals: List[Interval]) -> None:
-        _write_json(path.join(self.workspace, INTERVAL_FILE), intervals_payload(sorted(intervals)))
+    def interval_descriptions(self, frame_count: int) -> Dict[Interval, str]:
+        # each interval's referring text (see interval_descriptions)
+        return interval_descriptions(self.intervals(frame_count)[0], self.interval_payload(),
+                                     self.description)
+
+    def interval_payload(self) -> dict:
+        # interval.json as saved, {} when it is not
+        return _read_json(path.join(self.workspace, INTERVAL_FILE), {})
+
+    def added_interval_descriptions(self, frame_count: int) -> Dict[Interval, str]:
+        # the texts saved with the intervals (see added_interval_descriptions)
+        return added_interval_descriptions(self.intervals(frame_count)[0], self.interval_payload(),
+                                           self.description)
+
+    def first_interval(self, frame_count: int) -> Interval:
+        # the interval the sequence's description describes
+        return first_interval(self.interval_payload()) or self.intervals(frame_count)[0][0]
+
+    def save_intervals(self, intervals: List[Interval],
+                       descriptions: Optional[Dict[Interval, str]] = None) -> None:
+        _write_json(path.join(self.workspace, INTERVAL_FILE),
+                    intervals_payload(sorted(intervals), descriptions))
 
     def save_interval(self, start: int, end: int) -> None:
         self.save_intervals([(start, end)])

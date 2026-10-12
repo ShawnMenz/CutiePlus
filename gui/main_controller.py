@@ -757,7 +757,8 @@ class MainController():
                 else:
                     self.gui.text(f'Intervals {format_intervals(intervals)} ({len(intervals)} clips) '
                                   f'saved to {path.join(save_folder, INTERVAL_TEXT)}')
-                self.gui.text(f'Description saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
+                self.gui.text(f'Description{"s, one per interval," if len(intervals) > 1 else ""} '
+                              f'saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
                 self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
                               'Mark done accepts it, any further edit reopens it.')
                 if self.on_task_event is not None:
@@ -780,11 +781,25 @@ class MainController():
         if not self.save_interval_pairs():
             self.gui.text('Interval cancelled; nothing to save.')
 
-    def save_interval_pairs(self) -> bool:
-        """Saves the complete interval pairs when they changed and do not overlap; a pair with a
-        blank box is still being typed and is left out. A new list of intervals is a change that
-        needs a new review. Returns whether anything was saved."""
+    def on_interval_description_change(self, pair) -> None:
+        # the description box of an added interval; a new text is a change that needs a new
+        # review, saved with the interval (once its start and end are filled in)
+        if self.task is None:
+            return
+        if pair.description():
+            pair.set_description(pair.description())  # drops stray whitespace
+        self.save_interval_pairs()
+
+    def save_interval_pairs(self, quiet: bool = False) -> bool:
+        """Saves the complete interval pairs, each added one with its description, when they
+        changed and do not overlap; a pair with a blank box is still being typed and is left out.
+        A new list of intervals or a new description is a change that needs a new review. Returns
+        whether anything was saved; quiet: no message when it was."""
         pairs = self.gui.interval_pairs
+        for pair in pairs[1:]:
+            if not pair.description():  # a clip always has a description
+                pair.set_description(pair.kept_description)
+                self.gui.text('An interval\'s description cannot be empty; kept the previous one.')
         complete = [pair for pair in pairs if pair.entry() is not None]
         intervals = sorted(pair.entry() for pair in complete)
         problems = check_intervals(intervals, self.T)
@@ -797,17 +812,32 @@ class MainController():
             self.gui.text('Intervals not saved: ' + ' '.join(problems)
                           + ' Change one, or remove it with ×.')
             return False
-        if intervals == self.task.intervals(self.T)[0]:
+        # the first pair's interval is described by the sequence's description
+        descriptions = {pair.entry(): pair.description() for pair in complete
+                        if pair is not pairs[0]}
+        saved_intervals = self.task.intervals(self.T)[0]
+        saved_descriptions = self.task.added_interval_descriptions(self.T)
+        if intervals == saved_intervals and descriptions == saved_descriptions:
+            self.keep_descriptions(complete)
             return False
         try:
-            self.backend.set_intervals(intervals)
+            self.backend.set_intervals(intervals, descriptions)
         except BackendError as exc:
             self.gui.text(f'Intervals not saved: {exc}')
             return False
+        self.keep_descriptions(complete)
         # the slider shows the saved intervals; Shift+R starts again from the first
         self.gui.tl_slider.set_intervals(intervals)
         self.gui.preview_index = 0
-        if len(intervals) == 1:
+        if quiet:
+            pass
+        elif intervals == saved_intervals:
+            changed = [interval for interval in intervals
+                       if descriptions.get(interval) != saved_descriptions.get(interval)]
+            self.gui.text(f'Description{"" if len(changed) == 1 else "s"} of interval'
+                          f'{"" if len(changed) == 1 else "s"} {format_intervals(changed)} changed; '
+                          'the task needs a new review.')
+        elif len(intervals) == 1:
             self.gui.text(f'Interval set to {format_intervals(intervals)}; the task needs a new '
                           'review.')
         else:
@@ -816,6 +846,13 @@ class MainController():
         if self.on_task_event is not None:
             self.on_task_event(self, 'interval')
         return True
+
+    @staticmethod
+    def keep_descriptions(pairs) -> None:
+        # the texts now saved: an emptied box gets them back
+        for pair in pairs:
+            if pair.description_edit is not None:
+                pair.kept_description = pair.description()
 
     def on_description_change(self) -> None:
         # the task window's description box; a new text is a change that needs a new review
@@ -837,6 +874,11 @@ class MainController():
             return
         self.gui.set_description(text)
         self.gui.text('Description changed; the task needs a new review.')
+        # added intervals saved before intervals had descriptions (no text of their own) followed
+        # the sequence's; they keep the text they show
+        entries = self.task.interval_payload().get('intervals', [])
+        if sum(not entry.get('description') for entry in entries) > 1:
+            self.save_interval_pairs(quiet=True)
         if self.on_task_event is not None:
             self.on_task_event(self, 'description')
 

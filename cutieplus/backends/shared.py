@@ -272,9 +272,12 @@ class SharedTaskBackend:
         pass  # every change is confirmed before its request returns
 
     # task data --------------------------------------------------------------------------------
-    def set_intervals(self, intervals: List[Interval]) -> None:
-        reply = self._call('set_intervals', intervals=[list(i) for i in intervals],
-                           request_id=new_request_id())
+    def set_intervals(self, intervals: List[Interval],
+                      descriptions: Optional[Dict[Interval, str]] = None) -> None:
+        # [start, end], with the description of an added interval as a third element
+        entries = [list(i) + ([descriptions[i]] if descriptions and descriptions.get(i) else [])
+                   for i in intervals]
+        reply = self._call('set_intervals', intervals=entries, request_id=new_request_id())
         self.content_revision = reply['content_revision']
 
     def set_description(self, text: str) -> None:

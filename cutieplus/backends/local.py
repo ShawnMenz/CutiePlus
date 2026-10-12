@@ -251,8 +251,9 @@ class LocalTaskBackend:
         return self.task.anchor(name) if self.task is not None else None
 
     # task data
-    def set_intervals(self, intervals: List[Interval]) -> None:
-        self.task.save_intervals(intervals)
+    def set_intervals(self, intervals: List[Interval],
+                      descriptions: Optional[Dict[Interval, str]] = None) -> None:
+        self.task.save_intervals(intervals, descriptions)
         self.task.touch()
 
     def set_description(self, text: str) -> None:
@@ -270,7 +271,9 @@ class LocalTaskBackend:
         intervals = None
         if self.task is not None:
             intervals, _ = self.task.intervals(self.res_man.T)
-            self.task.save_intervals(intervals)
+            descriptions = self.task.interval_descriptions(self.res_man.T)
+            self.task.save_intervals(intervals,
+                                     self.task.added_interval_descriptions(self.res_man.T))
         mask_folder = self.res_man.mask_dir
         save_folder = path.join(self.res_man.workspace, 'binary_masks')
         if not path.exists(mask_folder):
@@ -280,7 +283,7 @@ class LocalTaskBackend:
                                progress_callback=progress)
         if self.task is not None:
             write_interval_text(save_folder, intervals)
-            write_description_text(save_folder, self.task.description)
+            write_description_text(save_folder, [descriptions[interval] for interval in intervals])
             submit_for_review(self.res_man.workspace, self.task.labeler)
         return BinaryExport(save_folder, intervals)
 

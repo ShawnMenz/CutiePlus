@@ -128,7 +128,7 @@ during a run cannot redirect the saves.
 | `anchors.json` | `TaskState.set_anchor` (`mark_anchor` after every human edit, `commit_anchor`), `remove_anchor`, `restore_anchor` (undo/redo), `clear_mask_references` |
 | `prefill.json` | `clear_mask_references` only (created by the pipeline) |
 | `progress.json` | `TaskState.touch` (every change), `submit_for_review` (*Save binary PNGs*), `mark_done` (browser) |
-| `interval.json`, `description.json` | `save_interval_pairs`, `on_description_change`, `on_export_binary` |
+| `interval.json`, `description.json` | `save_interval_pairs`, `on_interval_description_change`, `on_description_change`, `on_export_binary` |
 | `binary_masks/`, `interval.txt`, `description.txt` | `on_export_binary` |
 | export trees `cutie_masks_<modality>/<seq>` | the external export command (`task_set.json`), run by the window or the browser; removed by *Reset all* |
 

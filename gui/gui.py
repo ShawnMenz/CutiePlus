@@ -7,7 +7,8 @@ from omegaconf import DictConfig
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
                                QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog,
-                               QMessageBox, QFrame, QLineEdit, QScrollArea, QSplitter, QStyle)
+                               QMessageBox, QFrame, QLineEdit, QScrollArea, QSplitter, QStyle,
+                               QGridLayout)
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QPainter,
                            QColor, QCursor)
@@ -159,23 +160,33 @@ class GUI(QWidget):
             self.description_edit.editingFinished.connect(controller.on_description_change)
             self.commit_button.setText('Mark as anchor (C)')
 
-            # the dataset clips, 1-indexed and inclusive, each interval a clip of its own: one pair
-            # as preset (the saved or curated interval), more only with '+ Add interval'
+            # the dataset clips, 1-indexed and inclusive, each interval a clip of its own with its
+            # own description, in a grid so the boxes line up: the sequence's description and the
+            # first interval (the saved or curated one) on the top row, then one row per interval
+            # added with '+ Add interval', its description on the left
             self.interval_pairs: List[IntervalPair] = []
-            self.interval_flow = FlowLayout(spacing=10, spread=False)
-            intervals_label = QLabel('Intervals')
-            intervals_label.setToolTip('{ / }: go to the previous / next interval start; '
-                                       'Shift+R: play the intervals, one per press.')
-            self.interval_flow.addWidget(intervals_label)
+            self.interval_grid = QGridLayout()
+            self.interval_grid.setHorizontalSpacing(10)
+            self.interval_grid.setVerticalSpacing(4)
+            self.interval_grid.setColumnStretch(1, 1)
+            self.interval_grid.addWidget(self.task_label, 0, 0)
+            self.interval_grid.addWidget(self.description_edit, 0, 1)
             self.add_interval_button = QPushButton('+ Add interval')
             self.add_interval_button.setToolTip(
-                'Keep another stretch of this sequence: each interval becomes a clip of its own. '
-                'Intervals may touch but not overlap.')
+                'Keep another stretch of this sequence: each interval becomes a clip of its own, '
+                'with a description of its own (it starts as the sequence\'s). Intervals may touch '
+                'but not overlap.')
             self.add_interval_button.clicked.connect(self.on_add_interval)
-            self.interval_flow.addWidget(self.add_interval_button)
+            self.interval_grid.addWidget(self.add_interval_button, 0, 3, Qt.AlignmentFlag.AlignLeft)
+            # the frame label carries the mask source; the bottom row is too narrow for it
+            self.interval_grid.addWidget(self.frame_name, 0, 4)
             intervals, _ = task.intervals(controller.T)
-            for start, end in intervals:
-                self.add_interval_pair(start, end)
+            first = task.first_interval(controller.T)
+            descriptions = task.interval_descriptions(controller.T)
+            self.add_interval_pair(*first)
+            for interval in intervals:
+                if interval != first:
+                    self.add_interval_pair(*interval, description=descriptions[interval])
             # the first pair, as the single interval always was
             self.interval_start, self.interval_end = self.interval_pairs[0].boxes()
 
@@ -421,14 +432,8 @@ class GUI(QWidget):
 
         layout = QVBoxLayout()
         if task is not None:
-            task_row = QHBoxLayout()
-            task_row.addWidget(self.task_label)
-            task_row.addWidget(self.description_edit, 1)
-            # the frame label carries the mask source; the bottom row is too narrow for it
-            task_row.addWidget(self.frame_name)
-            layout.addLayout(task_row)
-            # the intervals in a row of their own, which wraps when many are added
-            layout.addWidget(layout_widget(self.interval_flow))
+            # the descriptions and their intervals, a row each
+            layout.addLayout(self.interval_grid)
         layout.addWidget(self.splitter, 1)
         # the frame slider between two boxes naming the keys that step it
         slider_row = QHBoxLayout()
@@ -585,16 +590,23 @@ class GUI(QWidget):
         fit_window(self, self.sizeHint().expandedTo(QSize(self.w + 200, self.h + 200)),
                    fill=self.controller.task is not None)
 
-    def add_interval_pair(self, start: Optional[int] = None,
-                          end: Optional[int] = None) -> IntervalPair:
-        # every pair but the first can be removed; a pair without values starts blank
+    def add_interval_pair(self, start: Optional[int] = None, end: Optional[int] = None,
+                          description: Optional[str] = None) -> IntervalPair:
+        """The first pair goes on the top row, described by the sequence's description; every
+        later one on a row of its own with its description (by default the text in the top box)
+        and a button that removes it. A pair without values starts blank."""
         first = not self.interval_pairs
-        pair = IntervalPair(self.controller.T, start, end, removable=not first)
+        if not first and description is None:
+            description = self.description_edit.text().strip() or self.controller.task.description
+        pair = IntervalPair(self.controller.T, start, end, removable=not first,
+                            description=description)
         for box in pair.boxes():
             which = box.which
             box.setToolTip(f'Interval {which} in frame numbers; type m for the '
                            f'{"first" if which == "start" else "last"} frame. Enter or click '
-                           'elsewhere to save; each interval is a clip of its own.')
+                           'elsewhere to save; each interval is a clip of its own.\n'
+                           '{ / }: go to the previous / next interval start; Shift+R: play the '
+                           'intervals, one per press.')
             if first:  # the controller's handler for the single interval, unchanged
                 box.editingFinished.connect(
                     functools.partial(self.controller.on_interval_change, which))
@@ -602,24 +614,55 @@ class GUI(QWidget):
                 box.editingFinished.connect(
                     functools.partial(self.controller.on_interval_change, which, pair))
             box.editingFinished.connect(functools.partial(self.return_focus_from, box))
+        if not first:
+            pair.description_edit.editingFinished.connect(
+                functools.partial(self.controller.on_interval_description_change, pair))
+            pair.description_edit.editingFinished.connect(
+                functools.partial(self.return_focus_from, pair.description_edit))
         pair.removed.connect(self.controller.on_remove_interval)
         self.interval_pairs.append(pair)
-        # before the '+ Add interval' button, which stays last
-        self.interval_flow.insert_widget(self.interval_flow.count() - 1, pair)
+        if first:
+            self.interval_grid.addWidget(pair, 0, 2, Qt.AlignmentFlag.AlignLeft)
+        else:
+            self.place_interval_rows()
         return pair
+
+    def place_interval_rows(self) -> None:
+        # the added intervals, a row each under the top row, in the order they were added: the
+        # description, the pair, its remove button (under '+ Add interval')
+        added = self.interval_pairs[1:]
+        for pair in added:
+            for widget in (pair.description_edit, pair, pair.remove_button):
+                self.interval_grid.removeWidget(widget)
+        for row, pair in enumerate(added, start=1):
+            self.interval_grid.addWidget(pair.description_edit, row, 1)
+            self.interval_grid.addWidget(pair, row, 2, Qt.AlignmentFlag.AlignLeft)
+            self.interval_grid.addWidget(pair.remove_button, row, 3, Qt.AlignmentFlag.AlignLeft)
 
     def on_add_interval(self) -> None:
         pair = self.add_interval_pair()
         pair.start_box.setFocus()
-        self.text('Added an interval: type its start and end (m = first / last frame). '
-                  '× cancels it.')
+        self.text('Added an interval on a new row: type its start and end (m = first / last '
+                  'frame). Its description starts as the sequence\'s: change it in the box on its '
+                  'left. × cancels it.')
 
     def remove_interval_pair(self, pair: IntervalPair) -> None:
+        # the rows below move up
         self.interval_pairs.remove(pair)
-        self.interval_flow.removeWidget(pair)
-        pair.hide()
-        pair.deleteLater()
+        for widget in (pair.description_edit, pair, pair.remove_button):
+            self.interval_grid.removeWidget(widget)
+            widget.hide()
+            widget.deleteLater()
+        self.place_interval_rows()
         self.tl_slider.setFocus()
+
+    def interval_description_text(self, interval) -> str:
+        # ' Description: ...' for a message about one of several intervals, else ''
+        task = self.controller.task
+        intervals, _ = task.intervals(self.controller.T)
+        if len(intervals) < 2:
+            return ''
+        return f' Description: {task.interval_descriptions(self.controller.T)[interval]}'
 
     def return_focus_from(self, box: QWidget) -> None:
         # Enter; a box that lost the focus to another widget leaves it there
@@ -928,7 +971,7 @@ class GUI(QWidget):
         self.timer.start(1000 // 30)
         self.play_button.setText(STOP_LABEL)
         self.text(f'Previewing interval {number + 1} of {len(intervals)}: frames {start}-{end} '
-                  '(Shift+R: next).')
+                  '(Shift+R: next).' + self.interval_description_text((start, end)))
 
     def on_jump_interval(self, direction: int) -> None:
         # { / }: the start of the previous / next interval, from the current frame and around the
@@ -946,7 +989,7 @@ class GUI(QWidget):
         self.tl_slider.setValue(start - 1)
         self.preview_index = number
         self.text(f'Interval {number + 1} of {len(intervals)}: frames {start}-{end} '
-                  '(Shift+R plays it).')
+                  '(Shift+R plays it).' + self.interval_description_text((start, end)))
 
     def refresh_attention_button(self) -> None:
         # checked while the task needs attention; who flagged it, in the tooltip

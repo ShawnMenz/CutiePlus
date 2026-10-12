@@ -3,9 +3,9 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPalette, QRegion, QValidator
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QPlainTextEdit, QSizePolicy, QSlider,
-                               QSpinBox, QProgressBar, QStyle, QStyleOptionSlider, QToolButton,
-                               QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QSizePolicy,
+                               QSlider, QSpinBox, QProgressBar, QStyle, QStyleOptionSlider,
+                               QToolButton, QWidget)
 
 # room for the title bar and borders that the window manager adds around a window
 WINDOW_FRAME = QSize(16, 48)
@@ -269,15 +269,23 @@ class IntervalBox(QSpinBox):
 class IntervalPair(QWidget):
     """One kept interval of a task: [start] - [end], each interval a clip of its own. Every pair
     but the first has a button that removes it (or cancels it, when it was never complete); an
-    added pair starts blank."""
+    added pair starts blank. An added pair also has its own description box; the first interval's
+    is the sequence's. The window places an added pair's description_edit and remove_button, so
+    the rows line up."""
 
     removed = Signal(object)
     invalid = False  # overlaps another pair, so it is not saved
 
     def __init__(self, frame_count: int, start: Optional[int] = None, end: Optional[int] = None,
-                 removable: bool = False) -> None:
+                 removable: bool = False, description: Optional[str] = None) -> None:
         super().__init__()
         self.removable = removable
+        self.description_edit: Optional[QLineEdit] = None
+        # the text an emptied description box gets back: the last one kept
+        self.kept_description = description or ''
+        if removable:
+            self.description_edit = QLineEdit()
+            self.set_description(self.kept_description)
         self.start_box = IntervalBox('start', blank_allowed=removable)
         self.end_box = IntervalBox('end', blank_allowed=removable)
         for box, value in ((self.start_box, start), (self.end_box, end)):
@@ -296,12 +304,21 @@ class IntervalPair(QWidget):
             self.remove_button.setAutoRaise(True)
             self.remove_button.setToolTip('Remove this interval (cancel it, if it was never complete).')
             self.remove_button.clicked.connect(lambda: self.removed.emit(self))
-            layout.addWidget(self.remove_button)
         self.setLayout(layout)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def boxes(self):
         return self.start_box, self.end_box
+
+    def description(self) -> Optional[str]:
+        # the added interval's text as typed (stripped); None for the first interval
+        return self.description_edit.text().strip() if self.description_edit is not None else None
+
+    def set_description(self, text: str) -> None:
+        self.description_edit.setText(text)
+        self.description_edit.setCursorPosition(0)  # show the start of a long text
+        self.description_edit.setToolTip(f'{text}\n\nThis interval\'s description: Enter or click '
+                                         'elsewhere to save; a change needs a new review.')
 
     def entry(self) -> Optional[Tuple[int, int]]:
         # (start, end), or None while a box is blank (an added interval not filled in yet)
