@@ -15,10 +15,10 @@ from os import path
 from typing import Dict, Optional, Tuple
 
 from omegaconf import DictConfig, open_dict
-from PySide6.QtCore import QEvent, QProcess, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPalette, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+from PySide6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPalette, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                                QStyle,
                                QStyledItemDelegate, QStyleOptionViewItem, QTabWidget,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -27,6 +27,7 @@ from cutieplus.backends.base import BackendError
 from gui.annotator_manager import AnnotatorManager
 from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
+from gui.style import GAP, Card, set_variant
 from gui.task_export import start_export
 from gui.task_state import (ATTENTION_STATUS, DISCARDED_STATUS, TASK_FILE, TaskLock, TaskLocked,
                             attention_of, curated_split, describe_attention, describe_holder,
@@ -77,9 +78,8 @@ class TargetDelegate(QStyledItemDelegate):
 
         rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, shown, widget)
         rect = rect.adjusted(self.TEXT_MARGIN, 0, -self.TEXT_MARGIN, 0)
-        selected = bool(shown.state & QStyle.StateFlag.State_Selected)
-        color = shown.palette.color(QPalette.ColorRole.HighlightedText if selected
-                                    else QPalette.ColorRole.Text)
+        # the selection is a light tint (gui/style.py): the text keeps its color
+        color = shown.palette.color(QPalette.ColorRole.Text)
         bold = QFont(shown.font)
         bold.setBold(True)
         head = f'{category}: '
@@ -96,6 +96,60 @@ class TargetDelegate(QStyledItemDelegate):
         painter.drawText(QRect(rect.left() + head_width, rect.top(), room, rect.height()),
                          align, tail)
         painter.restore()
+
+
+class StatusDelegate(QStyledItemDelegate):
+    """Draws the Status column as a pill: the status in its color on a tint of that color, in
+    italics for a discarded sequence. The item keeps its text, color and font, which sorting,
+    filtering and the counts read."""
+
+    MARGIN = 6  # px from the cell's left edge
+    PADDING = 10  # px around the text, left and right
+
+    def paint(self, painter, option, index):
+        shown = QStyleOptionViewItem(option)
+        self.initStyleOption(shown, index)
+        text = shown.text
+        shown.text = ''  # the style draws the background and the selection; the pill is ours
+        widget = shown.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, shown, painter, widget)
+        if not text:
+            return
+        brush = index.data(Qt.ItemDataRole.ForegroundRole)
+        color = brush.color() if brush is not None else shown.palette.color(QPalette.ColorRole.Text)
+        if widget is not None and is_dark(widget):
+            color = color.lighter(135)  # the status colors are dark for a dark card
+        metrics = QFontMetrics(shown.font)
+        height = min(metrics.height() + 6, shown.rect.height() - 4)
+        width = min(metrics.horizontalAdvance(text) + 2 * self.PADDING + 2,
+                    shown.rect.width() - 2 * self.MARGIN)
+        pill = QRectF(shown.rect.left() + self.MARGIN, shown.rect.center().y() - height / 2 + 1,
+                      width, height)
+        tint = QColor(color)
+        tint.setAlpha(40)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(tint)
+        painter.drawRoundedRect(pill, height / 2, height / 2)
+        painter.setPen(color)
+        painter.setFont(shown.font)
+        painter.drawText(pill, Qt.AlignmentFlag.AlignCenter,
+                         metrics.elidedText(text, Qt.TextElideMode.ElideRight,
+                                            int(width) - 2 * self.PADDING))
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        return QSize(hint.width() + 2 * (self.MARGIN + self.PADDING), hint.height())
+
+    def column_width(self, font: QFont) -> int:
+        # wide enough for every status, in italics too (discarded)
+        italic = QFont(font)
+        italic.setItalic(True)
+        text = max(QFontMetrics(italic).horizontalAdvance(status) for status in STATUS_COLORS)
+        return text + 2 * (self.MARGIN + self.PADDING) + 8
 
 
 class TaskBrowser(QWidget):
@@ -122,6 +176,7 @@ class TaskBrowser(QWidget):
         self.refresh_identity()
         self.search = QLineEdit()
         self.search.setPlaceholderText('Filter by sequence, annotator or target text')
+        self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.apply_filter)
         self.hide_done = QCheckBox('Hide done / discarded')
         self.hide_done.setToolTip('Hide the sequences that are done or discarded (in every tab).')
@@ -138,8 +193,10 @@ class TaskBrowser(QWidget):
         self.theme_button.clicked.connect(self.on_theme)
         self.show_theme()
         self.target_delegate = TargetDelegate(self)
+        self.status_delegate = StatusDelegate(self)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)  # no frame around the tables: they sit on a card
         self.tables: Dict[str, QTableWidget] = {}
         for split in self.task_set['splits']:
             if not path.isdir(path.join(self.task_root, split)):
@@ -150,6 +207,13 @@ class TaskBrowser(QWidget):
             table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             table.verticalHeader().setVisible(False)
+            # airy rows, no grid lines, alternate rows tinted (gui/style.py)
+            table.verticalHeader().setDefaultSectionSize(32)
+            table.setShowGrid(False)
+            table.setAlternatingRowColors(True)
+            table.horizontalHeader().setHighlightSections(False)
+            table.setItemDelegateForColumn(STATUS_COLUMN, self.status_delegate)
+            table.setFrameShape(QFrame.Shape.NoFrame)
             table.horizontalHeader().setSectionResizeMode(TARGET_COLUMN, QHeaderView.ResizeMode.Stretch)
             table.doubleClicked.connect(self.on_open)
             table.itemSelectionChanged.connect(self.show_discard_action)
@@ -159,18 +223,18 @@ class TaskBrowser(QWidget):
             self.tables[split] = table
             self.tabs.addTab(table, split)
 
-        open_button = QPushButton('Open')
+        open_button = set_variant(QPushButton('Open'), 'primary')
         open_button.clicked.connect(self.on_open)
         export_button = QPushButton('Export')
         export_button.clicked.connect(self.on_export)
-        done_button = QPushButton('Mark done (D)')
+        done_button = set_variant(QPushButton('Mark done (D)'), 'tonal')
         done_button.setToolTip('D: mark the selected sequence done (it is exported first when '
                                'its export is missing or older than its last change).')
         done_button.clicked.connect(self.on_mark_done)
         # the filter box keeps the letter for itself while it has the focus
         QShortcut(QKeySequence(Qt.Key.Key_D), self).activated.connect(self.on_mark_done)
         # leaves the selected sequence out of the dataset; Restore on a discarded one
-        self.discard_button = QPushButton('Discard')
+        self.discard_button = set_variant(QPushButton('Discard'), 'danger')
         self.discard_button.setToolTip(
             'Leave the selected sequence out of the dataset: its done mark and Need Attention are '
             'removed, and it cannot be exported or marked done. On a discarded sequence the '
@@ -195,19 +259,31 @@ class TaskBrowser(QWidget):
         for button in (open_button, export_button, done_button, self.discard_button,
                        refresh_button, manage_button):
             buttons.addWidget(button)
+        # rounded cards (gui/style.py): the filter, the tasks with their actions, the messages
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         filter_row = QHBoxLayout()
+        filter_row.setSpacing(12)
         filter_row.addWidget(self.search, 1)
         filter_row.addWidget(self.hide_done)
         filter_row.addWidget(self.theme_button)
-        layout.addLayout(filter_row)
-        layout.addWidget(self.tabs)
-        layout.addLayout(buttons)
-        layout.addWidget(self.console)
-        layout.addWidget(self.stats)
+        layout.addWidget(Card(filter_row))
+        tasks = QVBoxLayout()
+        tasks.setSpacing(GAP)
+        tasks.addWidget(self.tabs, 1)
+        tasks.addLayout(buttons)
+        layout.addWidget(Card(tasks, stretch=True), 1)
+        messages = QVBoxLayout()
+        messages.setSpacing(GAP)
+        messages.addWidget(self.console)
+        messages.addWidget(self.stats)
+        layout.addWidget(Card(messages, title='Messages'))
         self.setLayout(layout)
 
         self.refresh()
+        for table in self.tables.values():
+            table.setColumnWidth(STATUS_COLUMN, self.status_delegate.column_width(table.font()))
         if initial_split in self.tables:
             self.tabs.setCurrentWidget(self.tables[initial_split])
         self.lock_timer = QTimer(self)
@@ -542,8 +618,10 @@ class TaskBrowser(QWidget):
 
     def show_discard_action(self) -> None:
         # Discard, or Restore on a discarded sequence
-        self.discard_button.setText('Restore' if self.selected_status() == DISCARDED_STATUS
-                                    else 'Discard')
+        restore = self.selected_status() == DISCARDED_STATUS
+        self.discard_button.setText('Restore' if restore else 'Discard')
+        if self.discard_button.property('variant') != ('tonal' if restore else 'danger'):
+            set_variant(self.discard_button, 'tonal' if restore else 'danger')
 
     def confirm_discard(self, split: str, sequence: str) -> bool:
         answer = QMessageBox.question(

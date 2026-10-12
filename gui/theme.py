@@ -40,13 +40,47 @@ def has_theme_package() -> bool:
     return importlib.util.find_spec('qdarktheme') is not None
 
 
+def effective_theme(theme: str) -> str:
+    """light or dark: Auto is the desktop's setting, dark when it cannot be read (as the theme
+    package decides)."""
+    if theme != 'auto':
+        return theme
+    try:
+        import darkdetect
+        detected = darkdetect.theme()
+    except Exception:  # no desktop setting to read (a VNC screen)
+        detected = None
+    return detected.lower() if detected else 'dark'
+
+
 def apply_theme(theme: str) -> bool:
-    """Apply the theme to the whole application, windows that are already open included. Without
-    the theme package Qt's built-in Fusion style is used, which has no themes: returns False."""
+    """Apply the theme to the whole application, windows that are already open included: the
+    theme package's widgets with the app's accent and the style sheet of gui/style.py, in the
+    light or the dark tones. Without the theme package Qt's built-in Fusion style is used, which
+    has no themes: returns False."""
+    from gui.style import CUSTOM_COLORS, app_font, style_sheet
+    QApplication.setFont(app_font())
     try:
         import qdarktheme
-        qdarktheme.setup_theme(theme)
+        # Auto is resolved here: the theme package's own Auto watches the desktop with a
+        # gsettings process that outlives a window killed on restart, and a VNC screen's desktop
+        # never switches themes anyway
+        resolved = effective_theme(theme)
+        qdarktheme.setup_theme(resolved, custom_colors=CUSTOM_COLORS,
+                               additional_qss=style_sheet(resolved == 'dark'))
         return True
     except (ImportError, AttributeError):
         QApplication.setStyle('Fusion')
         return False
+
+
+def setting(name: str, default=None):
+    """A per-screen choice of the window (e.g. whether the Advanced card is open), kept as the
+    theme is."""
+    return settings().value(f'{name}/{os.environ.get("DISPLAY") or "default"}', default)
+
+
+def save_setting(name: str, value) -> None:
+    stored = settings()
+    stored.setValue(f'{name}/{os.environ.get("DISPLAY") or "default"}', value)
+    stored.sync()

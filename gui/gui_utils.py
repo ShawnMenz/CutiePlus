@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTe
                                QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
                                QStyleOptionSlider, QToolButton, QWidget)
 
+from gui.style import restyle
+
 # room for the title bar and borders that the window manager adds around a window
 WINDOW_FRAME = QSize(16, 48)
 
@@ -95,9 +97,10 @@ class FrameSlider(QSlider):
     its anchors as vertical lines: black (white in a dark theme) for a mask anchor, magenta for an
     empty one."""
 
-    # green, apart from the theme's accent (which fills the groove up to the handle)
-    BAND_COLOR = (67, 160, 71)
-    BAND_ALPHA, ACTIVE_ALPHA = 85, 170
+    # the secondary green (gui/style.py), as rounded segments on the groove
+    BAND_COLOR = (80, 158, 47)
+    BAND_ALPHA, ACTIVE_ALPHA = 110, 210
+    BAND_HEIGHT = 10  # px
     BAND_GAP = 2  # px between two intervals that touch, so they read as two clips
     ANCHOR_WIDTH = 2  # px
     MASK_ANCHOR_COLORS = ('#000000', '#ffffff')  # light, dark theme
@@ -154,15 +157,22 @@ class FrameSlider(QSlider):
         # one interval over every frame would only fill the bar
         if not self.intervals or frames < 2 or self.intervals == [(1, frames)]:
             return
-        centre, step, top, height, handle = self.frame_geometry()
+        centre, step, _, _, handle = self.frame_geometry()
         painter = self.mark_painter(handle)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
         groove = self.groove_rect()
+        top = groove.center().y() - self.BAND_HEIGHT / 2 + 0.5
+        radius = self.BAND_HEIGHT / 2
         for start, end in self.intervals:
             left = max(centre(start) - step / 2, groove.left()) + self.BAND_GAP / 2
             right = min(centre(end) + step / 2, groove.right()) - self.BAND_GAP / 2
             color = QColor(*self.BAND_COLOR)
             color.setAlpha(self.ACTIVE_ALPHA if (start, end) == self.active_interval else self.BAND_ALPHA)
-            painter.fillRect(QRectF(left, top, max(right - left, 2), height), color)
+            painter.setBrush(color)
+            width = max(right - left, 2)
+            painter.drawRoundedRect(QRectF(left, top, width, self.BAND_HEIGHT),
+                                    min(radius, width / 2), radius)
         painter.end()
 
     def groove_rect(self):
@@ -212,12 +222,11 @@ def frame_key_tip(key: str, plain: str, shift: str, alt: str, ctrl: str) -> str:
 
 
 def key_box(text: str, tooltip: str) -> QLabel:
-    # a small bordered label that names a key; the border follows the theme
+    # a pill that names a key (gui/style.py)
     box = QLabel(text)
     box.setToolTip(tooltip)
     box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    box.setStyleSheet('QLabel { border: 1px solid palette(mid); border-radius: 4px; '
-                      'padding: 1px 8px; }')
+    box.setProperty('pill', 'key')
     return box
 
 
@@ -405,10 +414,12 @@ class IntervalPair(QWidget):
             self.start_box.setValue(entry[1])
 
     def set_invalid(self, invalid: bool) -> None:
-        # a red frame around a pair that overlaps another; it is not saved until fixed
-        style = 'QSpinBox { border: 1px solid #d32f2f; border-radius: 3px; }' if invalid else ''
+        # a red frame around a pair that overlaps another (gui/style.py); it is not saved until
+        # fixed
         for box in self.boxes():
-            box.setStyleSheet(style)
+            if box.property('invalid') != invalid:
+                box.setProperty('invalid', invalid)
+                restyle(box)
         self.invalid = invalid
 
 

@@ -40,7 +40,7 @@ File: `gui/task_browser.py` (`--tasks`).
 - Tabs per split; columns for sequence, frames, anchors, status (colored), annotators, who has it open, modality and target (the category in bold); sortable; the models are loaded once and reused for every task.
 - A filter box (sequence, annotator or target text) and a *Hide done* checkbox; counts of each status for the current tab, and the number of sequences each annotator has worked on.
 - *Open*, *Export*, *Mark done* (key D), *Discard* / *Restore*, *Refresh* and *Manage annotators*.
-- A *Theme* button at the top right cycles Auto (follows the desktop), Light and Dark for every window of the program. The choice is kept for the screen it was made on (in the user's Qt settings, per `DISPLAY`) and applied at the next start; `gui/theme.py`.
+- A *Theme* button at the top right cycles Auto (follows the desktop), Light and Dark for every window of the program. The choice is kept for the screen it was made on (in the user's Qt settings, per `DISPLAY`) and applied at the next start; `gui/theme.py`. Auto is resolved when the theme is applied, from the desktop setting (light or dark): the theme package's own Auto mode watched the desktop with a `gsettings monitor` process that was left running each time a window was restarted.
 
 ## Several annotators
 
@@ -50,10 +50,12 @@ Files: `gui/task_state.py`, `gui/annotators.py`, `gui/annotator_manager.py`.
 
 ## GUI
 
-Files: `gui/gui.py`, `gui/gui_utils.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/TIPS.md`.
+Files: `gui/gui.py`, `gui/gui_utils.py`, `gui/style.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/TIPS.md`.
+
+- **Look** (`gui/style.py`, every window): flat "soft cards" in the light and dark themes. Controls are grouped into rounded cards with 8 px controls and 12 px cards; one green accent (#00853E, with #509E2F for hover, the interval bands and the dark theme's accent); the main actions are filled green buttons (*Propagate*, *Save binary PNGs*, *Open*), *Mark as anchor* / *Mark done* are tinted, destructive ones are outlined in red; the category and the key names are pills; the task browser draws each status as a colored pill. No shadows or gradients, which would slow a VNC screen. In the labeling window the controls of the original Cutie (memory gauges and settings, imports, the overlay video, *Reset all frame masks*) are folded into a collapsible *Advanced* card in the sidebar, open or closed as last left on that screen; the messages take the sidebar's height, with *Tips (F1)* above them; the controls under the slider form three cards: *Frame*, *Propagate* and *Save*.
 
 - **View**: Ctrl + wheel zooms at the cursor (up to 32x, nearest-neighbour so pixels stay sharp); the wheel scrolls up and down, Alt + wheel left and right.
-- **Layout that adapts**: the controls below the image wrap onto more rows in a narrow window, the right panel scrolls and can be resized or hidden, a labeling window opens maximized (it fills the VNC desktop, which follows the viewer's window; un-maximized it has its fitted size), other windows maximize on small screens and follow a screen that is resized (useful through VNC), and the log area takes the free height of the right panel and keeps showing the newest message.
+- **Layout that adapts**: the controls below the image wrap onto more rows in a narrow window, the sidebar scrolls and can be resized or hidden, a labeling window opens maximized (it fills the VNC desktop, which follows the viewer's window; un-maximized it has its fitted size), other windows maximize on small screens and follow a screen that is resized (useful through VNC), and the log area takes the free height of the right panel and keeps showing the newest message.
 - **Keys**: A / D previous / next frame (Shift: 10 frames, Alt: first / last), Ctrl+A / D previous / next anchor, { / } previous / next interval start, R play / stop (plays once), Shift+R preview the intervals one by one, C mark an anchor, F / B propagate, Space cycles the visualization (including *light*), T toggles the modality, Ctrl+S / Ctrl+E save the binary PNGs / overlay video. Without a mouse: `,` / `.` click at the pointer (left / right), Ctrl + `+` / `-` zoom, Ctrl+0 fits the image, and the arrow keys scroll a zoomed image (they do not move frames); the mouse works as before. Shortcut keys are written on the buttons and hover tips list the combinations.
 - **Tips**: a *Tips* button (F1) opens the guide in a window of its own.
 - **Frame label**: the file, the modality (RGB in red, green and blue letters; thermal in orange-red) and the mask source, each status in its own color, with a legend on hover; the frame key boxes beside the slider name the A / D keys; the slider marks each anchor with a line (black, or white in a dark theme; magenta for an empty anchor).
@@ -97,7 +99,7 @@ Dead or unused code was deleted: `cutie/inference/utils/frame_utils.py` (its imp
 
 ## New files
 
-`gui/task_state.py`, `gui/task_browser.py`, `gui/task_export.py`, `gui/edit_history.py`, `gui/annotators.py`, `gui/annotator_manager.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/theme.py`. `gui/TIPS.md` was rewritten as the labeling guide. `gui/gui.py`, `gui/gui_utils.py`, `gui/main_controller.py`, `gui/resource_manager.py`, `gui/reader.py`, `gui/interaction.py`, `gui/interactive_utils.py`, `gui/click_controller.py` and `interactive_demo.py` were changed extensively.
+`gui/task_state.py`, `gui/task_browser.py`, `gui/task_export.py`, `gui/edit_history.py`, `gui/annotators.py`, `gui/annotator_manager.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/theme.py`, `gui/style.py`. `gui/TIPS.md` was rewritten as the labeling guide. `gui/gui.py`, `gui/gui_utils.py`, `gui/main_controller.py`, `gui/resource_manager.py`, `gui/reader.py`, `gui/interaction.py`, `gui/interactive_utils.py`, `gui/click_controller.py` and `interactive_demo.py` were changed extensively.
 
 ## Repository files
 

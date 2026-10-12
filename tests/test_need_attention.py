@@ -14,6 +14,7 @@ from tests.helpers import make_task
 @pytest.mark.slow
 def test_the_button_toggles_the_flag(tmp_path, qapp, cpu_networks):
     from gui.gui import ATTENTION_COLOR
+    from gui.style import style_sheet
     from gui.main_controller import MainController
     task = make_task(str(tmp_path))
     events = []
@@ -25,7 +26,8 @@ def test_the_button_toggles_the_flag(tmp_path, qapp, cpu_networks):
     controller = open_window()
     button = controller.gui.attention_button
     assert button.text() == 'Need Attention' and button.isCheckable() and not button.isChecked()
-    assert ATTENTION_COLOR in button.styleSheet()
+    # orange, filled while on (the attention variant of gui/style.py)
+    assert button.property('variant') == 'attention' and ATTENTION_COLOR in style_sheet(False)
     button.click()
     assert button.isChecked() and attention_of(task.workspace)['by'] == 'tester'
     assert events == ['attention']  # the browser refreshes the row

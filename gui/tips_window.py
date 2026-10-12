@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QTextBrowser, QVBoxLayout, QWidget
 
+from gui.style import Card
+
 TIPS_FILE = Path(__file__).parent / 'TIPS.md'
 PREFERRED_SIZE = (780, 900)
 
@@ -19,8 +21,13 @@ class TipsWindow(QWidget):
         self.setWindowTitle('Cutie labeling guide')
         self.browser = QTextBrowser()
         self.browser.setMarkdown(TIPS_FILE.read_text(encoding='utf-8'))
+        self.browser.document().setDocumentMargin(12)
+        # the guide on a rounded card (gui/style.py)
         layout = QVBoxLayout()
-        layout.addWidget(self.browser)
+        layout.setContentsMargins(12, 12, 12, 12)
+        card = Card(self.browser, stretch=True)
+        card.layout().setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(card)
         self.setLayout(layout)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(self.close)
 

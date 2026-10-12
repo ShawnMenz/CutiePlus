@@ -6,11 +6,12 @@ makes them effective for the sessions that read it.
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from gui.annotators import (ANNOTATORS_FILE, MAX_NAME_LENGTH, MAX_PORT, MIN_PORT, VNC_BASE_PORT,
                             annotators_path, check_annotators, load_annotators, save_annotators)
+from gui.style import Card, set_variant
 
 FIRST_ANNOTATOR_PORT = VNC_BASE_PORT + 2  # screen :1 is the real monitor
 
@@ -31,7 +32,7 @@ class AnnotatorRow(QWidget):
         self.name_box = QLineEdit(name)
         self.name_box.setMaxLength(MAX_NAME_LENGTH)
         self.name_box.setPlaceholderText('Annotator name')
-        self.remove_button = QPushButton('Remove')
+        self.remove_button = set_variant(QPushButton('Remove'), 'danger')
         self.remove_button.setAutoDefault(False)
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 2, 0, 2)
@@ -82,9 +83,9 @@ class AnnotatorManager(QDialog):
         scroll.setWidget(rows_widget)
         scroll.setWidgetResizable(True)
 
-        self.add_button = QPushButton('Add annotator')
+        self.add_button = set_variant(QPushButton('Add annotator'), 'tonal')
         self.add_button.clicked.connect(lambda: self.add_row(self.next_free_port(), ''))
-        self.save_button = QPushButton('Save')
+        self.save_button = set_variant(QPushButton('Save'), 'primary')
         self.save_button.clicked.connect(self.save)
         self.close_button = QPushButton('Close')
         self.close_button.clicked.connect(self.reject)
@@ -104,10 +105,16 @@ class AnnotatorManager(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.close_button)
+        # the list in a rounded card (gui/style.py)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        listing = QVBoxLayout()
+        listing.addLayout(lookup_row)
+        listing.addWidget(scroll, 1)
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         layout.addWidget(header)
-        layout.addLayout(lookup_row)
-        layout.addWidget(scroll, 1)
+        layout.addWidget(Card(listing, stretch=True), 1)
         layout.addLayout(buttons)
         layout.addWidget(self.status)
         layout.addWidget(hint)

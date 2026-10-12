@@ -27,7 +27,7 @@ The original Cutie ships a model and a GUI for interactive video segmentation. C
 - **Review and export workflows**: not started, in progress, under review, done; masks are exported through an external command. A *Need Attention* toggle in the window flags a sequence for further attention (status *Attention* in the browser; it is not marked done while flagged), and *Discard* in the browser leaves a sequence out of the dataset (status *discarded*; *Restore* undoes it).
 - **Undo/redo and improved interactive editing**: undo/redo of clicks, *Reset frame*, *Import mask* and anchor changes; the click model runs without a click limit.
 - **A modern uv-based environment**: Python 3.12 and PyTorch with CUDA 13, with a lockfile.
-- **GUI and robustness improvements for repeated annotation work**: zoom and scroll, a layout that adapts to any screen size, keyboard shortcuts shown on the buttons, a Tips window, colored status labels, a light/dark theme button, and fixes.
+- **GUI and robustness improvements for repeated annotation work**: zoom and scroll, a layout that adapts to any screen size, keyboard shortcuts shown on the buttons, a Tips window, colored status labels, a light/dark theme button, a flat rounded "soft cards" look with a green accent (`gui/style.py`), and fixes.
 
 For a detailed, file-level description of the changes relative to upstream Cutie commit [`ec5cdd4`](https://github.com/hkchengrex/Cutie/commit/ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a), see [MODIFICATIONS.md](docs/MODIFICATIONS.md).
 

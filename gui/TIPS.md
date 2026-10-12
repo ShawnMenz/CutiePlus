@@ -47,7 +47,7 @@ Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot b
 
 **Top row**
 
-- The target: the category, and the description in a text box. It starts as the curated text; edit it to tune the wording. Press Enter or click elsewhere to save (it cannot be empty). Changing it needs a new review. It describes the sequence and its first interval (the one on its right). Save binary PNGs also writes it as `description.txt` (the curated CSV itself is not updated).
+- The target: the category (the green pill), and the description in a text box. It starts as the curated text; edit it to tune the wording. Press Enter or click elsewhere to save (it cannot be empty). Changing it needs a new review. It describes the sequence and its first interval (the one on its right). Save binary PNGs also writes it as `description.txt` (the curated CSV itself is not updated).
 - Frame label, e.g. `000020.jpg (RGB) [anchor: ls]`: the modality shown (RGB, with a red R, green G and blue B; or thermal, in orange-red) and, in color, where the mask comes from:
   - anchor (purple): ls / ls_refined / cutie. A human decision, never overwritten.
   - empty anchor (magenta): target absent. Propagation stops here.
@@ -62,7 +62,7 @@ Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot b
 
 **Bottom controls**
 
-Three groups, left to right; in a narrow window they wrap onto more rows.
+Three cards under the frame slider, left to right; in a narrow window they wrap onto more rows. The main actions are the filled green buttons.
 
 *Frame*
 
@@ -70,31 +70,30 @@ Three groups, left to right; in a narrow window they wrap onto more rows.
 - Current object ID: tasks have one object.
 - Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to.
 
-*Display and files*
+*Propagate*
 
-- Visualization mode: how the mask is drawn on screen.
-- Save binary PNGs (Ctrl+S): writes binary PNGs of the saved masks, `interval.txt` and `description.txt` into `binary_masks/`, and submits the sequence for review. These files are not the dataset; Export task masks writes that.
-- Need Attention (orange, beside Save binary PNGs): click it when the sequence needs further attention, for example a problem you cannot solve or a question for someone else. While it is on, the button is filled orange, the task browser shows the status Attention in red, and Mark done refuses the sequence. Click again to clear it. Edits and Save binary PNGs leave it as it is; hover over the button to see who turned it on and when.
-- Save overlay video (Ctrl+E): a video from saved visualizations (not the dataset). Output FPS and bitrate apply to it.
-- Save visualization and Save soft mask during propagation: write a file per frame into the task folder. Keep them off unless needed.
-
-*Labeling*
-
+- Propagate backward (B) / forward (F): while running, the button reads "Pause propagation" with the same key. From a frame inside an interval, the run stays in that interval (use { / } to go to another one); from a frame outside every interval, it runs to the first / last frame of the sequence. The bar beside Mark as anchor shows the progress.
 - Mark as anchor (C).
+
+*Save*
+
+- Save binary PNGs (Ctrl+S): writes binary PNGs of the saved masks, `interval.txt` and `description.txt` into `binary_masks/`, and submits the sequence for review. These files are not the dataset; Export task masks writes that.
 - Export task masks: writes the dataset masks now. The status does not change; Mark done in the browser exports anyway.
-- Propagate forward (F) / backward (B): while running, the button reads "Pause propagation" with the same key. From a frame inside an interval, the run stays in that interval (use { / } to go to another one); from a frame outside every interval, it runs to the last / first frame of the sequence.
+- Need Attention (orange outline): click it when the sequence needs further attention, for example a problem you cannot solve or a question for someone else. While it is on, the button is filled orange, the task browser shows the status Attention in red, and Mark done refuses the sequence. Click again to clear it. Edits and Save binary PNGs leave it as it is; hover over the button to see who turned it on and when.
+- Visualization mode: how the mask is drawn on screen.
 
-**Right panel**
+**Sidebar**
 
-- Tips (F1): opens this guide in a window of its own, beside the labeling window. Esc closes it.
-- The log at the bottom of the panel takes the height that is left, so it grows and shrinks with the window.
-- It scrolls when the window is short. Drag its left edge to resize it, or to the window's right edge to hide it; drag it back from there.
-- Memory gauges: permanent (your anchors), working, long-term, and GPU.
-- Reset all memory / Reset non-permanent memory: clears the model's memory; masks on disk stay. Rarely needed, since each propagation rebuilds memory from the anchors.
-- Reset all frame masks (red text): after confirmation, deletes this sequence's local, binary, and soft mask PNGs. In task mode it also clears anchors and prefills, deletes both Cutie export trees, and returns the task to "in progress". This cannot be undone; the button is disabled when the curated CSV marks the sequence `done`.
-- Working and long-term memory settings: model tuning. The defaults are fine.
-- Import mask: loads a mask image into this frame and makes it an anchor. Import layer: a background image for the "layer" view.
-- Small targets are processed at 960 px instead of 480 px; the console says which on start-up.
+- Messages: what the window did, newest at the bottom; it takes the height that is left. Tips (F1), at its top right, opens this guide in a window of its own, beside the labeling window. Esc closes it.
+- The sidebar scrolls when the window is short. Drag its left edge to resize it, or to the window's right edge to hide it; drag it back from there.
+- Advanced (click the title to open or close it; it stays as you left it on your screen): the controls you rarely need.
+  - Memory gauges: permanent (your anchors), working, long-term, and GPU.
+  - Reset all memory / Reset non-permanent memory: clears the model's memory; masks on disk stay. Rarely needed, since each propagation rebuilds memory from the anchors.
+  - Working and long-term memory settings: model tuning. The defaults are fine.
+  - Import mask: loads a mask image into this frame and makes it an anchor. Import layer: a background image for the "layer" view.
+  - Overlay video: Save visualization and Save soft mask during propagation write a file per frame into the task folder (keep them off unless needed); Save overlay video (Ctrl+E) makes a video from the saved visualizations (not the dataset), with the Output FPS and bitrate.
+  - Reset all frame masks (red outline): after confirmation, deletes this sequence's local, binary, and soft mask PNGs. In task mode it also clears anchors and prefills, deletes both Cutie export trees, and returns the task to "in progress". This cannot be undone; the button is disabled when the curated CSV marks the sequence `done`.
+- Small targets are processed at 960 px instead of 480 px; the messages say which on start-up.
 
 **Status in the task browser**
 

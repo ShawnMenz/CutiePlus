@@ -16,15 +16,15 @@ from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
+from gui.style import ATTENTION, CARD_MARGINS, GAP, Card, restyle, set_pill, set_variant
 from gui.task_state import describe_attention, interval_index_from
+from gui.theme import save_setting, setting
 from gui.tips_window import TipsWindow
 from gui.interactive_utils import (CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR,
                                    POSITIVE_CLICK_COLOR, color_map_np)
 
 # Need Attention: orange text, filled orange while the sequence is flagged
-ATTENTION_COLOR = '#ef6c00'
-ATTENTION_STYLE = (f'QPushButton {{ color: {ATTENTION_COLOR}; font-weight: bold; }}'
-                   f'QPushButton:checked {{ color: white; background: {ATTENTION_COLOR}; }}')
+ATTENTION_COLOR = ATTENTION  # Need Attention's orange (gui/style.py)
 
 # canvas view: Ctrl + wheel zooms at the cursor, the wheel scrolls (with Alt: sideways)
 ZOOM_STEP = 1.25  # per wheel notch
@@ -76,13 +76,13 @@ class GUI(QWidget):
             + ('\nShift+R or Shift+click: preview the intervals, one per press.'
                '\n{ / }: go to the previous / next interval start.'
                if controller.task is not None else ''))
-        self.commit_button = QPushButton('Commit to permanent memory (C)')
+        self.commit_button = set_variant(QPushButton('Commit to permanent memory (C)'), 'tonal')
         self.commit_button.clicked.connect(controller.on_commit)
         self.export_task_button = QPushButton('Export task masks')
         self.export_task_button.clicked.connect(lambda: controller.on_export())
         self.export_video_button = QPushButton('Export as video (Ctrl+E)')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
-        self.export_binary_button = QPushButton('Export binary masks (Ctrl+S)')
+        self.export_binary_button = set_variant(QPushButton('Export binary masks (Ctrl+S)'), 'primary')
         self.export_binary_button.clicked.connect(controller.on_export_binary)
         if task is not None:
             # these only write files into the task folder; the dataset comes from the task export
@@ -98,15 +98,16 @@ class GUI(QWidget):
             # a toggle: the sequence needs further attention (orange; filled while on)
             self.attention_button = QPushButton('Need Attention')
             self.attention_button.setCheckable(True)
-            self.attention_button.setStyleSheet(ATTENTION_STYLE)
+            set_variant(self.attention_button, 'attention')  # orange; filled while on
             self.attention_button.clicked.connect(controller.on_toggle_attention)
             self.refresh_attention_button()
 
-        self.forward_run_button = QPushButton(FORWARD_LABEL)
+        # the main actions are filled (gui/style.py)
+        self.forward_run_button = set_variant(QPushButton(FORWARD_LABEL), 'primary')
         self.forward_run_button.clicked.connect(controller.on_forward_propagation)
         self.fit_to_labels(self.forward_run_button, (FORWARD_LABEL, PAUSE_FORWARD_LABEL))
 
-        self.backward_run_button = QPushButton(BACKWARD_LABEL)
+        self.backward_run_button = set_variant(QPushButton(BACKWARD_LABEL), 'primary')
         self.backward_run_button.clicked.connect(controller.on_backward_propagation)
         self.fit_to_labels(self.backward_run_button, (BACKWARD_LABEL, PAUSE_BACKWARD_LABEL))
 
@@ -121,12 +122,14 @@ class GUI(QWidget):
         self.reset_frame_button.clicked.connect(controller.on_reset_mask)
         self.reset_object_button = QPushButton('Reset object')
         self.reset_object_button.clicked.connect(controller.on_reset_object)
-        self.reset_all_masks_button = QPushButton('Reset all frame masks')
-        self.reset_all_masks_button.setStyleSheet('QPushButton { color: #d32f2f; font-weight: bold; }')
+        self.reset_all_masks_button = set_variant(QPushButton('Reset all frame masks'), 'danger')
         self.reset_all_masks_button.clicked.connect(controller.on_reset_all_frame_masks)
 
         # set up the LCD
         self.lcd = QTextEdit()
+        self.lcd.setObjectName('frameCounter')
+        self.lcd.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.lcd.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.lcd.setReadOnly(True)
         self.lcd.setMaximumHeight(28)
         self.lcd.setMaximumWidth(150)
@@ -155,7 +158,8 @@ class GUI(QWidget):
         self.task_label = QLabel()
         self.description_edit = TextBox()
         if task is not None:
-            self.task_label.setText(f'<b>{task.category}</b>:')
+            self.task_label.setText(task.category)
+            set_pill(self.task_label, 'accent')
             self.set_description(task.description)
             self.description_edit.editingFinished.connect(controller.on_description_change)
             self.commit_button.setText('Mark as anchor (C)')
@@ -180,6 +184,7 @@ class GUI(QWidget):
             # its column also holds the added rows' '- Remove interval' buttons, all as wide
             self.interval_grid.addWidget(self.add_interval_button, 0, 3)
             # the frame label carries the mask source; the bottom row is too narrow for it
+            set_pill(self.frame_name, 'frame')
             self.interval_grid.addWidget(self.frame_name, 0, 4)
             intervals, _ = task.intervals(controller.T)
             first = task.first_interval(controller.T)
@@ -193,6 +198,7 @@ class GUI(QWidget):
 
         # timeline slider
         self.tl_slider = FrameSlider(Qt.Orientation.Horizontal)
+        self.tl_slider.setObjectName('frameSlider')  # styled in gui/style.py
         self.tl_slider.valueChanged.connect(controller.on_slider_update)
         self.tl_slider.setMinimum(0)
         self.tl_slider.setMaximum(controller.T - 1)
@@ -314,130 +320,140 @@ class GUI(QWidget):
         self.tips_button.setToolTip('The labeling guide: keys, mouse, and what each control does.')
         self.tips_button.clicked.connect(self.show_tips)
 
-        # navigator: three groups in a row, which wrap onto more rows in a narrow window
-        navi = FlowLayout()
+        # the layout, as rounded cards (gui/style.py): the target and its intervals on top, the
+        # canvas with a sidebar (messages, and the Advanced controls folded away), the frame
+        # slider, and three cards of controls below it, which wrap in a narrow window
+        def row(*widgets, stretch=True):
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(GAP)
+            for widget in widgets:
+                line.addWidget(widget)
+            if stretch:
+                line.addStretch(1)
+            return line
 
-        interact_subbox = QVBoxLayout()
-        interact_topbox = QHBoxLayout()
-        interact_botbox = QHBoxLayout()
-        interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        interact_topbox.addWidget(self.lcd)
-        interact_topbox.addWidget(self.play_button)
-        interact_topbox.addWidget(self.reset_frame_button)
-        interact_topbox.addWidget(self.reset_object_button)
-        interact_botbox.addWidget(QLabel('Current object ID:'))
-        interact_botbox.addWidget(self.object_dial)
-        interact_botbox.addWidget(self.object_color)
-        if task is None:
-            interact_botbox.addWidget(self.frame_name)
-        interact_subbox.addLayout(interact_topbox)
-        interact_subbox.addLayout(interact_botbox)
-        interact_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        navi.addWidget(layout_widget(interact_subbox))
+        def rows(*lines):
+            column = QVBoxLayout()
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(GAP)
+            for line in lines:
+                column.addLayout(line)
+            return column
 
-        apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.
-                                                            Policy.Fixed)
-        apply_to_all_children_widget(interact_topbox, apply_fixed_size_policy)
-        apply_to_all_children_widget(interact_botbox, apply_fixed_size_policy)
+        def section(text):  # a small heading inside the Advanced card
+            label = QLabel(text)
+            label.setProperty('section', True)
+            return label
 
-        overlay_subbox = QVBoxLayout()
-        overlay_topbox = QHBoxLayout()
-        overlay_botbox = QHBoxLayout()
-        overlay_topbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        overlay_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        overlay_topbox.addWidget(QLabel('Visualization mode'))
-        overlay_topbox.addWidget(self.combo)
-        overlay_topbox.addWidget(QLabel('Save soft mask during propagation'))
-        overlay_topbox.addWidget(self.save_soft_mask_checkbox)
-        overlay_topbox.addWidget(self.export_binary_button)
-        if task is not None:
-            overlay_topbox.addWidget(self.attention_button)
-        overlay_botbox.addWidget(QLabel('Save visualization'))
-        overlay_botbox.addWidget(self.save_visualization_combo)
-        overlay_botbox.addWidget(self.export_video_button)
-        overlay_botbox.addWidget(QLabel('Output FPS: '))
-        overlay_botbox.addWidget(self.fps_dial)
-        overlay_botbox.addWidget(QLabel('Output bitrate (Mbps): '))
-        overlay_botbox.addWidget(self.bitrate_dial)
-        overlay_subbox.addLayout(overlay_topbox)
-        overlay_subbox.addLayout(overlay_botbox)
-        navi.addWidget(layout_widget(overlay_subbox))
-        apply_to_all_children_widget(overlay_topbox, apply_fixed_size_policy)
-        apply_to_all_children_widget(overlay_botbox, apply_fixed_size_policy)
+        object_label = QLabel('Current object ID:')
+        frame_line = row(object_label, self.object_dial, self.object_color,
+                         *([self.frame_name] if task is None else []))
+        frame_card = Card(rows(row(self.lcd, self.play_button),
+                               row(self.reset_frame_button, self.reset_object_button),
+                               frame_line), title='Frame')
 
-        control_subbox = QVBoxLayout()
-        control_topbox = QHBoxLayout()
-        control_botbox = QHBoxLayout()
-        control_topbox.addWidget(self.commit_button)
-        if task is not None:
-            control_topbox.addWidget(self.export_task_button)
-        control_topbox.addWidget(self.forward_run_button)
-        control_topbox.addWidget(self.backward_run_button)
-        control_botbox.addWidget(self.progressbar)
-        control_subbox.addLayout(control_topbox)
-        control_subbox.addLayout(control_botbox)
-        navi.addWidget(layout_widget(control_subbox))
+        propagate_card = Card(rows(row(self.backward_run_button, self.forward_run_button),
+                                   row(self.commit_button, self.progressbar, stretch=False)),
+                              title='Propagate')
+        self.progressbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        # right area
-        right_area = QVBoxLayout()
-        right_area.addWidget(self.tips_button)
+        save_buttons = [self.export_binary_button] + ([self.export_task_button] if task else [])
+        mode_line = ([self.attention_button] if task is not None else []) + \
+            [QLabel('Visualization mode'), self.combo]
+        save_card = Card(rows(row(*save_buttons), row(*mode_line)), title='Save')
 
-        # Parameters
-        right_area.addLayout(self.perm_mem_gauge_layout)
-        right_area.addLayout(self.work_mem_gauge_layout)
-        right_area.addLayout(self.long_mem_gauge_layout)
-        right_area.addLayout(self.gpu_mem_gauge_layout)
-        right_area.addLayout(self.torch_mem_gauge_layout)
-        right_area.addWidget(self.clear_all_mem_button)
-        right_area.addWidget(self.clear_non_perm_mem_button)
-        right_area.addWidget(self.reset_all_masks_button)
-        right_area.addLayout(self.work_mem_min_layout)
-        right_area.addLayout(self.work_mem_max_layout)
-        right_area.addLayout(self.long_mem_max_layout)
-        right_area.addLayout(self.mem_every_box_layout)
+        for card in (frame_card, propagate_card, save_card):
+            for child in card.body.findChildren(QPushButton) + card.body.findChildren(QLabel):
+                child.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        navi = FlowLayout(spacing=12, fill=True)
+        for card in (frame_card, propagate_card, save_card):
+            navi.addWidget(card)
 
-        # import mask/layer
-        import_area = QHBoxLayout()
-        import_area.setAlignment(Qt.AlignmentFlag.AlignBottom)
-        import_area.addWidget(self.import_mask_button)
-        import_area.addWidget(self.import_layer_button)
-        right_area.addLayout(import_area)
+        # the sidebar: the messages take its height; the controls of the original Cutie (memory,
+        # imports, the overlay video, Reset all frame masks) wait in the Advanced card, open or
+        # closed as last left on this screen
+        self.tips_button.setText('Tips (F1)')
+        messages_card = Card(self.console, title='Messages', trailing=(self.tips_button, ),
+                             stretch=True)
+        advanced = QVBoxLayout()
+        advanced.setContentsMargins(0, 0, 0, 0)
+        advanced.setSpacing(GAP)
+        advanced.addWidget(section('Memory'))
+        for line in (self.perm_mem_gauge_layout, self.work_mem_gauge_layout,
+                     self.long_mem_gauge_layout, self.gpu_mem_gauge_layout,
+                     self.torch_mem_gauge_layout):
+            advanced.addLayout(line)
+        advanced.addLayout(row(self.clear_all_mem_button, self.clear_non_perm_mem_button,
+                               stretch=False))
+        for line in (self.work_mem_min_layout, self.work_mem_max_layout, self.long_mem_max_layout,
+                     self.mem_every_box_layout):
+            advanced.addLayout(line)
+        advanced.addWidget(section('Import'))
+        advanced.addLayout(row(self.import_mask_button, self.import_layer_button, stretch=False))
+        advanced.addWidget(section('Overlay video'))
+        advanced.addLayout(row(QLabel('Save visualization'), self.save_visualization_combo))
+        advanced.addLayout(row(QLabel('Save soft mask during propagation'),
+                               self.save_soft_mask_checkbox))
+        advanced.addLayout(row(QLabel('Output FPS'), self.fps_dial, QLabel('Bitrate (Mbps)'),
+                               self.bitrate_dial))
+        advanced.addLayout(row(self.export_video_button))
+        advanced.addWidget(section('Reset'))
+        advanced.addLayout(row(self.reset_all_masks_button))
+        open_advanced = setting('advanced_open', 'false') in (True, 'true')
+        self.advanced_card = Card(advanced, title='Advanced', collapsible=True,
+                                  expanded=open_advanced)
+        self.advanced_card.toggled.connect(lambda shown: save_setting('advanced_open', shown))
 
-        # console: all the height that is left in the panel
-        right_area.addWidget(self.console, 1)
+        sidebar = QVBoxLayout()
+        sidebar.setContentsMargins(0, 0, 0, 0)
+        sidebar.setSpacing(12)
+        sidebar.addWidget(messages_card, 1)
+        sidebar.addWidget(self.advanced_card)
 
-        # the right panel scrolls when the window is short; drag its edge to resize it, or to the
+        # the sidebar scrolls when the window is short; drag its edge to resize it, or to the
         # window's edge to hide it
         right_panel = QScrollArea()
-        right_panel.setWidget(layout_widget(right_area))
+        right_panel.setWidget(layout_widget(sidebar))
         right_panel.setWidgetResizable(True)
         right_panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         right_panel.setFrameShape(QFrame.Shape.NoFrame)
-        # wide enough for the content beside the scroll bar; it scrolls up-down only (polished
+        # wide enough for the Advanced card's content, open or not, beside the scroll bar (polished
         # first: the theme's style sheet sets the frame)
         right_panel.ensurePolished()
+        content_width = max(right_panel.widget().minimumSizeHint().width(),
+                            self.advanced_card.body.minimumSizeHint().width()
+                            + CARD_MARGINS[0] + CARD_MARGINS[2] + 2)
         right_panel.setMinimumWidth(
-            right_panel.widget().minimumSizeHint().width() +
-            right_panel.verticalScrollBar().sizeHint().width() + 2 * right_panel.frameWidth() +
-            right_panel.style().pixelMetric(QStyle.PixelMetric.PM_ScrollView_ScrollBarSpacing,
-                                            None, right_panel))
+            content_width + right_panel.verticalScrollBar().sizeHint().width()
+            + 2 * right_panel.frameWidth()
+            + right_panel.style().pixelMetric(QStyle.PixelMetric.PM_ScrollView_ScrollBarSpacing,
+                                              None, right_panel))
+
+        # the canvas in a card of its own
+        canvas_card = Card(self.main_canvas, stretch=True)
+        canvas_card.layout().setContentsMargins(6, 6, 6, 6)
 
         # Drawing area: main canvas and the right panel
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.main_canvas)
+        self.splitter.addWidget(canvas_card)
         self.splitter.addWidget(right_panel)
+        self.splitter.setHandleWidth(12)
         self.splitter.setStretchFactor(0, 4)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([4000, 1000])  # relative: the panel starts at a fifth of the width
         self.splitter.setCollapsible(0, False)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         if task is not None:
             # the descriptions and their intervals, a row each
-            layout.addLayout(self.interval_grid)
+            layout.addWidget(Card(self.interval_grid))
         layout.addWidget(self.splitter, 1)
-        # the frame slider between two boxes naming the keys that step it
+        # the frame slider between two pills naming the keys that step it
         slider_row = QHBoxLayout()
+        slider_row.setSpacing(GAP)
         slider_row.addWidget(key_box('<b>A</b>  previous frame',
                                      frame_key_tip('A', 'previous frame', '10 frames back',
                                                    'first frame', 'previous anchor')))
@@ -616,6 +632,7 @@ class GUI(QWidget):
                     functools.partial(self.controller.on_interval_change, which, pair))
             box.editingFinished.connect(functools.partial(self.return_focus_from, box))
         if not first:
+            set_variant(pair.remove_button, 'danger')
             pair.description_edit.editingFinished.connect(
                 functools.partial(self.controller.on_interval_description_change, pair))
             pair.description_edit.editingFinished.connect(
@@ -1019,7 +1036,10 @@ class GUI(QWidget):
     def set_object_color(self, object_id: int):
         r, g, b = color_map_np[object_id]  # the colour the mask is drawn in
         rgb = f'rgb({r},{g},{b})'
-        self.object_color.setStyleSheet('QLabel {background: ' + rgb + ';}')
+        # the number in black or white, whichever reads on the colour
+        text = 'black' if 0.299 * r + 0.587 * g + 0.114 * b > 140 else 'white'
+        self.object_color.setStyleSheet(f'QLabel {{ background: {rgb}; color: {text}; '
+                                        'border-radius: 8px; font-weight: 600; }')
         self.object_color.setText(f'{object_id}')
 
     def progressbar_update(self, progress: float):

@@ -1,7 +1,7 @@
 """
 A layout that places its items left to right and wraps them onto new rows when the width runs
 out (after Qt's Flow Layout example). The items of a row are spread across the width, or packed
-to the left with spread=False.
+to the left with spread=False, or widened to fill the row with fill=True (cards).
 """
 from typing import List
 
@@ -11,10 +11,11 @@ from PySide6.QtWidgets import QLayout, QLayoutItem, QWidget, QWidgetItem
 
 class FlowLayout(QLayout):
 
-    def __init__(self, spacing: int = 12, spread: bool = True) -> None:
+    def __init__(self, spacing: int = 12, spread: bool = True, fill: bool = False) -> None:
         super().__init__()
         self.items: List[QLayoutItem] = []
         self.spread = spread
+        self.fill = fill
         self.setSpacing(spacing)
 
     def addItem(self, item: QLayoutItem) -> None:
@@ -99,7 +100,11 @@ class FlowLayout(QLayout):
                 spare = max(area.width() - sum(minimums) - spacing * (len(row) - 1), 0)
                 grow = min(spare / sum(wanted), 1) if sum(wanted) else 0
                 widths = [round(minimum + extra * grow) for minimum, extra in zip(minimums, wanted)]
-                if self.spread and len(row) > 1:
+                if self.fill:  # the width left over goes to the items, evenly
+                    left = area.width() - sum(widths) - spacing * (len(row) - 1)
+                    widths = [width + left // len(row) for width in widths]
+                    widths[-1] += left % len(row)
+                if self.spread and len(row) > 1 and not self.fill:
                     gap = max((area.width() - sum(widths)) / (len(row) - 1), spacing)
                 else:
                     gap = spacing
