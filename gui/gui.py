@@ -40,18 +40,13 @@ PAUSE_FORWARD_LABEL = 'Pause propagation (F)'
 PAUSE_BACKWARD_LABEL = 'Pause propagation (B)'
 PLAY_LABEL = 'Play video (R)'
 STOP_LABEL = 'Stop video (R)'
-# the playback's speed (R and Shift+R), set in the box beside the button and kept per screen
-PLAYBACK_FPS = 30
+# the playback's speed (R and Shift+R), set in the box beside the button; every window starts at
+# PLAYBACK_FPS
+PLAYBACK_FPS = 24
 MAX_PLAYBACK_FPS = 60
-
-
-def saved_playback_fps() -> int:
-    # the speed last set on this screen
-    try:
-        fps = int(setting('play_fps', PLAYBACK_FPS))
-    except (TypeError, ValueError):
-        return PLAYBACK_FPS
-    return min(max(fps, 1), MAX_PLAYBACK_FPS)
+# the "layer" view, which puts an image (Import layer; the original Cutie's UIUC logo) between the
+# target and the background: off, so neither it nor Import layer is offered; True brings both back
+SHOW_LAYER_MODE = False
 
 
 class GUI(QWidget):
@@ -91,9 +86,10 @@ class GUI(QWidget):
         self.play_fps_box = QSpinBox()
         self.play_fps_box.setRange(1, MAX_PLAYBACK_FPS)
         self.play_fps_box.setSuffix(' fps')
-        self.play_fps_box.setValue(saved_playback_fps())
-        self.play_fps_box.setToolTip('Playback speed of R and Shift+R, in frames per second; the '
-                                     'frames may load slower. Remembered for this screen.')
+        self.play_fps_box.setValue(PLAYBACK_FPS)
+        self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R, in frames per second; the '
+                                     f'frames may load slower. Starts at {PLAYBACK_FPS} in every '
+                                     'window.')
         self.play_fps_box.valueChanged.connect(self.on_play_fps_change)
         self.commit_button = set_variant(QPushButton('Commit to permanent memory (C)'), 'tonal')
         self.commit_button.clicked.connect(controller.on_commit)
@@ -237,7 +233,8 @@ class GUI(QWidget):
         self.combo.addItem("fade")
         self.combo.addItem("light")
         self.combo.addItem("popup")
-        self.combo.addItem("layer")
+        if SHOW_LAYER_MODE:
+            self.combo.addItem("layer")
         self.combo.addItem("rgba")
         self.combo.setCurrentText('davis')
         self.combo.currentTextChanged.connect(controller.set_vis_mode)
@@ -409,7 +406,9 @@ class GUI(QWidget):
                      self.mem_every_box_layout):
             advanced.addLayout(line)
         advanced.addWidget(section('Import'))
-        advanced.addLayout(row(self.import_mask_button, self.import_layer_button, stretch=False))
+        advanced.addLayout(row(self.import_mask_button,
+                               *([self.import_layer_button] if SHOW_LAYER_MODE else []),
+                               stretch=False))
         advanced.addWidget(section('Overlay video'))
         advanced.addLayout(row(QLabel('Save visualization'), self.save_visualization_combo))
         advanced.addLayout(row(QLabel('Save soft mask during propagation'),
@@ -996,7 +995,6 @@ class GUI(QWidget):
         # a playback under way changes speed at once
         if self.timer.isActive():
             self.timer.setInterval(self.playback_interval_ms())
-        save_setting('play_fps', fps)
 
     def on_preview_interval(self) -> None:
         # Shift+R: the next interval only, from its start to its end; each press plays the next one

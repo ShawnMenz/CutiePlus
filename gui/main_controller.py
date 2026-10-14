@@ -33,7 +33,8 @@ from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, Task
 log = logging.getLogger()
 
 # the original Cutie's default overlay for the "layer" view (the UIUC logo): off, and loaded
-# without a message when turned on; Import layer still loads one
+# without a message when turned on; the view itself and Import layer are offered only with
+# SHOW_LAYER_MODE in gui/gui.py
 DEFAULT_LAYER = './docs/uiuc.png'
 SHOW_DEFAULT_LAYER = False
 

@@ -68,7 +68,7 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 
 - Counter (e.g. 20 / 90), Play video (R) with its speed box (fps), Reset frame (whole frame empty = "target absent" anchor), Reset object.
 - Current object ID: tasks have one object.
-- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to. The box beside the button sets the speed of both, in frames per second (1-60, 30 to start); a change applies at once, also while playing, and is remembered for your screen.
+- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to. The box beside the button sets the speed of both, in frames per second (1-60); a change applies at once, also while playing. Every window starts at 24.
 
 *Propagate*
 
@@ -90,7 +90,7 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
   - Memory gauges: permanent (your anchors), working, long-term, and GPU.
   - Reset all memory / Reset non-permanent memory: clears the model's memory; masks on disk stay. Rarely needed, since each propagation rebuilds memory from the anchors.
   - Working and long-term memory settings: model tuning. The defaults are fine.
-  - Import mask: loads a mask image into this frame and makes it an anchor. Import layer: a background image for the "layer" view.
+  - Import mask: loads a mask image into this frame and makes it an anchor.
   - Overlay video: Save visualization and Save soft mask during propagation write a file per frame into the task folder (keep them off unless needed); Save overlay video (Ctrl+E) makes a video from the saved visualizations (not the dataset), with the Output FPS and bitrate.
   - Reset all frame masks (red outline): after confirmation, deletes this sequence's local, binary, and soft mask PNGs. In task mode it also clears anchors and prefills, deletes both Cutie export trees, and returns the task to "in progress". This cannot be undone; the button is disabled when the curated CSV marks the sequence `done`.
 - Small targets are processed at 960 px instead of 480 px; the messages say which on start-up.
