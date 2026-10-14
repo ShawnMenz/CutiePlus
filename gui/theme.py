@@ -1,8 +1,9 @@
 """
 The color theme of the GUI: Auto follows the desktop's light/dark setting, Light and Dark are fixed,
-and Eye care is Light with a cream (#FAF9DE) in place of white. The task browser's theme button
-cycles them. The choice is kept per screen (DISPLAY) in the user's Qt settings, so every VNC screen
-of one account keeps its own, and is applied when the program starts.
+and Eye care is Light with its white and light-gray surfaces (the window, the cards, the boxes, the
+buttons, every table row) in cream (#FAF9DE). The task browser's theme button cycles them. The
+choice is kept per screen (DISPLAY) in the user's Qt settings, so every VNC screen of one account
+keeps its own, and is applied when the program starts.
 """
 import importlib.util
 import os
@@ -60,7 +61,7 @@ def effective_theme(theme: str) -> str:
 def apply_theme(theme: str) -> bool:
     """Apply the theme to the whole application, windows that are already open included: the
     theme package's widgets with the app's accent and the style sheet of gui/style.py, in the
-    light or the dark tones (Eye care: the light ones, cream for white). Without the theme package
+    light or the dark tones (Eye care: the light ones, its surfaces cream). Without the theme package
     Qt's built-in Fusion style is used, which has no themes: returns False."""
     from gui.style import app_font, custom_colors, style_sheet
     QApplication.setFont(app_font())

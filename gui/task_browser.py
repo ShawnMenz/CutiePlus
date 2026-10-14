@@ -204,8 +204,9 @@ class TaskBrowser(QWidget):
         self.theme = saved_theme()
         self.theme_button = QPushButton()
         self.theme_button.setToolTip('Color theme: Auto follows the desktop; Eye care is Light '
-                                     'with #FAF9DE in place of white. Click to cycle Auto, Light, '
-                                     'Dark, Eye care. Remembered for this screen.')
+                                     'with every white or light-gray surface in #FAF9DE. Click to '
+                                     'cycle Auto, Light, Dark, Eye care. Remembered for this '
+                                     'screen.')
         self.theme_button.setMinimumWidth(
             max(QFontMetrics(self.theme_button.font()).horizontalAdvance(theme_button_text(name))
                 for name in THEMES) + 32)

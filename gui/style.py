@@ -3,7 +3,8 @@ The look of every window ("soft cards"): one green accent, rounded controls, and
 into rounded cards. It stays flat (no shadows, gradients or animations), which keeps a VNC screen
 quick. The theme package (pyqtdarktheme, see gui/theme.py) draws the widgets in light or dark; this
 module gives it the accent and adds a style sheet on top, built for the light or the dark tones.
-The eye-care theme is the light one with EYE_CARE_WHITE in place of every white.
+The eye-care theme is the light one with every white and light-gray surface (the window, the cards,
+the boxes, the buttons, every table row) in EYE_CARE_WHITE.
 
 Widgets opt in with dynamic properties, which the style sheet selects on:
   QPushButton  variant = primary (filled green), tonal (green tint), danger (red outline),
@@ -22,7 +23,8 @@ PRIMARY = '#00853E'  # the main color: filled buttons, the progress, the slider 
 SECONDARY = '#509E2F'  # hover, interval bands, and the accent of the dark theme
 PRESSED = '#006B32'
 WHITE = '#ffffff'
-EYE_CARE_WHITE = '#FAF9DE'  # the eye-care theme's white: a soft cream, easier on the eyes
+EYE_CARE_WHITE = '#FAF9DE'  # the eye-care theme's surfaces: a soft cream, easier on the eyes
+EYE_CARE_HOVER = '#F0EFD5'  # the cream 4 % darker: a control under the pointer
 ATTENTION = '#ef6c00'  # Need Attention (the task browser's Attention status is red)
 DANGER = ('#d32f2f', '#ef5350')  # light, dark
 
@@ -42,15 +44,16 @@ CUSTOM_COLORS = {
                'border': '#3a3d40', 'input.background': '#2a2c2f'},
 }
 
-# the surfaces the theme package derives as white from the light background (tooltips, menus,
-# lists, tables, text areas); the eye-care theme sets them, as the inputs, to its white
-EYE_CARE_COLORS = {'input.background': EYE_CARE_WHITE,
+# the eye-care theme in the theme package: its background (the window, and the palette) and its
+# inputs in cream, and the surfaces it derives from the background by lightening (tooltips, menus,
+# lists, tables, text areas), which would be white otherwise
+EYE_CARE_COLORS = {'background': EYE_CARE_WHITE, 'input.background': EYE_CARE_WHITE,
                    **{f'background>{surface}': EYE_CARE_WHITE
                       for surface in ('panel', 'popup', 'table', 'textarea')}}
 
 
 def custom_colors(eye_care: bool = False) -> dict:
-    """The theme package's colors; with eye_care, its white surfaces in the light theme are
+    """The theme package's colors; with eye_care, its light surfaces in the light theme are
     EYE_CARE_WHITE."""
     if not eye_care:
         return CUSTOM_COLORS
@@ -92,7 +95,7 @@ QPushButton[variant="primary"] {{ background: {primary}; color: {white}; border:
 QPushButton[variant="primary"]:hover {{ background: {secondary}; border-color: {secondary}; }}
 QPushButton[variant="primary"]:pressed {{ background: {pressed}; border-color: {pressed}; }}
 QPushButton[variant="primary"]:disabled {{ background: rgba(0, 133, 62, 0.35);
-                                          border-color: transparent; color: rgba(255, 255, 255, 0.75); }}
+                                          border-color: transparent; color: {white_text_disabled}; }}
 QPushButton[variant="tonal"] {{ background: {tonal}; color: {tonal_text}; border: 1px solid transparent;
                                font-weight: 600; }}
 QPushButton[variant="tonal"]:hover {{ background: {tonal_hover}; }}
@@ -173,20 +176,29 @@ QSlider#frameSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -6p
 '''
 
 
+# the eye-care theme's tones over the light ones: every white and light-gray surface in cream (the
+# rows no longer alternate); the hover a deeper cream, the lines and tracks as in the light theme
+EYE_CARE_TONES = {'window': EYE_CARE_WHITE, 'card': EYE_CARE_WHITE, 'input': EYE_CARE_WHITE,
+                  'button': EYE_CARE_WHITE, 'alternate': EYE_CARE_WHITE,
+                  'button_hover': EYE_CARE_HOVER}
+
+
 def tones(dark: bool) -> dict:
     return TONES[dark]
 
 
 def style_sheet(dark: bool, eye_care: bool = False) -> str:
     """The style sheet added on top of the theme, for the light or the dark tones; eye_care: the
-    light tones with EYE_CARE_WHITE for every white."""
+    light tones with every white and light-gray surface in EYE_CARE_WHITE."""
     white, colors = WHITE, TONES[dark]
+    white_text_disabled = 'rgba(255, 255, 255, 0.75)'  # on a disabled filled button
     if eye_care:
-        white = EYE_CARE_WHITE
-        colors = {name: white if value == WHITE else value for name, value in colors.items()}
+        white, colors = EYE_CARE_WHITE, dict(TONES[False], **EYE_CARE_TONES)
+        white_text_disabled = 'rgba(250, 249, 222, 0.75)'
     return STYLE_SHEET.format(points=FONT_POINTS, radius=RADIUS, card_radius=CARD_RADIUS,
                               primary=PRIMARY, secondary=SECONDARY, pressed=PRESSED, white=white,
-                              attention=ATTENTION, **colors)
+                              white_text_disabled=white_text_disabled, attention=ATTENTION,
+                              **colors)
 
 
 def app_font() -> QFont:

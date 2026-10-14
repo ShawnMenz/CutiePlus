@@ -101,7 +101,7 @@ not started, then in progress (any change), then under review (Save binary PNGs)
 
 Frames shows the sequence's frame count until it is marked done; then the frames of each of its intervals, in order, e.g. 120/85/40 (one number when it has one interval, the full count when it has none). Hover over it for the frame ranges. A click on its header does not sort; the other columns sort as before.
 
-The Theme button (top right) cycles Auto, Light, Dark and Eye care, a light theme with a soft cream (#FAF9DE) in place of white.
+The Theme button (top right) cycles Auto, Light, Dark and Eye care, a light theme in a soft cream (#FAF9DE): the window background, the cards, the boxes, the buttons and every row of the lists are cream instead of white or light gray.
 
 **Several labelers at once**
 
