@@ -32,6 +32,11 @@ from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, Task
 
 log = logging.getLogger()
 
+# the original Cutie's default overlay for the "layer" view (the UIUC logo): off, and loaded
+# without a message when turned on; Import layer still loads one
+DEFAULT_LAYER = './docs/uiuc.png'
+SHOW_DEFAULT_LAYER = False
+
 
 def load_networks(cfg: DictConfig) -> Tuple[torch.nn.Module, ClickController]:
     """(Cutie, the RITM click controller) on cfg's device, for the local mode."""
@@ -186,8 +191,9 @@ class MainController():
         self.gui.text('Initialized.')
         self.initialized = True
 
-        # try to load the default overlay
-        self._try_load_layer('./docs/uiuc.png')
+        # the default overlay, off (SHOW_DEFAULT_LAYER)
+        if SHOW_DEFAULT_LAYER:
+            self._try_load_layer(DEFAULT_LAYER, quiet=True)
         self.gui.set_object_color(self.curr_object)
         self.update_config()
         if self.task is not None:
@@ -1207,16 +1213,19 @@ class MainController():
 
         self._try_load_layer(file_name)
 
-    def _try_load_layer(self, file_name):
+    def _try_load_layer(self, file_name, quiet: bool = False):
+        # quiet: no message either way (the default overlay)
         try:
             layer = self.res_man.import_layer(file_name, size=(self.h, self.w))
 
-            self.gui.text(f'Layer file {file_name} loaded.')
+            if not quiet:
+                self.gui.text(f'Layer file {file_name} loaded.')
             self.overlay_layer = layer
             self.overlay_layer_torch = torch.from_numpy(layer).float().to(self.device) / 255
             self.show_current_frame()
         except FileNotFoundError:
-            self.gui.text(f'{file_name} not found.')
+            if not quiet:
+                self.gui.text(f'{file_name} not found.')
 
     def on_set_save_visualization_mode(self):
         self.save_visualization_mode = self.gui.save_visualization_combo.currentText()

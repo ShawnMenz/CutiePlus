@@ -38,7 +38,8 @@ from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_
                        saved_theme)
 
 COLUMNS = ('Sequence', 'Frames', 'Anchors', 'Status', 'Annotators', 'Open by', 'Modality', 'Target')
-SEQUENCE_COLUMN, STATUS_COLUMN, ANNOTATORS_COLUMN, OPEN_BY_COLUMN, TARGET_COLUMN = 0, 3, 4, 5, 7
+SEQUENCE_COLUMN, FRAMES_COLUMN, STATUS_COLUMN, ANNOTATORS_COLUMN, OPEN_BY_COLUMN, TARGET_COLUMN = \
+    0, 1, 3, 4, 5, 7
 # on a Status item: how many intervals the sequence adds to the dataset (0 unless marked done)
 CONFIRMED_INTERVALS_ROLE = Qt.ItemDataRole.UserRole + 1
 LOCK_REFRESH_MS = 10000  # Open by follows the other sessions
@@ -57,6 +58,22 @@ HIDDEN_BY_HIDE_DONE = ('done', DISCARDED_STATUS)
 
 def theme_button_text(theme: str) -> str:
     return f'Theme: {theme.capitalize()}'
+
+
+def frames_text(summary: dict) -> str:
+    """The Frames column: the sequence's frames until it is marked done, then the frames of each
+    of its intervals (the dataset's clips) in order, e.g. 120/85/40."""
+    if not summary['done']:
+        return str(summary['frames'])
+    return '/'.join(str(end - start + 1) for start, end in summary['clips'])
+
+
+class UnsortedItem(QTableWidgetItem):
+    """A cell of a column that does not sort: every row compares equal, so sorting on it (the
+    sort is stable) leaves the rows where they are."""
+
+    def __lt__(self, other) -> bool:
+        return False
 
 
 class TargetDelegate(QStyledItemDelegate):
@@ -183,11 +200,12 @@ class TaskBrowser(QWidget):
         self.hide_done = QCheckBox('Hide done / discarded')
         self.hide_done.setToolTip('Hide the sequences that are done or discarded (in every tab).')
         self.hide_done.toggled.connect(self.apply_filter)
-        # top right: cycles Auto, Light, Dark for every window of this program
+        # top right: cycles Auto, Light, Dark, Eye care for every window of this program
         self.theme = saved_theme()
         self.theme_button = QPushButton()
-        self.theme_button.setToolTip('Color theme: Auto follows the desktop. Click to cycle Auto, '
-                                     'Light, Dark. Remembered for this screen.')
+        self.theme_button.setToolTip('Color theme: Auto follows the desktop; Eye care is Light '
+                                     'with #FAF9DE in place of white. Click to cycle Auto, Light, '
+                                     'Dark, Eye care. Remembered for this screen.')
         self.theme_button.setMinimumWidth(
             max(QFontMetrics(self.theme_button.font()).horizontalAdvance(theme_button_text(name))
                 for name in THEMES) + 32)
@@ -200,6 +218,8 @@ class TaskBrowser(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)  # no frame around the tables: they sit on a card
         self.tables: Dict[str, QTableWidget] = {}
+        # each tab's sort, (column, order): a click on Frames, which does not sort, keeps it
+        self.sort_keys: Dict[str, Tuple[int, Qt.SortOrder]] = {}
         for split in self.task_set['splits']:
             if not path.isdir(path.join(self.task_root, split)):
                 continue
@@ -222,6 +242,10 @@ class TaskBrowser(QWidget):
             table.setItemDelegateForColumn(TARGET_COLUMN, self.target_delegate)
             # sorting moves the rows, but the view keeps its hidden rows by position
             table.model().layoutChanged.connect(self.apply_filter)
+            header = table.horizontalHeader()
+            self.sort_keys[split] = (header.sortIndicatorSection(), header.sortIndicatorOrder())
+            header.sortIndicatorChanged.connect(
+                lambda column, order, split=split: self.on_sort_indicator(split, column, order))
             self.tables[split] = table
             self.tabs.addTab(table, split)
 
@@ -327,6 +351,16 @@ class TaskBrowser(QWidget):
                         item.setForeground(self.status_color(DISCARDED_STATUS))
             self.update_stats()
 
+    def on_sort_indicator(self, split: str, column: int, order: Qt.SortOrder) -> None:
+        # Frames does not sort (its cells compare equal): the arrow stays on the previous column
+        if column != FRAMES_COLUMN:
+            self.sort_keys[split] = (column, order)
+            return
+        header = self.tables[split].horizontalHeader()
+        header.blockSignals(True)
+        header.setSortIndicator(*self.sort_keys[split])
+        header.blockSignals(False)
+
     def show_theme(self) -> None:
         self.theme_button.setText(theme_button_text(self.theme))
 
@@ -404,13 +438,17 @@ class TaskBrowser(QWidget):
         return f'{text} {holder["activity"]}' if holder.get('activity') else text
 
     def fill_row(self, table: QTableWidget, row: int, summary: dict) -> None:
-        values = (summary['sequence'], summary['frames'],
+        values = (summary['sequence'], frames_text(summary),
                   f'{summary["mask_anchors"]} + {summary["empty_anchors"]} empty', summary['status'],
                   ', '.join(summary['annotators']), self.open_by_text(summary['open_by']),
                   summary['modality'], summary['target'])
         for column, value in enumerate(values):
-            item = QTableWidgetItem()
-            item.setData(Qt.ItemDataRole.DisplayRole, value)  # numbers sort numerically
+            item = UnsortedItem() if column == FRAMES_COLUMN else QTableWidgetItem()
+            item.setData(Qt.ItemDataRole.DisplayRole, value)
+            if column == FRAMES_COLUMN and summary['done']:
+                ranges = ', '.join(f'{start}-{end}' for start, end in summary['clips'])
+                item.setToolTip(f'Marked done: the frames of each interval ({ranges}) of '
+                                f'{summary["frames"]}.')
             if column == STATUS_COLUMN:
                 item.setForeground(self.status_color(value))
                 item.setData(CONFIRMED_INTERVALS_ROLE,

@@ -1,7 +1,7 @@
 """
 The look of every window (gui/style.py): the green accent and the style sheet on top of the theme,
 button variants, rounded cards (the Advanced card folds and remembers it per screen), and the
-task browser's status pills.
+task browser's status pills. The eye-care theme is the light one with #FAF9DE for every white.
 """
 import subprocess
 import sys
@@ -25,17 +25,42 @@ def test_the_style_sheet_has_the_accent_in_both_tones():
     assert style.style_sheet(False) != style.style_sheet(True)
 
 
-@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_the_eye_care_sheet_is_the_light_one_with_cream_for_white():
+    light, eye_care = style.style_sheet(False), style.style_sheet(False, eye_care=True)
+    assert '#ffffff' in light and '#ffffff' not in eye_care and '#FAF9DE' in eye_care
+    assert eye_care == light.replace('#ffffff', '#FAF9DE')  # nothing else changes
+    light_colors = style.custom_colors()['[light]']
+    eye_care_colors = style.custom_colors(eye_care=True)['[light]']
+    assert eye_care_colors['input.background'] == '#FAF9DE'
+    assert {key: value for key, value in eye_care_colors.items()
+            if key in light_colors and value == light_colors[key]} == \
+        {key: value for key, value in light_colors.items() if value != '#ffffff'}
+    assert style.custom_colors(eye_care=True)['[dark]'] == style.CUSTOM_COLORS['[dark]']
+
+
+def test_the_theme_button_cycles_through_eye_care():
+    from gui.theme import THEMES, effective_theme, next_theme
+    assert THEMES == ('auto', 'light', 'dark', 'eye care')
+    assert [next_theme(theme) for theme in THEMES] == ['light', 'dark', 'eye care', 'auto']
+    assert effective_theme('eye care') == 'light'
+
+
+@pytest.mark.parametrize('theme', ['light', 'dark', 'eye care'])
 def test_apply_theme_sets_the_style_and_the_font(theme):
-    # in a process of its own: a theme is set for the whole application
+    # in a process of its own: a theme is set for the whole application; eye care leaves no white
+    # (the theme package writes colors as rgba)
     code = (
+        'import re\n'
         'from PySide6.QtWidgets import QApplication\n'
         'app = QApplication([])\n'
         'from gui.theme import apply_theme\n'
         'from gui.style import style_sheet\n'
         f'assert apply_theme({theme!r})\n'
-        f'assert app.styleSheet().endswith(style_sheet({theme == "dark"}))\n'
+        f'assert app.styleSheet().endswith(style_sheet({theme == "dark"}, {theme == "eye care"}))\n'
         'assert app.font().family() in ("Noto Sans", "Ubuntu Sans", "DejaVu Sans")\n'
+        'white = re.findall(r"#ffffff|rgba\\(255, 255, 255, 1\\.000\\)", app.styleSheet(), re.I)\n'
+        'cream = app.styleSheet().count("rgba(250, 249, 222, 1.000)")\n'
+        f'assert (not white and cream > 0) if {theme == "eye care"} else (white and not cream)\n'
         'print("ok")\n')
     result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True,
                             env={'QT_QPA_PLATFORM': 'offscreen', 'HOME': '/tmp',

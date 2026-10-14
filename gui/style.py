@@ -3,6 +3,7 @@ The look of every window ("soft cards"): one green accent, rounded controls, and
 into rounded cards. It stays flat (no shadows, gradients or animations), which keeps a VNC screen
 quick. The theme package (pyqtdarktheme, see gui/theme.py) draws the widgets in light or dark; this
 module gives it the accent and adds a style sheet on top, built for the light or the dark tones.
+The eye-care theme is the light one with EYE_CARE_WHITE in place of every white.
 
 Widgets opt in with dynamic properties, which the style sheet selects on:
   QPushButton  variant = primary (filled green), tonal (green tint), danger (red outline),
@@ -21,6 +22,7 @@ PRIMARY = '#00853E'  # the main color: filled buttons, the progress, the slider 
 SECONDARY = '#509E2F'  # hover, interval bands, and the accent of the dark theme
 PRESSED = '#006B32'
 WHITE = '#ffffff'
+EYE_CARE_WHITE = '#FAF9DE'  # the eye-care theme's white: a soft cream, easier on the eyes
 ATTENTION = '#ef6c00'  # Need Attention (the task browser's Attention status is red)
 DANGER = ('#d32f2f', '#ef5350')  # light, dark
 
@@ -39,6 +41,21 @@ CUSTOM_COLORS = {
     '[dark]': {'primary': SECONDARY, 'background': '#17181a', 'foreground': '#e6e8eb',
                'border': '#3a3d40', 'input.background': '#2a2c2f'},
 }
+
+# the surfaces the theme package derives as white from the light background (tooltips, menus,
+# lists, tables, text areas); the eye-care theme sets them, as the inputs, to its white
+EYE_CARE_COLORS = {'input.background': EYE_CARE_WHITE,
+                   **{f'background>{surface}': EYE_CARE_WHITE
+                      for surface in ('panel', 'popup', 'table', 'textarea')}}
+
+
+def custom_colors(eye_care: bool = False) -> dict:
+    """The theme package's colors; with eye_care, its white surfaces in the light theme are
+    EYE_CARE_WHITE."""
+    if not eye_care:
+        return CUSTOM_COLORS
+    return dict(CUSTOM_COLORS, **{'[light]': dict(CUSTOM_COLORS['[light]'], **EYE_CARE_COLORS)})
+
 
 # the tones of the style sheet, for the light and the dark theme
 TONES = {
@@ -160,11 +177,16 @@ def tones(dark: bool) -> dict:
     return TONES[dark]
 
 
-def style_sheet(dark: bool) -> str:
-    """The style sheet added on top of the theme, for the light or the dark tones."""
+def style_sheet(dark: bool, eye_care: bool = False) -> str:
+    """The style sheet added on top of the theme, for the light or the dark tones; eye_care: the
+    light tones with EYE_CARE_WHITE for every white."""
+    white, colors = WHITE, TONES[dark]
+    if eye_care:
+        white = EYE_CARE_WHITE
+        colors = {name: white if value == WHITE else value for name, value in colors.items()}
     return STYLE_SHEET.format(points=FONT_POINTS, radius=RADIUS, card_radius=CARD_RADIUS,
-                              primary=PRIMARY, secondary=SECONDARY, pressed=PRESSED, white=WHITE,
-                              attention=ATTENTION, **TONES[dark])
+                              primary=PRIMARY, secondary=SECONDARY, pressed=PRESSED, white=white,
+                              attention=ATTENTION, **colors)
 
 
 def app_font() -> QFont:

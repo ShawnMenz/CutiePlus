@@ -40,6 +40,18 @@ PAUSE_FORWARD_LABEL = 'Pause propagation (F)'
 PAUSE_BACKWARD_LABEL = 'Pause propagation (B)'
 PLAY_LABEL = 'Play video (R)'
 STOP_LABEL = 'Stop video (R)'
+# the playback's speed (R and Shift+R), set in the box beside the button and kept per screen
+PLAYBACK_FPS = 30
+MAX_PLAYBACK_FPS = 60
+
+
+def saved_playback_fps() -> int:
+    # the speed last set on this screen
+    try:
+        fps = int(setting('play_fps', PLAYBACK_FPS))
+    except (TypeError, ValueError):
+        return PLAYBACK_FPS
+    return min(max(fps, 1), MAX_PLAYBACK_FPS)
 
 
 class GUI(QWidget):
@@ -76,6 +88,13 @@ class GUI(QWidget):
             + ('\nShift+R or Shift+click: preview the intervals, one per press.'
                '\n{ / }: go to the previous / next interval start.'
                if controller.task is not None else ''))
+        self.play_fps_box = QSpinBox()
+        self.play_fps_box.setRange(1, MAX_PLAYBACK_FPS)
+        self.play_fps_box.setSuffix(' fps')
+        self.play_fps_box.setValue(saved_playback_fps())
+        self.play_fps_box.setToolTip('Playback speed of R and Shift+R, in frames per second; the '
+                                     'frames may load slower. Remembered for this screen.')
+        self.play_fps_box.valueChanged.connect(self.on_play_fps_change)
         self.commit_button = set_variant(QPushButton('Commit to permanent memory (C)'), 'tonal')
         self.commit_button.clicked.connect(controller.on_commit)
         self.export_task_button = QPushButton('Export task masks')
@@ -349,7 +368,7 @@ class GUI(QWidget):
         object_label = QLabel('Current object ID:')
         frame_line = row(object_label, self.object_dial, self.object_color,
                          *([self.frame_name] if task is None else []))
-        frame_card = Card(rows(row(self.lcd, self.play_button),
+        frame_card = Card(rows(row(self.lcd, self.play_button, self.play_fps_box),
                                row(self.reset_frame_button, self.reset_object_button),
                                frame_line), title='Frame')
 
@@ -966,8 +985,18 @@ class GUI(QWidget):
             if self.tl_slider.value() >= self.tl_slider.maximum():
                 self.tl_slider.setValue(0)  # played to the end before: play it again from the start
             self.play_until = self.tl_slider.maximum()
-            self.timer.start(1000 // 30)
+            self.timer.start(self.playback_interval_ms())
             self.play_button.setText(STOP_LABEL)
+
+    def playback_interval_ms(self) -> int:
+        # the timer's step at the speed in the box
+        return round(1000 / self.play_fps_box.value())
+
+    def on_play_fps_change(self, fps: int) -> None:
+        # a playback under way changes speed at once
+        if self.timer.isActive():
+            self.timer.setInterval(self.playback_interval_ms())
+        save_setting('play_fps', fps)
 
     def on_preview_interval(self) -> None:
         # Shift+R: the next interval only, from its start to its end; each press plays the next one
@@ -986,7 +1015,7 @@ class GUI(QWidget):
         self.tl_slider.setValue(start - 1)
         self.play_until = end - 1
         self.tl_slider.set_active_interval((start, end))
-        self.timer.start(1000 // 30)
+        self.timer.start(self.playback_interval_ms())
         self.play_button.setText(STOP_LABEL)
         self.text(f'Previewing interval {number + 1} of {len(intervals)}: frames {start}-{end} '
                   '(Shift+R: next).' + self.interval_description_text((start, end)))

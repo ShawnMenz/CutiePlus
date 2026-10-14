@@ -1,7 +1,8 @@
 """
-The color theme of the GUI: Auto follows the desktop's light/dark setting, Light and Dark are fixed.
-The task browser's theme button cycles them. The choice is kept per screen (DISPLAY) in the user's
-Qt settings, so every VNC screen of one account keeps its own, and is applied when the program starts.
+The color theme of the GUI: Auto follows the desktop's light/dark setting, Light and Dark are fixed,
+and Eye care is Light with a cream (#FAF9DE) in place of white. The task browser's theme button
+cycles them. The choice is kept per screen (DISPLAY) in the user's Qt settings, so every VNC screen
+of one account keeps its own, and is applied when the program starts.
 """
 import importlib.util
 import os
@@ -9,7 +10,8 @@ import os
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-THEMES = ('auto', 'light', 'dark')
+EYE_CARE = 'eye care'
+THEMES = ('auto', 'light', 'dark', EYE_CARE)
 DEFAULT_THEME = 'auto'
 
 
@@ -42,7 +44,9 @@ def has_theme_package() -> bool:
 
 def effective_theme(theme: str) -> str:
     """light or dark: Auto is the desktop's setting, dark when it cannot be read (as the theme
-    package decides)."""
+    package decides); Eye care is light."""
+    if theme == EYE_CARE:
+        return 'light'
     if theme != 'auto':
         return theme
     try:
@@ -56,9 +60,9 @@ def effective_theme(theme: str) -> str:
 def apply_theme(theme: str) -> bool:
     """Apply the theme to the whole application, windows that are already open included: the
     theme package's widgets with the app's accent and the style sheet of gui/style.py, in the
-    light or the dark tones. Without the theme package Qt's built-in Fusion style is used, which
-    has no themes: returns False."""
-    from gui.style import CUSTOM_COLORS, app_font, style_sheet
+    light or the dark tones (Eye care: the light ones, cream for white). Without the theme package
+    Qt's built-in Fusion style is used, which has no themes: returns False."""
+    from gui.style import app_font, custom_colors, style_sheet
     QApplication.setFont(app_font())
     try:
         import qdarktheme
@@ -66,8 +70,9 @@ def apply_theme(theme: str) -> bool:
         # gsettings process that outlives a window killed on restart, and a VNC screen's desktop
         # never switches themes anyway
         resolved = effective_theme(theme)
-        qdarktheme.setup_theme(resolved, custom_colors=CUSTOM_COLORS,
-                               additional_qss=style_sheet(resolved == 'dark'))
+        eye_care = theme == EYE_CARE
+        qdarktheme.setup_theme(resolved, custom_colors=custom_colors(eye_care),
+                               additional_qss=style_sheet(resolved == 'dark', eye_care))
         return True
     except (ImportError, AttributeError):
         QApplication.setStyle('Fusion')

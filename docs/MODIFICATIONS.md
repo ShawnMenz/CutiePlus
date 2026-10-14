@@ -37,10 +37,10 @@ Files: `gui/task_state.py`, `gui/resource_manager.py`, `gui/reader.py`, `gui/mai
 
 File: `gui/task_browser.py` (`--tasks`).
 
-- Tabs per split; columns for sequence, frames, anchors, status (colored), annotators, who has it open, modality and target (the category in bold); sortable; the models are loaded once and reused for every task.
+- Tabs per split; columns for sequence, frames, anchors, status (colored), annotators, who has it open, modality and target (the category in bold); sortable on every column but *Frames*; the models are loaded once and reused for every task. *Frames* shows the sequence's frame count until the sequence is marked done, then the frames of each of its intervals (the dataset's clips) in order, e.g. `120/85/40` (one number for one interval; the full count when it has none), with the frame ranges on hover.
 - A filter box (sequence, annotator or target text) and a *Hide done* checkbox; counts of each status for the current tab, the number of sequences each annotator has worked on, and *Total Intervals*, the intervals of the sequences marked done in every tab (the dataset's clips), in a *Statistics* card beside the messages.
 - *Open*, *Export*, *Mark done* (key D), *Discard* / *Restore*, *Refresh* and *Manage annotators*.
-- A *Theme* button at the top right cycles Auto (follows the desktop), Light and Dark for every window of the program. The choice is kept for the screen it was made on (in the user's Qt settings, per `DISPLAY`) and applied at the next start; `gui/theme.py`. Auto is resolved when the theme is applied, from the desktop setting (light or dark): the theme package's own Auto mode watched the desktop with a `gsettings monitor` process that was left running each time a window was restarted.
+- A *Theme* button at the top right cycles Auto (follows the desktop), Light, Dark and Eye care for every window of the program. Eye care is Light with a cream (#FAF9DE) in place of every white: the cards, the boxes, the buttons and the surfaces the theme package draws white (tooltips, menus, lists, tables). The choice is kept for the screen it was made on (in the user's Qt settings, per `DISPLAY`) and applied at the next start; `gui/theme.py`. Auto is resolved when the theme is applied, from the desktop setting (light or dark): the theme package's own Auto mode watched the desktop with a `gsettings monitor` process that was left running each time a window was restarted.
 
 ## Several annotators
 
@@ -61,6 +61,8 @@ Files: `gui/gui.py`, `gui/gui_utils.py`, `gui/style.py`, `gui/flow_layout.py`, `
 - **Frame label**: the file, the modality (RGB in red, green and blue letters; thermal in orange-red) and the mask source, each status in its own color, with a legend on hover; the frame key boxes beside the slider name the A / D keys; the slider marks each anchor with a small hollow ring (black, or white in a dark theme; magenta for an empty anchor), smaller than its handle.
 - **Focus**: the frame slider has the keyboard by default, so the frame keys work at once; typing in the description or the interval boxes never moves frames, and Enter or a click on the image gives the keys back. The description boxes (`TextBox` in `gui/gui_utils.py`) keep every key while they have the cursor, so the text keys edit the text and no window shortcut fires but Ctrl+S and F1; Ctrl+Y redoes the typing, and a Mac's ⌘ (Meta) and ⌥ (Alt) keys work as in a Mac text field.
 - **Saving**: *Save binary PNGs* and *Save overlay video* write into the task folder and are not the dataset export (the browser's *Export* is).
+- **Playback speed**: a box beside *Play video* sets the frames per second of R and Shift+R (1-60, 30 by default), also during playback, remembered for the screen as the theme is.
+- **No UIUC overlay**: the original Cutie loads `docs/uiuc.png` as the *layer* view's overlay at start-up and says so in the messages. It is off (`SHOW_DEFAULT_LAYER` in `gui/main_controller.py`; loaded without a message when turned on); *Import layer* still loads a layer.
 
 ## Fixes and hardening
 

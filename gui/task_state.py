@@ -109,6 +109,17 @@ def intervals_from_payload(payload: dict) -> List[Interval]:
     return [(int(payload['start']), int(payload['end']))]
 
 
+def dataset_intervals(payload: dict, curated: Optional[List[int]],
+                      frame_count: int) -> Tuple[List[Interval], str]:
+    """(intervals, source) of the dataset clips, sorted, 1-indexed and inclusive: set in Cutie
+    (interval.json, as saved), else the curated CSV's one, else the whole sequence."""
+    if payload:
+        return intervals_from_payload(payload), 'cutie'
+    if curated:
+        return [(curated[0], curated[1])], 'curated'
+    return [(1, frame_count)], 'full'
+
+
 def first_interval(payload: dict) -> Optional[Interval]:
     """The interval the sequence's description describes: the entry without a description of its
     own, else the first; None when interval.json is not saved."""
@@ -387,11 +398,13 @@ def summarize_task(workspace: str) -> dict:
     progress = _read_json(path.join(workspace, PROGRESS_FILE), {})
     kinds = [anchor['kind'] for anchor in anchors.values()]
     frame_files = task.get('frame_files', {}).get(task['anchor_modality'], [])
-    interval_payload = _read_json(path.join(workspace, INTERVAL_FILE), {})
+    frame_count = task.get('frame_count', len(frame_files))
+    clips, _ = dataset_intervals(_read_json(path.join(workspace, INTERVAL_FILE), {}),
+                                 task.get('curated_interval'), frame_count)
     return {
         'split': task['split'],
         'sequence': task['sequence_id'],
-        'frames': task.get('frame_count', len(frame_files)),
+        'frames': frame_count,
         'mask_anchors': kinds.count('mask'),
         'empty_anchors': kinds.count('empty'),
         # a discarded sequence shows that, else one that needs attention, else its review status
@@ -402,7 +415,8 @@ def summarize_task(workspace: str) -> dict:
         # marked done (also when flagged later; a discard removes the mark), and its clips: the
         # saved intervals, else the curated one or the whole sequence
         'done': status_of(progress) == 'done',
-        'intervals': len(intervals_from_payload(interval_payload)) if interval_payload else 1,
+        'clips': clips,
+        'intervals': len(clips),
         'last_edited_by': progress.get('last_edited_by'),
         'annotators': task_annotators(progress, anchors),
         'open_by': lock_holder(workspace),
@@ -614,12 +628,7 @@ class TaskState:
     def intervals(self, frame_count: int) -> Tuple[List[Interval], str]:
         """(intervals, source) of the dataset clips, sorted, 1-indexed and inclusive: set in
         Cutie, else the curated CSV's one, else the whole sequence."""
-        saved = self.interval_payload()
-        if saved:
-            return intervals_from_payload(saved), 'cutie'
-        if self.curated_interval:
-            return [(self.curated_interval[0], self.curated_interval[1])], 'curated'
-        return [(1, frame_count)], 'full'
+        return dataset_intervals(self.interval_payload(), self.curated_interval, frame_count)
 
     def interval_descriptions(self, frame_count: int) -> Dict[Interval, str]:
         # each interval's referring text (see interval_descriptions)

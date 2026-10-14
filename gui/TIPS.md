@@ -66,9 +66,9 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 
 *Frame*
 
-- Counter (e.g. 20 / 90), Play video (R), Reset frame (whole frame empty = "target absent" anchor), Reset object.
+- Counter (e.g. 20 / 90), Play video (R) with its speed box (fps), Reset frame (whole frame empty = "target absent" anchor), Reset object.
 - Current object ID: tasks have one object.
-- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to.
+- Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to. The box beside the button sets the speed of both, in frames per second (1-60, 30 to start); a change applies at once, also while playing, and is remembered for your screen.
 
 *Propagate*
 
@@ -98,6 +98,10 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 **Status in the task browser**
 
 not started, then in progress (any change), then under review (Save binary PNGs), then done (Mark done in the browser, or the D key there, which exports first). Any change reopens a sequence. A sequence whose Need Attention is on shows Attention (red) instead, whatever its review status, until someone turns it off in the labeling window. Hover over a status to see who last edited it (and who asked for attention). Discard (beside Mark done) leaves the selected sequence out of the dataset after you confirm: its status is discarded (gray, italics), its done mark and Need Attention are removed, and it cannot be exported or marked done; its masks and anchors stay. On a discarded sequence the button reads Restore and brings it back (it then needs Save binary PNGs or Mark done again). If its row in the curated CSV already says done, it stays in the dataset until that row changes; the browser tells you. Tick Hide done / discarded (next to the filter box) to hide the done and discarded sequences in every tab; the counts in the Statistics card still include them. In the Target column the category is in bold.
+
+Frames shows the sequence's frame count until it is marked done; then the frames of each of its intervals, in order, e.g. 120/85/40 (one number when it has one interval, the full count when it has none). Hover over it for the frame ranges. A click on its header does not sort; the other columns sort as before.
+
+The Theme button (top right) cycles Auto, Light, Dark and Eye care, a light theme with a soft cream (#FAF9DE) in place of white.
 
 **Several labelers at once**
 
