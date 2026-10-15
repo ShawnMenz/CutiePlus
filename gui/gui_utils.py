@@ -385,6 +385,18 @@ class IntervalPair(QWidget):
         layout.addWidget(self.start_box)
         layout.addWidget(QLabel('-'))
         layout.addWidget(self.end_box)
+        # the interval's frames, both ends included, as the numbers are typed; as wide as the
+        # longest count, so the pair keeps its width
+        self.count_label = QLabel()
+        self.count_label.setProperty('intervalCount', True)  # muted (gui/style.py)
+        self.count_label.setToolTip('Frames in this interval, its start and end frames included.')
+        self.count_label.setMinimumWidth(
+            self.count_label.fontMetrics().horizontalAdvance(f'{frame_count} frames'))
+        layout.addSpacing(6)
+        layout.addWidget(self.count_label)
+        for box in self.boxes():
+            box.valueChanged.connect(self.update_count)
+        self.update_count()
         self.remove_button: Optional[QPushButton] = None
         if removable:
             self.remove_button = QPushButton(REMOVE_INTERVAL_LABEL)
@@ -411,6 +423,16 @@ class IntervalPair(QWidget):
         if self.start_box.is_blank() or self.end_box.is_blank():
             return None
         return self.start_box.value(), self.end_box.value()
+
+    def update_count(self) -> None:
+        # empty while a box is blank, or while the start typed is past the end (order() fixes it
+        # when the box is confirmed)
+        entry = self.entry()
+        if entry is None or entry[0] > entry[1]:
+            self.count_label.setText('')
+            return
+        count = entry[1] - entry[0] + 1
+        self.count_label.setText(f'{count} frame{"" if count == 1 else "s"}')
 
     def order(self, edited_box: str) -> None:
         # a start after the end moves the other box, as the single interval always did

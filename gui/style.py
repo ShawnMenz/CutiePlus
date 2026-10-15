@@ -122,6 +122,7 @@ QToolButton[cardToggle="true"] {{ color: {muted}; font-weight: 600; border: none
 QToolButton[cardToggle="true"]:hover {{ color: {text}; }}
 QToolButton[cardToggle="true"]:checked, QToolButton[cardToggle="true"]:pressed {{ background: transparent; }}
 QLabel[section="true"] {{ color: {muted}; font-weight: 600; background: transparent; padding-top: 4px; }}
+QLabel[intervalCount="true"] {{ color: {muted}; background: transparent; }}
 QTextEdit#frameCounter {{ background: {window}; border: 1px solid {border}; border-radius: {radius}px;
                          padding: 0 4px; }}
 QLabel[pill="accent"] {{ background: {tonal}; color: {tonal_text}; border-radius: 11px; padding: 2px 10px;
