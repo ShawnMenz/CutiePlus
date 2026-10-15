@@ -119,6 +119,18 @@ def test_propagation_commits_frames_and_keeps_anchors(two_tasks, env_factory):
     assert revision['input_revision'] == 1  # propagation never changes the inputs
 
 
+def test_a_poll_reports_the_memory_sizes_of_the_run(two_tasks, env_factory):
+    # for the window's gauges: the tokens in the worker's permanent, working and long-term memory
+    # (in use, at most) after the job's last step; the fake counts 4 per frame
+    first, _ = two_tasks
+    env = env_factory(first.root)
+    alice = env.client('alice', ':2')
+    reply = open_task(alice, first)
+    done = run_propagation(alice, reply['task_id'], reply['lease_epoch'], '000001')
+    # anchors 0 and 6 in the permanent memory; at most max_mem_frames - 1 = 8 working frames
+    assert done['memory'] == {'permanent': [8, 8], 'working': [32, 32], 'long_term': [0, 10000]}
+
+
 def test_a_propagation_stays_inside_the_interval_of_its_start_frame(two_tasks, env_factory):
     first, _ = two_tasks
     env = env_factory(first.root)

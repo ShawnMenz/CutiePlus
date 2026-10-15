@@ -87,7 +87,7 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 - Messages: what the window did, newest at the bottom; it takes the height that is left. Tips (F1), at its top right, opens this guide in a window of its own, beside the labeling window. Esc closes it.
 - The sidebar scrolls when the window is short. Drag its left edge to resize it, or to the window's right edge to hide it; drag it back from there.
 - Advanced (click the title to open or close it; it stays as you left it on your screen): the controls you rarely need.
-  - Memory gauges: permanent (your anchors), working, long-term, and GPU.
+  - Memory gauges: permanent (your anchors), working, long-term, and GPU. The first three show the memory of your latest propagation, live during the run and as the run left it afterwards.
   - Reset all memory / Reset non-permanent memory: clears the model's memory; masks on disk stay. Rarely needed, since each propagation rebuilds memory from the anchors.
   - Working and long-term memory settings: model tuning. The defaults are fine.
   - Import mask: loads a mask image into this frame and makes it an anchor.

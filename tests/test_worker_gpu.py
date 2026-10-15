@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from cutie.inference.inference_core import InferenceCore
 from cutieplus.coordinator.worker_proxy import WorkerProxy
 from cutieplus.engine.images import read_index_mask, read_rgb
-from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime
+from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime, memory_sizes
 from cutieplus.engine.ritm import RitmEngine
 from gui.interactive_utils import index_numpy_to_one_hot_torch
 from tests.conftest import compose_gui_config, networks_on
@@ -83,7 +83,8 @@ def test_propagation_equals_the_in_process_runtime_and_frees_its_memory(worker, 
     job = job_for(task)
     start = worker.call('prop_start', job=job)
     assert start['decision'] == 'run'
-    remote = {r['ti']: r['mask'] for r in run_job(worker, job) if r['kind'] == 'frame'}
+    replies = run_job(worker, job)
+    remote = {r['ti']: r['mask'] for r in replies if r['kind'] == 'frame'}
     after = worker.call('status')
     assert after['job'] is None
     assert after['memory']['allocated'] <= before + (1 << 20)  # the context is gone
@@ -98,11 +99,15 @@ def test_propagation_equals_the_in_process_runtime_and_frees_its_memory(worker, 
     seed = index_numpy_to_one_hot_torch(masks[0], 2).cuda()
     runtime = PropagationRuntime(InferenceCore(cutie, cfg), plan, lambda ti: frames[ti],
                                  lambda ti: masks[ti], seed, 'cuda', True, cfg)
-    local = {}
+    local, local_memory = {}, []
     while not runtime.finished:
         result = runtime.step()
+        local_memory.append(memory_sizes(runtime.processor))
         if result.needs_commit:
             local[result.ti] = result.mask
     assert sorted(remote) == sorted(local) == [1, 2, 3, 4, 5, 7, 8]
+    # every step reports the memory sizes the window's gauges show
+    assert [reply['memory'] for reply in replies] == local_memory
+    assert local_memory[-1]['permanent'][0] > 0
     for ti in local:
         assert np.array_equal(remote[ti], local[ti])

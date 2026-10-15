@@ -19,7 +19,7 @@ from omegaconf import DictConfig
 from cutieplus.engine import models
 from cutieplus.engine.images import FramePrefetcher, read_mask_source, read_rgb
 from cutieplus.engine.propagation import (PropagationPlan, PropagationRuntime, apply_memory_config,
-                                          new_inference_core)
+                                          memory_sizes, new_inference_core)
 from cutieplus.engine.ritm import InteractionError, RitmEngine
 from cutieplus.gpu import hardware as hw
 from cutieplus.gpu.budget import GPUResourceManager, MemoryModel, MemoryRequest, ResourcePolicy
@@ -294,7 +294,8 @@ class TorchWorkerEngine:
             raise CommandError('oom', f'out of GPU memory in a propagation step: {exc}') from None
         reply = {'kind': result.kind, 'ti': result.ti, 'mask': mask, 'finished': result.finished,
                  'stop_reason': result.stop_reason, 'messages': result.messages,
-                 'inference_seconds': time.perf_counter() - start}
+                 'inference_seconds': time.perf_counter() - start,
+                 'memory': memory_sizes(runtime.processor)}  # for the window's gauges
         if result.finished:
             self.prop_release(job_id)
         return reply

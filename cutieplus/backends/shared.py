@@ -74,6 +74,8 @@ class SharedTaskBackend:
         self.job_next = 0
         self.job_messages = 0
         self.job_done = True
+        # the memory sizes in the worker after the last step of this window's latest run
+        self.run_memory: Optional[Dict[str, Tuple[int, int]]] = None
         self.gauges: Tuple[float, GpuGauges] = (0.0, GpuGauges())
         res_man.read_only = True  # the coordinator writes the task's files
         self._reload_task()
@@ -209,6 +211,8 @@ class SharedTaskBackend:
             progress.frames.append(PropagatedFrame(reply['latest_ti'], 'frame', reply['latest_mask']))
         if reply.get('content_revision') is not None:
             self.content_revision = reply['content_revision']
+        if reply.get('memory') is not None:
+            self.run_memory = {name: tuple(sizes) for name, sizes in reply['memory'].items()}
         if progress.done:
             self.job_done = True
             if state == 'failed' and reply.get('error'):
@@ -326,7 +330,8 @@ class SharedTaskBackend:
         self.memory = memory_config(cfg)
 
     def memory_gauges(self) -> Optional[Dict[str, Tuple[int, int]]]:
-        return None
+        # the memory lives in the worker during a run only: after it, its last sizes are shown
+        return self.run_memory
 
     def gpu_gauges(self) -> GpuGauges:
         last, gauges = self.gauges

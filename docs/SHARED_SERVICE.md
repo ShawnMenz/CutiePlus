@@ -331,8 +331,11 @@ e.g. `--set gpu.max_worker_gib=10` to cap the worker's memory.
   exactly (see Verification).
 - The export command still runs in the window's (or browser's) process; the coordinator verifies
   it afterwards but does not run it.
-- The permanent-memory and memory-gauge controls of the window have no effect in shared mode
-  (each propagation builds its memory from the anchors); *Clear memory* does nothing there.
+- The permanent-memory controls of the window have no effect in shared mode (each propagation
+  builds its memory from the anchors); *Clear memory* does nothing there. The memory gauges show
+  the worker's memory of the window's propagation: every step reports its sizes, the coordinator
+  returns the latest with each poll, and after the run the gauges keep its last sizes ("No
+  propagation yet" before the window's first run).
 - The memory model is linear and fitted on synthetic frames of one size; estimates carry a 1.25
   margin, and the pressure check and out-of-memory handling cover the rest.
 

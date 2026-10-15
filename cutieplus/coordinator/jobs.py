@@ -72,6 +72,7 @@ class Job:
     events: List[int] = field(default_factory=list)  # committed frames, in commit order
     messages: List[str] = field(default_factory=list)
     latest: Optional[tuple] = None  # (ti, mask) last committed, for display
+    memory: Optional[dict] = None  # the worker's memory sizes after the last step, for display
     effective: List[dict] = field(default_factory=list)  # resource plan of every attempt
     forced_permanent: Optional[List[int]] = None  # a replay keeps the anchors of the first plan
     memory_wait_since: Optional[float] = None
@@ -236,6 +237,7 @@ class JobManager:
                                 if job.started else None,
                                 elapsed_seconds=(job.finished or self.clock()) - job.created),
                 'effective': job.effective,
+                'memory': job.memory,
             }
 
     def cancel(self, job_id: str, session_id: Optional[str] = None, reason: str = 'cancelled') -> None:
@@ -350,6 +352,7 @@ class JobManager:
             return
         job.metrics['steps'] += 1
         job.metrics['inference_seconds'] += float(reply.get('inference_seconds') or 0.0)
+        job.memory = reply.get('memory') or job.memory
         job.pressure_count = 0
         for text in reply.get('messages') or ():
             job.message(text)

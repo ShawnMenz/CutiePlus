@@ -1,15 +1,18 @@
 """
 The labeling window in shared mode, driven through the same scripted session as the baseline,
 against a coordinator whose GPU worker runs the real models (on the CPU here; on the GPU in the
-GPU run): the results are compared with those of the original implementation.
+GPU run): the results are compared with those of the original implementation. Its memory gauges
+show the memory of its propagation in the worker, as the original window shows its own.
 """
 import os
+import re
 from os import path
 
 import numpy as np
 import pytest
 
 from tests.conftest import compose_gui_config
+from tests.helpers import make_task
 from tests.scenarios import flatten, run_session, scenario_task
 from tests.service_env import ServiceEnv
 
@@ -81,6 +84,50 @@ def test_shared_session_matches_the_original(tmp_path, qapp):
     ops = [row['op'] for row in events]
     assert ops.count('click') == 2 and ops.count('undo_click') == 1
     assert 'remove_anchor' in ops and ops.count('restore') == 3
+
+
+def test_the_memory_gauges_show_the_run_as_in_local_mode(tmp_path, qapp, cpu_networks,
+                                                          monkeypatch):
+    from PySide6.QtCore import QSettings
+    from cutieplus.backends.shared import SharedTaskBackend
+    from gui import theme
+    from gui.main_controller import MainController
+    stored = str(tmp_path / 'settings.ini')
+    monkeypatch.setattr(theme, 'settings', lambda: QSettings(stored, QSettings.Format.IniFormat))
+
+    def gauges(gui):
+        return [gauge.format() for gauge in (gui.perm_mem_gauge, gui.work_mem_gauge,
+                                             gui.long_mem_gauge)]
+
+    def run_forward(controller):
+        try:
+            before = gauges(controller.gui)
+            controller.on_forward_propagation()  # to the last frame
+            return before, gauges(controller.gui)
+        finally:
+            controller.gui.close()
+
+    local_task = make_task(str(tmp_path / 'local'), frame_count=10)
+    _, expected = run_forward(MainController(compose_gui_config(local_task.workspace),
+                                             networks=cpu_networks))
+    permanent, working, long_term = expected
+    assert re.fullmatch(r'([1-9]\d*) / \1', permanent), expected  # the anchor's tokens
+    used, most = map(int, working.split(' / '))
+    assert 0 < used <= most, expected
+    assert long_term.endswith(' / 10000'), expected  # Max. long-term memory size
+
+    task = make_task(str(tmp_path / 'shared'), frame_count=10)
+    settings = {'device': 'cpu', 'allow_cpu': True, 'profile': False, 'torch_threads': 4}
+    env = ServiceEnv(task.root, str(tmp_path / 'state'), settings, device='cpu')
+    try:
+        client = env.client('tester', ':9')
+        before, after = run_forward(MainController(
+            compose_gui_config(task.workspace, device='cpu'),
+            backend_factory=SharedTaskBackend.factory(client)))
+    finally:
+        env.close()
+    assert before == ['No propagation yet'] * 3  # the memory is the worker's, during a run
+    assert after == expected
 
 
 @pytest.mark.gpu

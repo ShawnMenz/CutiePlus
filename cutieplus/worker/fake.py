@@ -17,6 +17,7 @@ from cutieplus.gpu.hardware import SimulatedMemoryProbe
 from cutieplus.worker.engine import CommandError
 
 GiB = 1 << 30
+FAKE_FRAME_TOKENS = 4  # memory tokens of a frame
 
 
 def click_mask(initial: np.ndarray, clicks, target: int) -> np.ndarray:
@@ -170,7 +171,7 @@ class FakeWorkerEngine:
             if state['cursor'] < len(state['permanent']):
                 ti = state['permanent'][state['cursor']]
                 state['cursor'] += 1
-                return self._step_reply('anchor_memory', ti)
+                return self._step_reply(state, 'anchor_memory', ti)
             state['phase'] = 'seed'
         if state['phase'] == 'seed':
             state['phase'] = 'frames'
@@ -178,7 +179,7 @@ class FakeWorkerEngine:
             finished = not state['frames']
             if finished:
                 self.prop_release(job_id)
-            return self._step_reply('seed', int(job['start_ti']), finished=finished,
+            return self._step_reply(state, 'seed', int(job['start_ti']), finished=finished,
                                     stop_reason='end' if finished else None)
         ti = state['frames'][state['frame_cursor']]
         state['frame_cursor'] += 1
@@ -199,22 +200,37 @@ class FakeWorkerEngine:
         last = state['frame_cursor'] >= len(state['frames'])
         if kind == 'empty':
             self.prop_release(job_id)
-            return self._step_reply('stop', ti, finished=True, stop_reason='empty_anchor')
+            return self._step_reply(state, 'stop', ti, finished=True, stop_reason='empty_anchor')
         state['last_ti'] = ti
         if kind == 'mask':
             state['prev'] = read_mask_source(job['anchor_masks'][str(ti)])
-            reply = self._step_reply('anchor', ti, finished=last, stop_reason='end' if last else None)
+            reply = self._step_reply(state, 'anchor', ti, finished=last, stop_reason='end' if last else None)
         else:
             state['prev'] = np.roll(state['prev'], 1, axis=1)
-            reply = self._step_reply('frame', ti, mask=state['prev'].copy(), finished=last,
+            reply = self._step_reply(state, 'frame', ti, mask=state['prev'].copy(), finished=last,
                                      stop_reason='end' if last else None)
         if last:
             self.prop_release(job_id)
         return reply
 
-    def _step_reply(self, kind, ti, mask=None, finished=False, stop_reason=None) -> dict:
+    def _step_reply(self, state, kind, ti, mask=None, finished=False, stop_reason=None) -> dict:
         return {'kind': kind, 'ti': ti, 'mask': mask, 'finished': finished,
-                'stop_reason': stop_reason, 'messages': [], 'inference_seconds': self.step_seconds}
+                'stop_reason': stop_reason, 'messages': [], 'inference_seconds': self.step_seconds,
+                'memory': self._memory_sizes(state)}
+
+    @staticmethod
+    def _memory_sizes(state) -> dict:
+        """As the real worker reports them, at FAKE_FRAME_TOKENS per frame: the anchors put into
+        the permanent memory, the frames read since the start frame (at most max_mem_frames - 1)
+        in the working memory, and nothing in the long-term memory."""
+        memory = state['job']['memory']
+        permanent = state['cursor'] * FAKE_FRAME_TOKENS
+        most_frames = int(memory['max_mem_frames']) - 1
+        read = 0 if state['phase'] == 'anchors' else 1 + state['frame_cursor']
+        return {'permanent': (permanent, permanent),
+                'working': (min(read, most_frames) * FAKE_FRAME_TOKENS,
+                            most_frames * FAKE_FRAME_TOKENS),
+                'long_term': (0, int(memory['max_num_tokens']))}
 
     def prop_release(self, job_id) -> dict:
         if self.job is not None and self.job['job_id'] == job_id:

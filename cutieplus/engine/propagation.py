@@ -222,6 +222,21 @@ def new_inference_core(network, cfg: DictConfig, max_internal_size: int,
     return processor
 
 
+def memory_sizes(processor: InferenceCore) -> Optional[dict]:
+    """The window's memory gauges: tokens (in use, at most) in the permanent, working and
+    long-term memory of the processor; None before its memory holds anything."""
+    try:
+        memory = processor.memory
+        permanent = memory.work_mem.perm_size(0)
+        return {
+            'permanent': (permanent, permanent),
+            'working': (memory.work_mem.non_perm_size(0), memory.max_work_tokens),
+            'long_term': (memory.long_mem.non_perm_size(0), memory.max_long_tokens),
+        }
+    except AttributeError:
+        return None
+
+
 def memory_config(cfg: DictConfig) -> dict:
     """The memory settings of a run, as the window's controls set them."""
     return {

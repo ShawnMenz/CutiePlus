@@ -23,7 +23,7 @@ from cutieplus.backends.base import (BackendError, BinaryExport, ClickResult, Fr
 from cutieplus.engine import policies
 from cutieplus.engine.device import autocast
 from cutieplus.engine.images import FramePrefetcher
-from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime
+from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime, memory_sizes
 from cutieplus.engine.ritm import RitmEngine
 from gui.edit_history import FrameState
 from gui.exporter import convert_mask_to_binary
@@ -320,16 +320,7 @@ class LocalTaskBackend:
             return self.processor.step(image, prob[1:], idx_mask=False, force_permanent=True)
 
     def memory_gauges(self) -> Optional[Dict[str, Tuple[int, int]]]:
-        try:
-            memory = self.processor.memory
-            permanent = memory.work_mem.perm_size(0)
-            return {
-                'permanent': (permanent, permanent),
-                'working': (memory.work_mem.non_perm_size(0), memory.max_work_tokens),
-                'long_term': (memory.long_mem.non_perm_size(0), memory.max_long_tokens),
-            }
-        except AttributeError:
-            return None
+        return memory_sizes(self.processor)
 
     def gpu_gauges(self) -> GpuGauges:
         if 'cuda' in self.device:

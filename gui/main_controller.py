@@ -447,6 +447,7 @@ class MainController():
 
         self.propagating = False
         self.curr_frame_dirty = False
+        self.update_memory_gauges()  # as the run left it
         if self.close_requested:
             # the window was closed mid-propagation
             self.finish_close()
@@ -1138,10 +1139,11 @@ class MainController():
             self.gui.long_mem_gauge.setValue(round(curr_long_tokens / max(1, max_long_tokens) * 100))
 
         else:
-            self.gui.work_mem_gauge.setFormat('Unknown')
-            self.gui.long_mem_gauge.setFormat('Unknown')
-            self.gui.work_mem_gauge.setValue(0)
-            self.gui.long_mem_gauge.setValue(0)
+            # nothing in memory yet; in shared mode, the memory is the worker's during a run
+            for gauge in (self.gui.perm_mem_gauge, self.gui.work_mem_gauge,
+                          self.gui.long_mem_gauge):
+                gauge.setFormat('No propagation yet')
+                gauge.setValue(0)
 
     def on_work_min_change(self):
         if self.initialized:
