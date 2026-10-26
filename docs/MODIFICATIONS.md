@@ -44,9 +44,9 @@ File: `gui/task_browser.py` (`--tasks`).
 
 ## Several annotators
 
-Files: `gui/task_state.py`, `gui/annotators.py`, `gui/annotator_manager.py`.
+Files: `gui/task_state.py`, `gui/annotators.py`, `gui/annotator_manager.py`, `gui/vnc_screens.py`.
 
-- Per-task lock, *Open by* column, recorded annotator names, and the *Manage annotators* page with `annotators.json`, as described in the [README](../README.md#several-annotators).
+- Per-task lock, *Open by* column, recorded annotator names, and the *Manage annotators* page with `annotators.json`, changed only from the admin's screen (others see a read-only *Annotator list*), whose Save also starts and stops the annotators' VNC screens and marks removed names inactive (red), as described in the [README](../README.md#several-annotators). `scripts/setup_annotator_screens.sh` hands the system screens over, once.
 
 ## GUI
 
@@ -101,7 +101,7 @@ Dead or unused code was deleted: `cutie/inference/utils/frame_utils.py` (its imp
 
 ## New files
 
-`gui/task_state.py`, `gui/task_browser.py`, `gui/task_export.py`, `gui/edit_history.py`, `gui/annotators.py`, `gui/annotator_manager.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/theme.py`, `gui/style.py`. `gui/TIPS.md` was rewritten as the labeling guide. `gui/gui.py`, `gui/gui_utils.py`, `gui/main_controller.py`, `gui/resource_manager.py`, `gui/reader.py`, `gui/interaction.py`, `gui/interactive_utils.py`, `gui/click_controller.py` and `interactive_demo.py` were changed extensively.
+`gui/task_state.py`, `gui/task_browser.py`, `gui/task_export.py`, `gui/edit_history.py`, `gui/annotators.py`, `gui/annotator_manager.py`, `gui/vnc_screens.py`, `gui/flow_layout.py`, `gui/tips_window.py`, `gui/theme.py`, `gui/style.py`. `gui/TIPS.md` was rewritten as the labeling guide. `gui/gui.py`, `gui/gui_utils.py`, `gui/main_controller.py`, `gui/resource_manager.py`, `gui/reader.py`, `gui/interaction.py`, `gui/interactive_utils.py`, `gui/click_controller.py` and `interactive_demo.py` were changed extensively.
 
 ## Repository files
 

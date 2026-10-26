@@ -16,6 +16,10 @@ the life of the process, so N annotators hold N copies of both models on the one
 
 Annotators are identified from `DISPLAY`: screen `:N` is VNC port `5900 + N`, and
 `<task root>/annotators.json` names the annotator of each port (`gui/annotators.py`).
+Saving that list keeps the screens in step with it (`gui/vnc_screens.py`): each screen is
+`cutie-screen@N`, a service of the account's own systemd, enabled for every saved port and disabled
+for every removed one; names removed from the list are kept as inactive and drawn red in the browser.
+Only the session on the list's `admin_port` may change it.
 
 ## Model initialization and CUDA
 

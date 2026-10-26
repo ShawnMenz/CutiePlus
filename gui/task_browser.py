@@ -12,7 +12,7 @@ import html
 import os
 from collections import Counter
 from os import path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from omegaconf import DictConfig, open_dict
 from PySide6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
 
 from cutieplus.backends.base import BackendError
 from gui.annotator_manager import AnnotatorManager
+from gui.annotators import load_inactive, may_manage
 from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
 from gui.style import GAP, Card, set_variant
@@ -114,6 +115,58 @@ class TargetDelegate(QStyledItemDelegate):
         painter.setFont(shown.font)
         painter.drawText(QRect(rect.left() + head_width, rect.top(), room, rect.height()),
                          align, tail)
+        painter.restore()
+
+
+INACTIVE_COLOR = QColor('#EF4B81')  # a name removed from Manage annotators
+
+
+class AnnotatorsDelegate(QStyledItemDelegate):
+    """Draws the Annotators column with the inactive names (removed from Manage annotators, see
+    gui/annotators.py) in red. The item's own text stays the plain 'name, name', which sorting
+    and filtering use; the names come from the item's user data."""
+
+    TEXT_MARGIN = 3
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.inactive: Set[str] = set()
+
+    def paint(self, painter, option, index):
+        names = index.data(Qt.ItemDataRole.UserRole)
+        if not names or self.inactive.isdisjoint(names):
+            return super().paint(painter, option, index)
+        shown = QStyleOptionViewItem(option)
+        self.initStyleOption(shown, index)
+        shown.text = ''  # the style draws the background and the selection; the text is ours
+        widget = shown.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, shown, painter, widget)
+
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, shown, widget)
+        rect = rect.adjusted(self.TEXT_MARGIN, 0, -self.TEXT_MARGIN, 0)
+        color = shown.palette.color(QPalette.ColorRole.Text)
+        metrics = QFontMetrics(shown.font)
+        align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        pieces = []  # (text, color): each name, then its comma in the text color
+        for number, name in enumerate(names):
+            if number:
+                pieces.append((', ', color))
+            pieces.append((name, INACTIVE_COLOR if name in self.inactive else color))
+        painter.save()
+        painter.setFont(shown.font)
+        left = rect.left()
+        for text, pen in pieces:
+            room = rect.right() + 1 - left
+            width = metrics.horizontalAdvance(text)
+            if width > room:  # the last piece that fits, elided
+                text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
+                width = room
+            painter.setPen(pen)
+            painter.drawText(QRect(left, rect.top(), width, rect.height()), align, text)
+            left += width
+            if left > rect.right():
+                break
         painter.restore()
 
 
@@ -215,6 +268,8 @@ class TaskBrowser(QWidget):
         self.show_theme()
         self.target_delegate = TargetDelegate(self)
         self.status_delegate = StatusDelegate(self)
+        self.annotators_delegate = AnnotatorsDelegate(self)
+        self.annotators_delegate.inactive = load_inactive(self.task_root)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)  # no frame around the tables: they sit on a card
@@ -241,6 +296,7 @@ class TaskBrowser(QWidget):
             table.doubleClicked.connect(self.on_open)
             table.itemSelectionChanged.connect(self.show_discard_action)
             table.setItemDelegateForColumn(TARGET_COLUMN, self.target_delegate)
+            table.setItemDelegateForColumn(ANNOTATORS_COLUMN, self.annotators_delegate)
             # sorting moves the rows, but the view keeps its hidden rows by position
             table.model().layoutChanged.connect(self.apply_filter)
             header = table.horizontalHeader()
@@ -269,8 +325,10 @@ class TaskBrowser(QWidget):
         self.discard_button.clicked.connect(self.on_discard)
         refresh_button = QPushButton('Refresh')
         refresh_button.clicked.connect(self.refresh)
-        manage_button = QPushButton('Manage annotators')
-        manage_button.clicked.connect(self.on_manage_annotators)
+        # Manage annotators for the admin, Annotator list (read-only) for everyone else
+        self.manage_button = QPushButton()
+        self.manage_button.clicked.connect(self.on_manage_annotators)
+        self.show_manage_button()
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(140)
@@ -288,7 +346,7 @@ class TaskBrowser(QWidget):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         for button in (open_button, export_button, done_button, self.discard_button,
-                       refresh_button, manage_button):
+                       refresh_button, self.manage_button):
             buttons.addWidget(button)
         # rounded cards (gui/style.py): the filter, the tasks with their actions, the messages
         layout = QVBoxLayout()
@@ -334,7 +392,35 @@ class TaskBrowser(QWidget):
         title = f'Cutie tasks: {self.task_root} · {self.labeler}'
         if self.windowTitle() != title:
             self.setWindowTitle(title)
+        self.refresh_inactive()
+        self.show_manage_button()
         return self.labeler
+
+    def show_manage_button(self) -> None:
+        button = getattr(self, 'manage_button', None)  # not yet made on the first call
+        if button is not None:
+            button.setText('Manage annotators' if may_manage(self.task_root) else 'Annotator list')
+
+    def refresh_inactive(self) -> None:
+        """The removed annotators, drawn red: read again with the identity, so a removal saved
+        on any screen shows here within a lock refresh."""
+        delegate = getattr(self, 'annotators_delegate', None)  # not yet made on the first call
+        inactive = load_inactive(self.task_root)
+        if delegate is None or delegate.inactive == inactive:
+            return
+        delegate.inactive = inactive
+        for table in self.tables.values():
+            for row in range(table.rowCount()):
+                item = table.item(row, ANNOTATORS_COLUMN)
+                item.setToolTip(self.annotators_tip(item.data(Qt.ItemDataRole.UserRole) or []))
+            table.viewport().update()
+
+    def annotators_tip(self, names: List[str]) -> str:
+        if not names:
+            return ''
+        inactive = self.annotators_delegate.inactive
+        return 'changed by ' + ', '.join(f'{name} (removed)' if name in inactive else name
+                                         for name in names)
 
     def status_color(self, status: str) -> QColor:
         if status == DISCARDED_STATUS:
@@ -470,8 +556,7 @@ class TaskBrowser(QWidget):
             if column == ANNOTATORS_COLUMN:
                 # the names, for the per-annotator counts
                 item.setData(Qt.ItemDataRole.UserRole, summary['annotators'])
-                if value:
-                    item.setToolTip(f'changed by {value}')
+                item.setToolTip(self.annotators_tip(summary['annotators']))
             if column == OPEN_BY_COLUMN and summary['open_by'] is not None:
                 item.setToolTip(describe_holder(summary['open_by']))
             if column == TARGET_COLUMN:
