@@ -256,7 +256,8 @@ The workflow is unchanged: not started, in progress, under review (*Save binary 
   wrote a `metadata.json` newer than the start, and the task did not change meanwhile (otherwise
   `failed` or `stale`).
 - *Mark done* needs the task under review, a review of the current content, and a complete export
-  of the current content; the browser exports first when the export is missing or stale.
+  of the current content; the browser exports first when the export is missing or stale. The
+  window's *Ctrl+Q* sends `mark_done` with `quit_at` after its own export.
 - Any change puts the task back in progress and makes the review and the export obsolete.
 
 ## Running it

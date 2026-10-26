@@ -3,6 +3,7 @@ Export and review through the shared service: every export is tied to the conten
 exports and verified when the command ends; Mark done needs a review and an export of the current
 content; any change reopens the task. The task browser runs the same flow in shared mode.
 """
+import json
 import subprocess
 import time
 from os import path
@@ -56,8 +57,10 @@ def test_an_export_is_tied_to_the_content_it_exports(env):
     assert client.call('finish_export', export_id=export['export_id'],
                        exit_ok=run_export(task))['status'] == 'complete'
     assert client.call('export_status', task_id=lease['task_id'])['export_current']
-    client.call('mark_done', **ids)
+    client.call('mark_done', quit_at='2026-10-26T09:00:00+00:00', **ids)  # Ctrl+Q's quit time
     assert task_status(task.workspace) == 'done'
+    with open(path.join(task.workspace, 'progress.json'), encoding='utf-8') as f:
+        assert json.load(f)['quit_at'] == '2026-10-26T09:00:00+00:00'
 
     # a change reopens the task, and neither the review nor the export is current any more
     client.call('commit_frame', frame='000004', mask=ellipse_mask(3, 8), anchor='edit', **ids)

@@ -579,8 +579,8 @@ class Service:
         return self.tasks.export_status(task_id)
 
     def op_mark_done(self, session_id: str, task_id: str, lease_epoch: int,
-                     request_id: Optional[str] = None) -> dict:
-        return self.tasks.mark_done(task_id, session_id, lease_epoch, request_id)
+                     request_id: Optional[str] = None, quit_at: Optional[str] = None) -> dict:
+        return self.tasks.mark_done(task_id, session_id, lease_epoch, request_id, quit_at)
 
     def op_test_worker(self, session_id: str, command: str, **args) -> dict:
         """Test hooks of the fake engine (allow_test_commands only)."""

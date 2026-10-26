@@ -243,11 +243,12 @@ class TextBox(QLineEdit):
     """A description box. While it has the cursor it keeps the keys: the usual text keys edit the
     text (Ctrl+C / X / V, Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, Ctrl+A, Home / End, Ctrl + arrows, Shift
     to select), and no window shortcut acts on the frames, anchors, zoom or masks, except Ctrl+S
-    (save, which saves the text too) and F1 (tips). From a Mac, the Command key (Meta here, when
+    (save, which saves the text too), Ctrl+Q (quit and mark done, which saves it too) and F1
+    (tips). From a Mac, the Command key (Meta here, when
     the VNC viewer passes it on) and Option (Alt) work as in a Mac text field."""
 
     # the window shortcuts that still work while typing
-    WINDOW_KEYS = (QKeySequence('Ctrl+S'), QKeySequence(Qt.Key.Key_F1))
+    WINDOW_KEYS = (QKeySequence('Ctrl+S'), QKeySequence('Ctrl+Q'), QKeySequence(Qt.Key.Key_F1))
 
     def __init__(self, *args) -> None:
         super().__init__(*args)

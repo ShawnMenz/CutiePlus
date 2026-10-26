@@ -23,7 +23,9 @@ progress.json the review workflow: {last_edited, last_edited_by, edited_by} is r
               change (so a change always needs a new review); edited_by lists everyone who has
               changed the task, in order of their first change; saving binary PNGs adds
               {review_at, review_by} (under review); the task browser's Mark done adds
-              {done_at, done_by} to a task under review, after exporting it
+              {done_at, done_by} to a task under review, after exporting it; the labeling window's
+              Ctrl+Q (quit and mark done) submits, exports and marks it done in one go, and also
+              adds {quit_at}, when it was pressed
 lock.json     who has the task open (see TaskLock); a task is open in one window at a time
 
 "by" fields name the labeler: --labeler, else the annotator assigned to the screen's port
@@ -66,6 +68,7 @@ DISCARD_FILE = 'discard.json'
 DISCARDED_STATUS = 'discarded'  # before any other status
 TASK_SET_FILE = 'task_set.json'
 LOCK_FILE = 'lock.json'
+DONE_FIELDS = ('done_at', 'done_by', 'quit_at')  # the done mark in progress.json
 
 
 def _read_json(file_path: str, default=None):
@@ -444,22 +447,18 @@ def export_is_current(workspace: str, task_set: dict) -> bool:
     return exported is not None and (edited is None or exported > edited)
 
 
-def _update_progress(workspace: str, **fields) -> None:
-    progress_path = path.join(workspace, PROGRESS_FILE)
-    progress = _read_json(progress_path, {})
-    progress.update(fields)
-    _write_json(progress_path, progress)
-
-
 def submit_for_review(workspace: str, labeler: str) -> None:
     # from any status, including done: the task waits for a new review
     progress = _read_json(path.join(workspace, PROGRESS_FILE), {})
     _write_json(path.join(workspace, PROGRESS_FILE), submitted_progress(progress, labeler, utc_now()))
 
 
-def mark_done(workspace: str, labeler: str) -> None:
-    # only for a task under review whose export is current
-    _update_progress(workspace, done_at=utc_now(), done_by=labeler)
+def mark_done(workspace: str, labeler: str, quit_at: Optional[str] = None) -> None:
+    # only for a task under review whose export is current; quit_at: when the labeling window's
+    # Ctrl+Q asked for it
+    progress_path = path.join(workspace, PROGRESS_FILE)
+    _write_json(progress_path, done_progress(_read_json(progress_path, {}), labeler, utc_now(),
+                                             quit_at))
 
 
 def discard_task(workspace: str, labeler: str, discarded: bool) -> None:
@@ -513,17 +512,28 @@ def touched_progress(progress: dict, anchors: Dict[str, dict], labeler: str, now
 
 def submitted_progress(progress: dict, labeler: str, now: str) -> dict:
     """progress.json once the task is submitted for review (from any status, including done)."""
-    progress = dict(progress)
-    progress.pop('done_at', None)
-    progress.pop('done_by', None)
+    progress = without_done_mark(progress)
     progress['review_at'] = now
     progress['review_by'] = labeler
     return progress
 
 
+def done_progress(progress: dict, labeler: str, now: str, quit_at: Optional[str] = None) -> dict:
+    """progress.json once the task is marked done; quit_at: when the labeling window's Ctrl+Q
+    (quit and mark done) was pressed, else none is kept."""
+    progress = dict(without_done_mark(progress), done_at=now, done_by=labeler)
+    if quit_at:
+        progress['quit_at'] = quit_at
+    return progress
+
+
+def without_done_mark(progress: dict) -> dict:
+    return {key: value for key, value in progress.items() if key not in DONE_FIELDS}
+
+
 def discarded_progress(progress: dict) -> dict:
     """progress.json of a discarded sequence: no done mark."""
-    return {key: value for key, value in progress.items() if key not in ('done_at', 'done_by')}
+    return without_done_mark(progress)
 
 
 def status_of(progress: dict) -> str:

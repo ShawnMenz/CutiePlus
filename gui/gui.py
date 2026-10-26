@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
 from gui.style import ATTENTION, CARD_MARGINS, GAP, Card, restyle, set_pill, set_variant
-from gui.task_state import describe_attention, interval_index_from
+from gui.task_state import describe_attention, format_intervals, interval_index_from
 from gui.theme import save_setting, setting
 from gui.tips_window import TipsWindow
 from gui.interactive_utils import (CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR,
@@ -41,12 +41,25 @@ PAUSE_BACKWARD_LABEL = 'Pause propagation (B)'
 PLAY_LABEL = 'Play video (R)'
 STOP_LABEL = 'Stop video (R)'
 # the playback's speed (R and Shift+R), set in the box beside the button; every window starts at
-# PLAYBACK_FPS
+# PLAYBACK_FPS, or at the speed the Lock button beside the box keeps (per screen, as the theme is)
+# until it is unlocked
 PLAYBACK_FPS = 24
 MAX_PLAYBACK_FPS = 60
+FPS_LOCK_SETTING = 'play_fps_lock'  # the locked speed; 0 when it is not locked
+LOCK_LABEL = 'Lock'
+LOCKED_LABEL = 'Locked'
 # the "layer" view, which puts an image (Import layer; the original Cutie's UIUC logo) between the
 # target and the background: off, so neither it nor Import layer is offered; True brings both back
 SHOW_LAYER_MODE = False
+
+
+def locked_play_fps() -> Optional[int]:
+    """The playback speed locked on this screen, None when it is not locked."""
+    try:
+        fps = int(setting(FPS_LOCK_SETTING, 0))
+    except (TypeError, ValueError):
+        return None
+    return fps if 1 <= fps <= MAX_PLAYBACK_FPS else None
 
 
 class GUI(QWidget):
@@ -83,14 +96,18 @@ class GUI(QWidget):
             + ('\nShift+R or Shift+click: preview the intervals, one per press.'
                '\n{ / }: go to the previous / next interval start.'
                if controller.task is not None else ''))
+        locked_fps = locked_play_fps()
         self.play_fps_box = QSpinBox()
         self.play_fps_box.setRange(1, MAX_PLAYBACK_FPS)
         self.play_fps_box.setSuffix(' fps')
-        self.play_fps_box.setValue(PLAYBACK_FPS)
-        self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R, in frames per second; the '
-                                     f'frames may load slower. Starts at {PLAYBACK_FPS} in every '
-                                     'window.')
+        self.play_fps_box.setValue(locked_fps or PLAYBACK_FPS)
         self.play_fps_box.valueChanged.connect(self.on_play_fps_change)
+        # Lock: every window opened on this screen from then on starts at the box's speed
+        self.play_fps_lock_button = set_variant(QPushButton(LOCK_LABEL), 'toggle')
+        self.play_fps_lock_button.setCheckable(True)
+        self.fit_to_labels(self.play_fps_lock_button, (LOCK_LABEL, LOCKED_LABEL))
+        self.play_fps_lock_button.clicked.connect(self.on_play_fps_lock)
+        self.show_play_fps_lock(locked_fps is not None)
         self.commit_button = set_variant(QPushButton('Commit to permanent memory (C)'), 'tonal')
         self.commit_button.clicked.connect(controller.on_commit)
         self.export_task_button = QPushButton('Export task masks')
@@ -365,7 +382,8 @@ class GUI(QWidget):
         object_label = QLabel('Current object ID:')
         frame_line = row(object_label, self.object_dial, self.object_color,
                          *([self.frame_name] if task is None else []))
-        frame_card = Card(rows(row(self.lcd, self.play_button, self.play_fps_box),
+        frame_card = Card(rows(row(self.lcd, self.play_button, self.play_fps_box,
+                                   self.play_fps_lock_button),
                                row(self.reset_frame_button, self.reset_object_button),
                                frame_line), title='Frame')
 
@@ -570,8 +588,9 @@ class GUI(QWidget):
         QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(controller.on_export_binary)
         QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(controller.on_export_visualization)
 
-        # quit shortcut
+        # quit shortcuts: Q closes the window; Ctrl+Q also marks the task done (it asks first)
         QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
+        QShortcut(QKeySequence('Ctrl+Q'), self).activated.connect(controller.on_quit_done)
         QShortcut(QKeySequence(Qt.Key.Key_F1), self).activated.connect(self.show_tips)
         self.refresh_reset_button_state()
 
@@ -735,6 +754,28 @@ class GUI(QWidget):
         self.reset_all_masks_button.setEnabled(reason is None)
         self.reset_all_masks_button.setToolTip(
             reason or 'Delete this sequence\'s local frame masks and generated mask files.')
+
+    def confirm_quit_done(self) -> bool:
+        # Ctrl+Q: the warning before the task is saved, exported and marked done in one go
+        task = self.controller.task
+        intervals, _ = task.intervals(self.controller.T)
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle('Quit and mark done')
+        dialog.setText(f'You are about to quit and save the intervals of {task.sequence_id} as '
+                       '\'done\'.')
+        dialog.setInformativeText(
+            f'Intervals: {format_intervals(intervals)}. They are saved with their descriptions and '
+            f'masks, exported to the dataset and marked done by {task.labeler}, with no separate '
+            'review in the task browser. Use this only when you label and review this sequence '
+            'at the same time, and check every interval, its description and its masks first.'
+            '\n\nThe window closes once the export finishes. An edit before that keeps it open, '
+            'and the task is not marked done.')
+        quit_button = dialog.addButton('Quit and mark done', QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = dialog.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is quit_button
 
     def confirm_reset_all_masks(self) -> bool:
         task = self.controller.task
@@ -995,6 +1036,42 @@ class GUI(QWidget):
         # a playback under way changes speed at once
         if self.timer.isActive():
             self.timer.setInterval(self.playback_interval_ms())
+
+    def on_play_fps_lock(self, locked: bool) -> None:
+        # Lock keeps the box's speed for every window opened on this screen from now on; Unlock
+        # goes back to PLAYBACK_FPS, here and in the next windows
+        fps = self.play_fps_box.value()
+        save_setting(FPS_LOCK_SETTING, fps if locked else 0)
+        if not locked:
+            self.play_fps_box.setValue(PLAYBACK_FPS)
+        self.show_play_fps_lock(locked)
+        if locked:
+            self.text(f'Playback speed locked at {fps} fps: every window you open on this screen '
+                      'starts at it, until you unlock it.')
+        else:
+            self.text(f'Playback speed unlocked: back to {PLAYBACK_FPS} fps, here and in the '
+                      'next windows.')
+
+    def show_play_fps_lock(self, locked: bool) -> None:
+        # while locked, the box keeps its speed
+        button = self.play_fps_lock_button
+        button.setChecked(locked)
+        button.setText(LOCKED_LABEL if locked else LOCK_LABEL)
+        self.play_fps_box.setEnabled(not locked)
+        fps = self.play_fps_box.value()
+        if locked:
+            button.setToolTip(f'Locked at {fps} fps: every window opened on this screen starts at '
+                              f'it. Click to unlock: the speed goes back to {PLAYBACK_FPS} fps, '
+                              'here and in the next windows.')
+            self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R: locked at {fps} fps. '
+                                         'Unlock (the button on the right) to change it.')
+        else:
+            button.setToolTip('Lock the speed in the box: every window opened on this screen from '
+                              f'now on starts at it, instead of {PLAYBACK_FPS} fps, until you '
+                              'unlock it.')
+            self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R, in frames per second; '
+                                         f'the frames may load slower. Every window starts at '
+                                         f'{PLAYBACK_FPS}, unless Lock keeps a speed.')
 
     def on_preview_interval(self) -> None:
         # Shift+R: the next interval only, from its start to its end; each press plays the next one

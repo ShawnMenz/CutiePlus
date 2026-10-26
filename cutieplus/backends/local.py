@@ -28,8 +28,8 @@ from cutieplus.engine.ritm import RitmEngine
 from gui.edit_history import FrameState
 from gui.exporter import convert_mask_to_binary
 from gui.resource_manager import ResourceManager, write_atomically
-from gui.task_state import (TaskState, submit_for_review, write_description_text,
-                            write_interval_text)
+from gui.task_state import (TaskState, attention_of, discard_of, mark_done, submit_for_review,
+                            task_status, write_description_text, write_interval_text)
 
 # frames read ahead of a propagation run
 PREFETCH_FRAMES = 8
@@ -305,6 +305,20 @@ class LocalTaskBackend:
 
     def finish_export(self, export_id: Optional[str], ok: bool) -> dict:
         return {'status': 'complete' if ok else 'failed', 'detail': None}
+
+    def mark_done(self, quit_at: Optional[str] = None) -> None:
+        """Right after an export started once the task was submitted, as the task browser's
+        Mark done after its export: any change since the submission puts the task back in
+        progress, so a task still under review is exported as it is."""
+        workspace = self.res_man.workspace
+        if discard_of(workspace):
+            raise BackendError('the task is discarded: restore it first')
+        if attention_of(workspace):
+            raise BackendError('the task needs attention: toggle Need Attention off first')
+        status = task_status(workspace)
+        if status != 'under review':
+            raise BackendError(f'the task is {status}, it changed after it was saved')
+        mark_done(workspace, self.task.labeler, quit_at)
 
     # memory buttons and gauges
     def clear_memory(self, permanent: bool) -> None:

@@ -6,6 +6,7 @@
 2. Fix frames with clicks (or Reset), and mark good frames as anchors (C).
 3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames. Started inside an interval, it stays there: F stops at the interval's last frame, B at its first. It runs on the modality shown: press T first to propagate on the thermal (or RGB) frames, with every anchor you have labeled.
 4. Save binary PNGs (Ctrl+S): the sequence goes "under review". A reviewer accepts it with Mark done in the task browser.
+   When you label and review the sequence at the same time, Ctrl+Q does steps 4 and Mark done in one go: it saves, exports, marks the sequence done and closes the window (it asks first).
 
 **Mouse**
 
@@ -42,6 +43,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | Ctrl + + / Ctrl + - / Ctrl + 0 | zoom in / out / show the whole image |
 | Arrow keys | scroll the image when zoomed in |
 | Q | close this window |
+| Ctrl+Q | quit and mark done: save binary PNGs, export, mark the sequence done and close the window, after a warning (for labeling and review at the same time) |
 
 Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot be undone; propagate again instead.
 
@@ -66,9 +68,10 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 
 *Frame*
 
-- Counter (e.g. 20 / 90), Play video (R) with its speed box (fps), Reset frame (whole frame empty = "target absent" anchor), Reset object.
+- Counter (e.g. 20 / 90), Play video (R) with its speed box (fps) and Lock, Reset frame (whole frame empty = "target absent" anchor), Reset object.
 - Current object ID: tasks have one object.
 - Play video (R) plays from the current frame to the last one and stops there (it does not loop). Press R or the button again to stop early; at the last frame it plays again from the first. Shift + R (or Shift + click on the button) previews only the intervals: the first press plays interval 1 and stops at its end, the next press interval 2, and so on, then the first again. After { or }, Shift + R plays the interval jumped to. The box beside the button sets the speed of both, in frames per second (1-60); a change applies at once, also while playing. Every window starts at 24.
+- Lock (right of the speed box) keeps the speed: set it, then press Lock (it turns green and reads Locked, and the box can no longer change). Every window you open on your screen from then on starts at that speed. Press it again to unlock: the speed goes back to 24, here and in the next windows.
 
 *Propagate*
 
@@ -79,6 +82,7 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 
 - Save binary PNGs (Ctrl+S): writes binary PNGs of the saved masks, `interval.txt` and `description.txt` into `binary_masks/`, and submits the sequence for review. These files are not the dataset; Export task masks writes that.
 - Export task masks: writes the dataset masks now. The status does not change; Mark done in the browser exports anyway.
+- Quit and mark done (Ctrl+Q, no button): for a sequence you label and review yourself. A warning first shows the intervals: once you confirm, the window saves the binary PNGs (with the intervals and descriptions), exports the sequence, marks it done in your name and closes. There is no second check by a reviewer, so look at every interval, its description and its masks before you press it. The time you pressed it is kept with the done mark. An edit while the export runs keeps the window open and the sequence not done; so does Need Attention, and an interval that is not complete or overlaps stops it before the warning.
 - Need Attention (orange outline): click it when the sequence needs further attention, for example a problem you cannot solve or a question for someone else. While it is on, the button is filled orange, the task browser shows the status Attention in red, and Mark done refuses the sequence. Click again to clear it. Edits and Save binary PNGs leave it as it is; hover over the button to see who turned it on and when.
 - Visualization mode: how the mask is drawn on screen.
 

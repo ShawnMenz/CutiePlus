@@ -36,9 +36,10 @@ from gui.exporter import convert_mask_to_binary
 from gui.task_state import (ANCHORS_FILE, ATTENTION_FILE, DESCRIPTION_FILE, DISCARD_FILE,
                             INTERVAL_FILE, PREFILL_FILE, PROGRESS_FILE, TASK_FILE, TaskLock,
                             TaskLocked, added_interval_descriptions, discarded_progress,
-                            interval_descriptions, intervals_from_payload, load_task_set,
-                            intervals_payload, next_anchor_entry, status_of, submitted_progress,
-                            touched_progress, utc_now, write_description_text, write_interval_text)
+                            done_progress, interval_descriptions, intervals_from_payload,
+                            load_task_set, intervals_payload, next_anchor_entry, status_of,
+                            submitted_progress, touched_progress, utc_now, write_description_text,
+                            write_interval_text)
 
 log = logging.getLogger(__name__)
 
@@ -960,9 +961,11 @@ class TaskService:
                 'export_current': latest is not None and latest['content_revision'] == revision}
 
     def mark_done(self, task_id: str, session_id: str, epoch: int,
-                  request_id: Optional[str] = None) -> dict:
+                  request_id: Optional[str] = None, quit_at: Optional[str] = None) -> dict:
         """Accepts a task under review whose review and export are both of its current
-        content."""
+        content. quit_at: when the labeling window's Ctrl+Q (quit and mark done) asked for it."""
+        if quit_at is not None and not isinstance(quit_at, str):
+            raise TaskError('invalid', 'quit_at must be a time')
 
         def mutate(conn, state, labeler, changes):
             revision = self._revisions(conn, task_id)['content_revision']
@@ -983,7 +986,7 @@ class TaskService:
             if latest is None or latest['content_revision'] != revision:
                 raise TaskError('export_needed', 'export the task first: its export is missing or '
                                 'older than its content')
-            state['progress'] = dict(state['progress'], done_at=self.clock(), done_by=labeler)
+            state['progress'] = done_progress(state['progress'], labeler, self.clock(), quit_at)
             state['done_revision'] = revision
             changes.json_files[PROGRESS_FILE] = state['progress']
             return {'done_revision': revision}

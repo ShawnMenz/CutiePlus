@@ -10,7 +10,7 @@ from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_state import (ATTENTION_FILE, TaskLock, TaskLocked, TaskState, attention_of,
                             check_intervals, discard_of, discard_task, intervals_from_payload,
                             intervals_payload, lock_holder, mark_done, submit_for_review,
-                            summarize_task, task_status)
+                            summarize_task, task_status, utc_now)
 from tests.helpers import make_task
 
 
@@ -56,6 +56,28 @@ def test_review_workflow(tmp_path):
     TaskState(workspace, 'carol').touch()
     assert task_status(workspace) == 'in progress'
     assert json.load(open(path.join(workspace, 'progress.json')))['edited_by'] == ['alice', 'carol']
+
+
+def test_the_quit_time_of_ctrl_q_goes_with_the_done_mark(tmp_path):
+    task = make_task(str(tmp_path))
+    workspace = task.workspace
+    TaskState(workspace, 'alice').touch()
+    submit_for_review(workspace, 'alice')
+    quit_at = utc_now()
+    mark_done(workspace, 'alice', quit_at=quit_at)
+    progress = task.progress()
+    assert progress['quit_at'] == quit_at and progress['done_by'] == 'alice'
+    assert progress['done_at'] >= progress['quit_at']
+    # a new submission and a later Mark done from the browser keep no quit time
+    submit_for_review(workspace, 'alice')
+    assert not {'done_at', 'done_by', 'quit_at'} & set(task.progress())
+    mark_done(workspace, 'bob')
+    assert task_status(workspace) == 'done' and 'quit_at' not in task.progress()
+    # a discard drops it with the done mark
+    submit_for_review(workspace, 'alice')
+    mark_done(workspace, 'alice', quit_at=utc_now())
+    discard_task(workspace, 'dave', True)
+    assert not {'done_at', 'done_by', 'quit_at'} & set(task.progress())
 
 
 def test_intervals(tmp_path):

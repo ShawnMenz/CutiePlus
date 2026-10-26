@@ -28,7 +28,7 @@ from gui.edit_history import Edit, EditHistory, FrameState
 from gui.task_export import start_export
 from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, TaskLock, TaskState,
                             check_intervals, discard_of, export_command, format_intervals,
-                            labeler_name, load_task_set, task_root_of)
+                            labeler_name, load_task_set, task_root_of, utc_now)
 
 log = logging.getLogger()
 
@@ -60,8 +60,8 @@ class MainController():
                  backend_factory: Optional[Callable[..., TaskBackend]] = None) -> None:
         """networks: models loaded by load_networks, to reuse them across tasks (local mode).
         on_task_event: called with 'exported' after an export, 'under review' once the task is
-        submitted, 'attention' when Need Attention is toggled, and 'closed' once the window has
-        closed and every pending save is written.
+        submitted, 'attention' when Need Attention is toggled, 'done' once Ctrl+Q has marked it
+        done, and 'closed' once the window has closed and every pending save is written.
         backend_factory: the shared service's backend (cutieplus.backends.shared); without it
         the window runs the models itself (local mode).
         Raises TaskLocked when another window has the task open."""
@@ -74,6 +74,8 @@ class MainController():
         self.browser_exporting = False
         self.close_requested = False
         self.closed = False
+        # Ctrl+Q (quit and mark done): when it was pressed, while the export it started runs
+        self.quit_done_at: Optional[str] = None
 
         # setting up the workspace
         if cfg["workspace"] is None:
@@ -551,29 +553,30 @@ class MainController():
             return None
         return load_task_set(task_root)
 
-    def on_export(self) -> None:
-        # an ad-hoc export; it does not change the review status
+    def on_export(self) -> bool:
+        # an ad-hoc export; it does not change the review status. Returns whether it started
         if (self.task is None or self.propagating or self.export_process is not None
                 or self.browser_exporting):
-            return
+            return False
         if discard_of(self.task.workspace):
             self.gui.text('This sequence is discarded: it is not exported (Restore in the task '
                           'browser brings it back).')
-            return
+            return False
         task_set = self.task_set()
         if task_set is None:
-            return
+            return False
         self.backend.wait_for_saves()
         try:
             # shared mode: recorded with the content revision it exports
             self.export_id = self.backend.begin_export()
         except BackendError as exc:
             self.gui.text(f'Export not started: {exc}')
-            return
+            return False
         command = export_command(task_set, self.task.split, self.task.sequence_id)
         self.gui.text(f'Exporting {self.task.sequence_id}...')
         self.export_process = start_export(command, self.gui.text, self.on_export_finished)
         self.gui.refresh_reset_button_state()
+        return True
 
     def on_export_finished(self, ok: bool) -> None:
         self.export_process = None
@@ -585,6 +588,71 @@ class MainController():
         self.gui.text('Export finished.' if ok else 'Export failed; see the messages above.')
         if ok and self.on_task_event is not None:
             self.on_task_event(self, 'exported')
+        if self.quit_done_at is not None:
+            self.finish_quit_done(ok)
+
+    def on_quit_done(self) -> None:
+        """Ctrl+Q, for a labeler who reviews their own work (labeling and review at the same
+        time): after a warning, saves the binary PNGs (which submits the task), exports it, marks
+        it done and closes the window. The done mark keeps when Ctrl+Q was pressed (quit_at)."""
+        if self.task is None:
+            self.gui.text('Ctrl+Q marks a task done; Q closes the window.')
+            return
+        if self.quit_done_at is not None:
+            self.gui.text('Already quitting: the window closes once the export finishes.')
+            return
+        if self.propagating:
+            self.gui.text('Pause the propagation first.')
+            return
+        if self.export_process is not None or self.browser_exporting:
+            self.gui.text('The task is being exported; press Ctrl+Q again once that finishes.')
+            return
+        if discard_of(self.task.workspace):
+            self.gui.text('This sequence is discarded: it is not marked done (Restore in the task '
+                          'browser brings it back).')
+            return
+        if self.task.attention is not None:
+            self.gui.text('This sequence needs attention: toggle Need Attention off first.')
+            return
+        # the intervals and descriptions typed are saved first, so the warning shows them; none
+        # may be left out, as Save binary PNGs would
+        self.backend.wait_for_saves()
+        unsaved = self.save_typed_intervals()
+        self.on_description_change()
+        if unsaved:
+            self.gui.text(f'Not marked done: {unsaved} interval{"" if unsaved == 1 else "s"} not '
+                          f'saved (not complete, or overlapping). Change or remove '
+                          f'{"it" if unsaved == 1 else "them"} first.')
+            return
+        if not self.gui.confirm_quit_done():
+            return
+        self.quit_done_at = utc_now()
+        if not self.on_export_binary():
+            self.quit_done_at = None
+            self.gui.text('Not marked done: the binary PNGs were not saved.')
+            return
+        if not self.on_export():
+            self.quit_done_at = None
+            self.gui.text('Not marked done: the export did not start.')
+            return
+        self.gui.text(f'{self.task.sequence_id} is marked done once the export finishes; the '
+                      'window then closes. An edit before that keeps it open, and not done.')
+
+    def finish_quit_done(self, exported: bool) -> None:
+        # Ctrl+Q, once its export has finished: the done mark, then the window closes
+        quit_at, self.quit_done_at = self.quit_done_at, None
+        if not exported:
+            self.gui.text('Not marked done: the export failed. The window stays open.')
+            return
+        try:
+            self.backend.mark_done(quit_at)
+        except BackendError as exc:
+            self.gui.text(f'Not marked done: {exc}. The window stays open.')
+            return
+        self.gui.text(f'{self.task.sequence_id} is done.')
+        if self.on_task_event is not None:
+            self.on_task_event(self, 'done')
+        self.gui.close()
 
     def current_anchor(self) -> dict:
         if self.task is None:
@@ -723,25 +791,19 @@ class MainController():
                 self.on_task_event(self, 'attention')
         self.gui.refresh_attention_button()  # the saved state, also after a failure
 
-    def on_export_binary(self):
+    def on_export_binary(self) -> bool:
         # export masks in binary format for other applications, e.g., ProPainter
-        # (task mode: this also submits the task for review, whatever its status)
+        # (task mode: this also submits the task for review, whatever its status). Returns
+        # whether they were saved
         if self.propagating:
             self.gui.text('Pause the propagation first.')
-            return
+            return False
         self.backend.wait_for_saves()
         if self.task is not None:
-            # the intervals and the description are saved with every submission; a number (or
-            # 'm') typed into an interval box and not confirmed yet counts (the Ctrl+S shortcut,
-            # unlike a click on the button, does not move the focus out of the box)
-            for pair in self.gui.interval_pairs:
-                for box in pair.boxes():
-                    box.interpretText()
-                pair.order('start')
-            self.save_interval_pairs()
-            unsaved = [pair for pair in self.gui.interval_pairs if pair.entry() is None or pair.invalid]
+            # the intervals and the description are saved with every submission
+            unsaved = self.save_typed_intervals()
             if unsaved:
-                self.gui.text(f'{len(unsaved)} interval{"" if len(unsaved) == 1 else "s"} not saved '
+                self.gui.text(f'{unsaved} interval{"" if unsaved == 1 else "s"} not saved '
                               '(not complete, or overlapping): the saved intervals are used.')
             self.on_description_change()
         mask_folder = path.join(self.cfg['workspace'], 'masks')
@@ -754,7 +816,7 @@ class MainController():
             except BackendError as exc:
                 self.gui.progressbar_update(0)
                 self.gui.text(f'Binary masks not saved: {exc}')
-                return
+                return False
             save_folder = export.folder
             intervals = export.intervals
             self.gui.text(f'Binary masks exported to {save_folder}')
@@ -768,12 +830,25 @@ class MainController():
                                   f'saved to {path.join(save_folder, INTERVAL_TEXT)}')
                 self.gui.text(f'Description{"s, one per interval," if len(intervals) > 1 else ""} '
                               f'saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
-                self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
-                              'Mark done accepts it, any further edit reopens it.')
+                if self.quit_done_at is None:  # Ctrl+Q marks it done itself
+                    self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
+                                  'Mark done accepts it, any further edit reopens it.')
                 if self.on_task_event is not None:
                     self.on_task_event(self, 'under review')
-        else:
-            self.gui.text(f'No masks found in {mask_folder}')
+            return True
+        self.gui.text(f'No masks found in {mask_folder}')
+        return False
+
+    def save_typed_intervals(self) -> int:
+        """Saves the interval boxes as typed; returns how many intervals are not saved (not
+        complete, or overlapping). A number (or 'm') typed into a box and not confirmed yet counts
+        (a shortcut, unlike a click on a button, does not move the focus out of the box)."""
+        for pair in self.gui.interval_pairs:
+            for box in pair.boxes():
+                box.interpretText()
+            pair.order('start')
+        self.save_interval_pairs()
+        return sum(pair.entry() is None or pair.invalid for pair in self.gui.interval_pairs)
 
     def on_interval_change(self, edited_box: Literal['start', 'end'], pair=None) -> None:
         # a box of the task window's intervals was confirmed (the first pair when none is named)

@@ -1,8 +1,9 @@
 """
 The box beside Play video sets the playback speed of R and Shift+R in frames per second, also
-during playback; every window starts at 24. The original Cutie's layer view is not offered (no
-"layer" visualization, no Import layer), its UIUC overlay is not loaded, and nothing about it is
-logged.
+during playback; every window starts at 24, unless the Lock button beside the box keeps a speed for
+the following windows of the screen (until it is unlocked). The original Cutie's layer view is not
+offered (no "layer" visualization, no Import layer), its UIUC overlay is not loaded, and nothing
+about it is logged.
 """
 import pytest
 
@@ -14,7 +15,7 @@ pytestmark = [pytest.mark.models, pytest.mark.slow]
 
 @pytest.fixture
 def stored_settings(tmp_path, monkeypatch):
-    # the user's own settings stay untouched (and a speed set before is not kept: none is saved)
+    # the user's own settings stay untouched (and a speed locked there is not read)
     from PySide6.QtCore import QSettings
     from gui import theme
     stored = str(tmp_path / 'settings.ini')
@@ -71,3 +72,61 @@ def test_the_layer_view_and_the_uiuc_overlay_are_off(tmp_path, qapp, cpu_network
         assert 'Layer file' not in controller.gui.console.toPlainText()
     finally:
         controller.gui.close()
+
+
+def test_lock_keeps_the_speed_for_the_following_windows(tmp_path, qapp, cpu_networks,
+                                                        stored_settings, monkeypatch):
+    from gui.gui import LOCK_LABEL, LOCKED_LABEL, PLAYBACK_FPS
+    from gui.main_controller import MainController
+    task = make_task(str(tmp_path), frame_count=6)
+    monkeypatch.setenv('DISPLAY', ':3')
+
+    def open_window():
+        return MainController(compose_gui_config(task.workspace), networks=cpu_networks).gui
+
+    gui = open_window()
+    try:
+        box, lock = gui.play_fps_box, gui.play_fps_lock_button
+        assert lock.text() == LOCK_LABEL and lock.isCheckable() and not lock.isChecked()
+        assert lock.parentWidget() is box.parentWidget()  # on the right of the box
+        assert lock.geometry().left() >= box.geometry().right()
+        box.setValue(10)
+        lock.click()
+        assert lock.isChecked() and lock.text() == LOCKED_LABEL
+        assert not box.isEnabled()  # the locked speed stays
+        assert 'locked at 10 fps' in gui.console.toPlainText()
+    finally:
+        gui.close()
+    for _ in range(2):  # every following window starts at the locked speed
+        gui = open_window()
+        try:
+            assert gui.play_fps_box.value() == 10 and gui.play_fps_lock_button.isChecked()
+            assert not gui.play_fps_box.isEnabled()
+            gui.on_play_video()
+            assert gui.timer.interval() == 100
+            gui.stop_playback()
+        finally:
+            gui.close()
+    monkeypatch.setenv('DISPLAY', ':4')  # another annotator's screen keeps its own
+    gui = open_window()
+    try:
+        assert gui.play_fps_box.value() == PLAYBACK_FPS
+        assert not gui.play_fps_lock_button.isChecked()
+    finally:
+        gui.close()
+
+    monkeypatch.setenv('DISPLAY', ':3')
+    gui = open_window()
+    try:
+        gui.play_fps_lock_button.click()  # unlock: back to the default, here and after
+        assert gui.play_fps_box.value() == PLAYBACK_FPS and gui.play_fps_box.isEnabled()
+        assert gui.play_fps_lock_button.text() == LOCK_LABEL
+        assert 'unlocked: back to 24 fps' in gui.console.toPlainText()
+    finally:
+        gui.close()
+    gui = open_window()
+    try:
+        assert gui.play_fps_box.value() == PLAYBACK_FPS
+        assert not gui.play_fps_lock_button.isChecked() and gui.play_fps_box.isEnabled()
+    finally:
+        gui.close()

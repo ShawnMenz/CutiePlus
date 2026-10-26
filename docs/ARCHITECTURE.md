@@ -152,7 +152,10 @@ clicks (RITM's own state stack), then whole edits. Propagation is not undoable.
 Not started, in progress (any change), under review (*Save binary PNGs*), done (*Mark done* in
 the browser, which exports first when the export is missing or older than the last change). The
 export runs the command of `task_set.json` with `QProcess`; `export_is_current` compares the
-export's `exported_at` with `progress.json`'s `last_edited` (1 s resolution).
+export's `exported_at` with `progress.json`'s `last_edited` (1 s resolution). The window's *Ctrl+Q*
+(`MainController.on_quit_done`) chains the steps: Save binary PNGs, its own export, then
+`TaskBackend.mark_done(quit_at)` once the export succeeds and the task is still under review, and
+closes the window.
 
 ## GUI-to-GPU dependencies
 

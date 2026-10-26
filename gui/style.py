@@ -8,7 +8,8 @@ the boxes, the buttons, every table row) in EYE_CARE_WHITE.
 
 Widgets opt in with dynamic properties, which the style sheet selects on:
   QPushButton  variant = primary (filled green), tonal (green tint), danger (red outline),
-               attention (orange outline, filled while checked)
+               attention (orange outline, filled while checked), toggle (plain, filled green
+               while checked)
   QFrame       card = true (see Card)
   QLabel       pill = accent (green tint), key (a key name); cardTitle = true
 """
@@ -106,6 +107,7 @@ QPushButton[variant="attention"] {{ background: transparent; color: {attention};
                                    border: 1px solid {attention}; font-weight: 600; }}
 QPushButton[variant="attention"]:hover {{ background: rgba(239, 108, 0, 0.10); }}
 QPushButton[variant="attention"]:checked {{ background: {attention}; color: {white}; }}
+QPushButton[variant="toggle"]:checked {{ background: {primary}; color: {white}; border-color: {primary}; }}
 
 QLineEdit, QAbstractSpinBox, QComboBox {{ background: {input}; color: {text};
     border: 1px solid {input_border}; border-radius: {radius}px; padding: 4px 8px; min-height: 20px; }}

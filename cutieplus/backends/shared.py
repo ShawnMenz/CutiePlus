@@ -319,6 +319,10 @@ class SharedTaskBackend:
         except ClientError as exc:
             return {'status': 'failed', 'detail': str(exc)}
 
+    def mark_done(self, quit_at: Optional[str] = None) -> None:
+        # the coordinator checks the review and the export against the task's content
+        self._call('mark_done', quit_at=quit_at, request_id=new_request_id())
+
     # memory settings and gauges ---------------------------------------------------------------
     def memory_settings(self) -> Tuple[int, int, int, int]:
         # what the window's own MemoryManager reported in local mode (configured - 1 frames)
