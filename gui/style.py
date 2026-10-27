@@ -311,6 +311,8 @@ class Card(QFrame):
                 row.addWidget(self.toggle)
             elif title is not None:
                 self.title_label = QLabel(title)
+                # titles can carry user text (a display name): never read as markup
+                self.title_label.setTextFormat(Qt.TextFormat.PlainText)
                 self.title_label.setProperty('cardTitle', True)
                 row.addWidget(self.title_label)
             row.addStretch(1)

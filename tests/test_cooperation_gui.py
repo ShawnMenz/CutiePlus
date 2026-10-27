@@ -186,3 +186,29 @@ def test_offline_edits_are_recorded_as_offline(served, qapp, tmp_path):
         assert browser.manage_button.isHidden() and browser.logout_button.isHidden()
     finally:
         browser.close()
+
+
+def test_a_session_that_ends_during_an_export_disables_the_browser_at_once(served, qapp,
+                                                                          tmp_path):
+    import threading
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QProgressDialog
+    served.add(served.owner_token, 'alice')
+    browser = browser_for(served, qapp, tmp_path, signed_in(served, 'alice'))
+    reasons = []
+    browser.sign_in_again.connect(reasons.append)
+    cancel = threading.Event()
+    browser.export_worker = SimpleNamespace(cancel=cancel)
+    browser.export_progress = QProgressDialog(browser)
+    try:
+        browser.end_session('your session ended')
+        # not closed yet (the export is stopping), but nothing more runs under the session
+        assert cancel.is_set() and reasons == [] and browser.revoked
+        assert not browser.tabs.isEnabled() and not browser.logout_button.isEnabled()
+        browser.on_open()  # refused
+        assert browser.controller is None
+        browser.on_exported(None, 'cancelled')
+        assert reasons == ['your session ended'] and not browser.isVisible()
+    finally:
+        browser.export_worker = None
+        browser.close()

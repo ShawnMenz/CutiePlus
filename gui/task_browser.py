@@ -241,6 +241,8 @@ class TaskBrowser(QWidget):
         self.link = link
         self.offline = offline
         self.signing_out = False
+        # the session ended: nothing more is done under it, even before this window closes
+        self.revoked: Optional[str] = None
         self.manage_window: Optional[ManageAnnotators] = None
         self.networks = None
         self.controller: Optional[MainController] = None
@@ -685,6 +687,8 @@ class TaskBrowser(QWidget):
         return True
 
     def on_open(self) -> None:
+        if self.revoked is not None:
+            return
         selection = self.selected_task()
         if selection is None:
             return
@@ -731,6 +735,8 @@ class TaskBrowser(QWidget):
         self.refresh_task(controller.task.split, controller.task.sequence_id)
 
     def on_import(self) -> None:
+        if self.revoked is not None:
+            return
         dialog = ImportDialog(self.task_root, self)
         dialog.imported.connect(self.on_imported)
         dialog.exec()
@@ -740,6 +746,8 @@ class TaskBrowser(QWidget):
         self.refresh()
 
     def on_mark_done(self) -> None:
+        if self.revoked is not None:
+            return
         # accepts a task under review
         selection = self.selected_task()
         if selection is None:
@@ -792,6 +800,8 @@ class TaskBrowser(QWidget):
         return answer == QMessageBox.StandardButton.Discard
 
     def on_discard(self) -> None:
+        if self.revoked is not None:
+            return
         # the selected sequence is left out of the dataset, or restored when it is discarded
         selection = self.selected_task()
         if selection is None:
@@ -819,6 +829,8 @@ class TaskBrowser(QWidget):
         self.refresh_task(split, sequence)
 
     def on_export(self) -> None:
+        if self.revoked is not None:
+            return
         """The dataset (gui/dataset_export.py): the intervals of every done sequence, in every tab,
         after a confirmation. Every exported sequence is locked while it is written."""
         if self.export_worker is not None:
@@ -895,6 +907,10 @@ class TaskBrowser(QWidget):
         self.export_locks = []
         self.export_progress.close()
         self.export_worker = self.export_progress = None
+        if self.revoked is not None:  # the session ended meanwhile: finish signing out
+            self.close()
+            self.sign_in_again.emit(self.revoked)
+            return
         export_root = export_root_of(self.task_root)
         if report is None:
             self.log(f'Export stopped: {error}. The previous export is unchanged.' if error else
@@ -944,15 +960,25 @@ class TaskBrowser(QWidget):
         self.end_session(reason)
 
     def end_session(self, reason: str, log_out: bool = False) -> None:
-        """Closes the open task (it saves) and this window; the program asks for a sign-in."""
+        """Closes the open task (it saves) and this window; the program asks for a sign-in. The
+        window is disabled at once: a running export is cancelled, and the window closes when it
+        has stopped (on_exported)."""
         self.signing_out = True
-        if self.manage_window is not None:
-            self.manage_window.close()
-        if not self.close():
-            self.signing_out = False
-            return
+        self.revoked = reason
         if log_out and self.link is not None:
             self.link.logout()
+        if self.manage_window is not None:
+            self.manage_window.close()
+        if self.controller is not None:
+            self.controller.gui.close()  # writes its pending saves
+        if self.export_worker is not None:
+            self.export_worker.cancel.set()
+            self.log('Signing out: the export is cancelled; this window closes once it stops.')
+            for widget in self.findChildren(QWidget):
+                if widget is not self.console:
+                    widget.setEnabled(False)
+            return
+        self.close()
         self.sign_in_again.emit(reason)
 
     def closeEvent(self, event):

@@ -39,6 +39,13 @@ USER_COLUMNS = ('Name', 'Login', 'Role', 'Status', 'Desktop', 'SSH', 'VNC', 'App
 STATUS_PILLS = {'active': 'accent', 'pending': 'null', 'suspended': 'null', 'archived': 'null'}
 
 
+def plain(text: str) -> QLabel:
+    """A label of text that may come from users or the system: never read as markup."""
+    label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    return label
+
+
 def cell(text: str, tip: str = '') -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -422,8 +429,8 @@ class ManageAnnotators(QDialog):
         contact_edit = QLineEdit(user['contact'] or '')
         form = QFormLayout()
         pills = QHBoxLayout()
-        role = set_pill(QLabel(ROLE_NAMES.get(user['role'], user['role'])), 'accent')
-        status = set_pill(QLabel(user['status']), STATUS_PILLS.get(user['status'], 'null'))
+        role = set_pill(plain(ROLE_NAMES.get(user['role'], user['role'])), 'accent')
+        status = set_pill(plain(user['status']), STATUS_PILLS.get(user['status'], 'null'))
         pills.addWidget(role)
         pills.addWidget(status)
         if user['is_owner']:
@@ -432,10 +439,10 @@ class ManageAnnotators(QDialog):
             pills.addWidget(set_pill(QLabel('password not set up'), 'null'))
         pills.addStretch(1)
         form.addRow(pills)
-        form.addRow('Login', QLabel(user['login_name']))
+        form.addRow('Login', plain(user['login_name']))
         form.addRow('Display name', name_edit)
         form.addRow('Contact', contact_edit)
-        form.addRow('Last sign-in', QLabel(short_time(user['last_login_at'])))
+        form.addRow('Last sign-in', plain(short_time(user['last_login_at'])))
         form.addRow('Windows signed in', QLabel(str(len(user.get('sessions', [])))))
         editable = user['status'] != 'archived'
         name_edit.setEnabled(editable)
@@ -597,7 +604,7 @@ class ManageAnnotators(QDialog):
             layout.addWidget(QLabel('No SSH connection.'))
         for connection in connections:
             row = QHBoxLayout()
-            row.addWidget(QLabel(f'{connection["source_address"]}:{connection["source_port"]} '
+            row.addWidget(plain(f'{connection["source_address"]}:{connection["source_port"]} '
                                  f'since {short_time(connection["connected_at"])} '
                                  f'({connection["status"]})'))
             row.addStretch(1)
@@ -630,7 +637,7 @@ class ManageAnnotators(QDialog):
     def activity_card(self, user: dict) -> Card:
         layout = QVBoxLayout()
         for event in user['recent_activity'][:10]:
-            layout.addWidget(QLabel(f'{short_time(event["created_at"])}  '
+            layout.addWidget(plain(f'{short_time(event["created_at"])}  '
                                     f'{event.get("actor_login") or event["actor_source"]}  '
                                     f'{event["action"].replace("_", " ")}  {event["result"]}'))
         return Card(layout, title='Recent activity')
