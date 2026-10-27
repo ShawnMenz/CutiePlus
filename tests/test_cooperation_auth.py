@@ -74,6 +74,22 @@ def test_wrong_passwords_say_nothing_and_slow_down(harness):
     assert len(failed) == 6 and all(row['actor_user_id'] is None for row in failed)
 
 
+def test_wrong_passwords_on_one_desktop_lock_nobody_out_elsewhere(harness):
+    owner = harness.owner()
+    alice = harness.add(owner, 'alice')
+    harness.add_slot(alice['id'], 2)
+    harness.add(owner, 'bob')
+    # bob, at his own origin, tries alice's name over and over
+    elsewhere = harness.peer(display=3)
+    for _ in range(8):
+        harness.raw('login', peer=elsewhere, login_name='alice', password='a guess at it')
+    assert harness.code('login', peer=elsewhere, login_name='alice',
+                        password=PASSWORD) == 'rate_limited'
+    assert harness.code('login', peer=harness.peer(display=2), login_name='alice',
+                        password=PASSWORD) == 'ok'
+    assert harness.code('login', login_name='alice', password=PASSWORD) == 'ok'  # the console
+
+
 def test_a_password_needs_some_length(harness):
     setup = bootstrap_owner(harness.service, 'owner', 'Owner')
     for password in ('short', 'owner', 'x' * 300, None):

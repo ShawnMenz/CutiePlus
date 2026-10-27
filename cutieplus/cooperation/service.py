@@ -243,7 +243,7 @@ def login(service: Service, ctx: Context, login_name, password) -> dict:
     except Refused as exc:
         _failed_sign_in(service, ctx, 'login', name, user, exc.code)
         raise
-    service.limiter.succeeded(name)
+    service.limiter.succeeded(name, ctx.origin.key)
     with service.db.transaction() as cursor:
         issued = service.issue_session(cursor, user, ctx.origin)
         audit.record(cursor, service.now(), 'login', audit.SUCCEEDED, user['id'],
@@ -292,7 +292,7 @@ def setup_credential(service: Service, ctx: Context, login_name, setup_token,
                      target_type='user', target_id=user['id'], request_id=ctx.request_id,
                      before={'status': user['status']}, after={'status': after['status']})
         issued = service.issue_session(cursor, after, ctx.origin)
-    service.limiter.succeeded(name)
+    service.limiter.succeeded(name, ctx.origin.key)
     return dict(issued, user=public_user(service.user_row(user['id'])))
 
 
@@ -327,7 +327,7 @@ def reauthenticate(service: Service, ctx: Context, password) -> dict:
     if not service.passwords.verify(user['password_hash'], password):
         _failed_sign_in(service, ctx, 'reauthenticate', user['login_name'], user)
         raise Refused(INVALID_CREDENTIALS, 'wrong password')
-    service.limiter.succeeded(user['login_name'])
+    service.limiter.succeeded(user['login_name'], ctx.origin.key)
     with service.db.transaction() as cursor:
         cursor.execute('UPDATE app_sessions SET last_reauthenticated_at = ? WHERE id = ?',
                        (service.now(), ctx.session['id']))
