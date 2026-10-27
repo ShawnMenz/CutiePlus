@@ -3,11 +3,12 @@ Credentials of the application users: Argon2id password hashes, session tokens a
 tokens. The database keeps hashes only; a token is shown once (a session token to its window, a
 setup token to whoever hands it to the user) and never written anywhere else.
 
-Failed sign-ins slow down per login name at an origin (a remote desktop, or the host's console),
-and per origin: every window of the shared account connects from the same host, so "localhost"
-would be everybody. A name is slowed down only at the origin its failures came from, so someone
-typing wrong passwords for another user's name on their own desktop cannot lock that user out
-elsewhere. The counts live in memory: restarting the service clears them.
+Failed sign-ins slow down per login name and per origin (a remote desktop, or the host's
+console): every window of the shared account connects from the same host, so "localhost" would be
+everybody. A user signs in only at the console or at their own desktop; an attempt anywhere else is
+refused before its password is looked at and counts against its origin only, so nobody can guess
+another user's password from their own desktop, or lock that user out from there. The counts live
+in memory: restarting the service clears them.
 """
 import hashlib
 import hmac
@@ -92,9 +93,9 @@ def same_hash(left: Optional[str], right: Optional[str]) -> bool:
 
 class LoginLimiter:
     """
-    Per login name at an origin: 5 failures in 15 minutes are free, then each attempt waits twice
-    as long as the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for 10
-    minutes. Kept in memory: a restart of the service forgets them.
+    Per login name: 5 failures in 15 minutes are free, then each attempt waits twice as long as
+    the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for 10 minutes.
+    Kept in memory: a restart of the service forgets them.
     """
     FREE_FAILURES = 5
     WINDOW_S = 15 * 60
@@ -115,7 +116,7 @@ class LoginLimiter:
             times.popleft()
         return times
 
-    def check(self, login_name: str, origin: str) -> None:
+    def check_origin(self, origin: str) -> None:
         with self.lock:
             now = self.clock()
             origin_times = self._recent(f'origin:{origin}', self.ORIGIN_WINDOW_S)
@@ -123,7 +124,13 @@ class LoginLimiter:
                 wait = origin_times[-1] + self.ORIGIN_WINDOW_S - now
                 raise Refused(RATE_LIMITED, 'too many failed sign-ins from here; wait '
                               f'{int(wait) + 1} s', retry_after=int(wait) + 1)
-            times = self._recent(self._login_key(login_name, origin), self.WINDOW_S)
+
+    def check(self, login_name: str, origin: str) -> None:
+        """For an origin where the user may sign in (the caller checked it)."""
+        self.check_origin(origin)
+        with self.lock:
+            now = self.clock()
+            times = self._recent(f'login:{login_name}', self.WINDOW_S)
             excess = len(times) - self.FREE_FAILURES
             if excess >= 0:
                 wait = min(self.FIRST_WAIT_S * 2**excess, self.MAX_WAIT_S)
@@ -138,13 +145,14 @@ class LoginLimiter:
             for key in keys:
                 self.failures[key].append(now)
 
-    @staticmethod
-    def _login_key(login_name: str, origin: str) -> str:
-        return f'login:{login_name}@{origin}'
+    def failed_sign_in(self, login_name: str, origin: str, counts_for_name: bool = True) -> None:
+        """counts_for_name=False: an attempt from an origin where the user cannot sign in, which
+        never got as far as the password."""
+        keys = [f'origin:{origin}']
+        if counts_for_name:
+            keys.append(f'login:{login_name}')
+        self.failed(keys)
 
-    def failed_sign_in(self, login_name: str, origin: str) -> None:
-        self.failed((self._login_key(login_name, origin), f'origin:{origin}'))
-
-    def succeeded(self, login_name: str, origin: str) -> None:
+    def succeeded(self, login_name: str) -> None:
         with self.lock:
-            self.failures.pop(self._login_key(login_name, origin), None)
+            self.failures.pop(f'login:{login_name}', None)

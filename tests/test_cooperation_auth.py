@@ -74,20 +74,28 @@ def test_wrong_passwords_say_nothing_and_slow_down(harness):
     assert len(failed) == 6 and all(row['actor_user_id'] is None for row in failed)
 
 
-def test_wrong_passwords_on_one_desktop_lock_nobody_out_elsewhere(harness):
+def test_nobody_guesses_or_locks_out_a_password_from_their_own_desktop(harness):
     owner = harness.owner()
     alice = harness.add(owner, 'alice')
+    bob = harness.add(owner, 'bob')
     harness.add_slot(alice['id'], 2)
-    harness.add(owner, 'bob')
-    # bob, at his own origin, tries alice's name over and over
-    elsewhere = harness.peer(display=3)
+    harness.add_slot(bob['id'], 3)
+    bobs_desktop = harness.peer(display=3)
+    # at bob's desktop alice's right password reads as a wrong one: it is never even checked
+    wrong = harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
+    right = harness.raw('login', peer=bobs_desktop, login_name='alice', password=PASSWORD)
+    assert right['error'] == wrong['error'] and right['error']['code'] == 'invalid_credentials'
     for _ in range(8):
-        harness.raw('login', peer=elsewhere, login_name='alice', password='a guess at it')
-    assert harness.code('login', peer=elsewhere, login_name='alice',
-                        password=PASSWORD) == 'rate_limited'
+        harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
+    # alice is not slowed down at her own desktop or the console
     assert harness.code('login', peer=harness.peer(display=2), login_name='alice',
                         password=PASSWORD) == 'ok'
-    assert harness.code('login', login_name='alice', password=PASSWORD) == 'ok'  # the console
+    assert harness.code('login', login_name='alice', password=PASSWORD) == 'ok'
+    # bob's desktop is, after 30 failures in all
+    for _ in range(25):
+        harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
+    assert harness.code('login', peer=bobs_desktop, login_name='bob',
+                        password=PASSWORD) == 'rate_limited'
 
 
 def test_a_password_needs_some_length(harness):
@@ -128,10 +136,11 @@ def test_a_desktop_is_signed_in_by_its_own_user_only(harness):
     alice = harness.add(owner, 'alice')
     harness.add(owner, 'bob')
     harness.add_slot(alice['id'], 2)
+    # refused with the words of a wrong password
     assert harness.code('login', peer=harness.peer(display=2), login_name='bob',
-                        password=PASSWORD) == 'wrong_desktop'
+                        password=PASSWORD) == 'invalid_credentials'
     assert harness.code('login', peer=harness.peer(display=7), login_name='alice',
-                        password=PASSWORD) == 'wrong_desktop'  # nobody's desktop
+                        password=PASSWORD) == 'invalid_credentials'  # nobody's desktop
     assert harness.code('login', peer=harness.peer(display=2), login_name='alice',
                         password=PASSWORD) == 'ok'
     assert harness.code('login', login_name='bob', password=PASSWORD) == 'ok'  # the console

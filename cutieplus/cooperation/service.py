@@ -174,11 +174,12 @@ class Service:
                        'revoked_at IS NULL AND id IS NOT ?', (self.now(), user_id, keep))
         return self.db.conn.changes()
 
-    def check_origin(self, user: dict, origin: Origin) -> None:
-        """A remote desktop is its user's: nobody else signs in there. The console takes anyone
-        active."""
-        if origin.is_desktop and (origin.slot is None or origin.slot['user_id'] != user['id']):
-            raise Refused(WRONG_DESKTOP, 'this desktop belongs to another user')
+    @staticmethod
+    def signs_in_here(user: Optional[dict], origin: Origin) -> bool:
+        """A remote desktop is its user's: nobody else signs in there. The console takes anyone."""
+        if user is None or not origin.is_desktop:
+            return True
+        return origin.slot is not None and origin.slot['user_id'] == user['id']
 
     def user_row(self, user_id: str) -> dict:
         row = self.db.query_one('SELECT * FROM users WHERE id = ?', (user_id, ))
@@ -210,40 +211,47 @@ def hello(service: Service, ctx: Context) -> dict:
             'origin': {'display': ctx.origin.display, 'assigned': ctx.origin.slot is not None}}
 
 
-def _sign_in_user(service: Service, login_name) -> Tuple[str, Optional[dict]]:
-    """(the normalized name, its user or None); a malformed name is nobody, as an unknown one."""
+def _sign_in_user(service: Service, ctx: Context, action: str, login_name,
+                  refusal: str) -> Tuple[str, Optional[dict]]:
+    """(the normalized name, its user or None); a malformed name is nobody, as an unknown one.
+    At a desktop that is not the user's, the attempt is refused here, before any password or
+    token is looked at, with the same words as a wrong one: it tells nothing, and counts against
+    the desktop only."""
     try:
         name = validate.login_name(login_name)
+        user = service.db.query_one('SELECT * FROM users WHERE login_name = ?', (name, ))
     except Refused:
-        return '?', None
-    return name, service.db.query_one('SELECT * FROM users WHERE login_name = ?', (name, ))
+        name, user = '?', None
+    service.limiter.check_origin(ctx.origin.key)
+    if not service.signs_in_here(user, ctx.origin):
+        _failed_sign_in(service, ctx, action, name, user, WRONG_DESKTOP)
+        raise Refused(INVALID_CREDENTIALS, refusal)
+    service.limiter.check(name, ctx.origin.key)
+    return name, user
 
 
 def _failed_sign_in(service: Service, ctx: Context, action: str, name: str,
                     user: Optional[dict], code: str = INVALID_CREDENTIALS) -> None:
-    service.limiter.failed_sign_in(name, ctx.origin.key)
+    service.limiter.failed_sign_in(name, ctx.origin.key, code != WRONG_DESKTOP)
     with service.db.transaction() as cursor:
         audit.record(cursor, service.now(), action, audit.FAILED, None, audit.SYSTEM, 'user',
                      user['id'] if user else None, ctx.request_id, error_code=code,
                      after={'login_name': name, 'origin': ctx.origin.key})
 
 
+WRONG_PASSWORD = 'wrong login name or password (first time? use your setup token)'
+WRONG_TOKEN = 'wrong login name or setup token, or the token expired: ask for a new one'
+
+
 @op(public=True)
 def login(service: Service, ctx: Context, login_name, password) -> dict:
-    name, user = _sign_in_user(service, login_name)
-    service.limiter.check(name, ctx.origin.key)
+    name, user = _sign_in_user(service, ctx, 'login', login_name, WRONG_PASSWORD)
     usable = user is not None and user['status'] == 'active' and \
         not user['credential_setup_required']
     if not service.passwords.verify(user['password_hash'] if usable else None, password):
         _failed_sign_in(service, ctx, 'login', name, user)
-        raise Refused(INVALID_CREDENTIALS, 'wrong login name or password (first time? use your '
-                      'setup token)')
-    try:
-        service.check_origin(user, ctx.origin)
-    except Refused as exc:
-        _failed_sign_in(service, ctx, 'login', name, user, exc.code)
-        raise
-    service.limiter.succeeded(name, ctx.origin.key)
+        raise Refused(INVALID_CREDENTIALS, WRONG_PASSWORD)
+    service.limiter.succeeded(name)
     with service.db.transaction() as cursor:
         issued = service.issue_session(cursor, user, ctx.origin)
         audit.record(cursor, service.now(), 'login', audit.SUCCEEDED, user['id'],
@@ -257,8 +265,7 @@ def setup_credential(service: Service, ctx: Context, login_name, setup_token,
                      new_password) -> dict:
     """The one-time setup (or reset) of a user's password with the token a supervisor or admin
     handed them. It sets that user's password only: never a role or anything else."""
-    name, user = _sign_in_user(service, login_name)
-    service.limiter.check(name, ctx.origin.key)
+    name, user = _sign_in_user(service, ctx, 'setup_credential', login_name, WRONG_TOKEN)
     digest = auth.token_hash(auth.normalize_setup_token(setup_token))
     now = service.now()
     valid = (user is not None and user['status'] in ('pending', 'active')
@@ -266,13 +273,7 @@ def setup_credential(service: Service, ctx: Context, login_name, setup_token,
              and user['setup_token_expires_at'] > now)
     if not valid:
         _failed_sign_in(service, ctx, 'setup_credential', name, user)
-        raise Refused(INVALID_CREDENTIALS, 'wrong login name or setup token, or the token '
-                      'expired: ask for a new one')
-    try:
-        service.check_origin(user, ctx.origin)
-    except Refused as exc:
-        _failed_sign_in(service, ctx, 'setup_credential', name, user, exc.code)
-        raise
+        raise Refused(INVALID_CREDENTIALS, WRONG_TOKEN)
     password_hash = service.passwords.hash(service.passwords.check_policy(new_password, name))
     with service.db.transaction() as cursor:
         # consumed atomically: a second use of the same token finds it gone
@@ -292,7 +293,7 @@ def setup_credential(service: Service, ctx: Context, login_name, setup_token,
                      target_type='user', target_id=user['id'], request_id=ctx.request_id,
                      before={'status': user['status']}, after={'status': after['status']})
         issued = service.issue_session(cursor, after, ctx.origin)
-    service.limiter.succeeded(name, ctx.origin.key)
+    service.limiter.succeeded(name)
     return dict(issued, user=public_user(service.user_row(user['id'])))
 
 
@@ -327,7 +328,7 @@ def reauthenticate(service: Service, ctx: Context, password) -> dict:
     if not service.passwords.verify(user['password_hash'], password):
         _failed_sign_in(service, ctx, 'reauthenticate', user['login_name'], user)
         raise Refused(INVALID_CREDENTIALS, 'wrong password')
-    service.limiter.succeeded(user['login_name'], ctx.origin.key)
+    service.limiter.succeeded(user['login_name'])
     with service.db.transaction() as cursor:
         cursor.execute('UPDATE app_sessions SET last_reauthenticated_at = ? WHERE id = ?',
                        (service.now(), ctx.session['id']))
