@@ -14,7 +14,7 @@ column_limit = 100
 name = "cutieplus"
 version = "0.1.0"
 authors = [{ name = "Zexuan Meng" }]
-description = "A multi-annotator video object segmentation annotation tool built upon Cutie."
+description = "A video object segmentation annotation tool built upon Cutie."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 classifiers = [

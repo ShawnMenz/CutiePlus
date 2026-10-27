@@ -3,7 +3,7 @@ from os import path
 
 # headless Qt for the GUI tests; set before PySide6 is imported anywhere
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-# the CPU tests run without CUDA, as a shared-mode GUI does; the GPU tests are a separate run:
+# the CPU tests run without CUDA; the GPU tests are a separate run:
 #   CUTIEPLUS_TEST_GPU=1 uv run pytest -m gpu
 if os.environ.get('CUTIEPLUS_TEST_GPU') != '1':
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
@@ -62,6 +62,16 @@ def compose_gui_config(workspace=None, device: str = 'cpu', **overrides) -> Dict
         for key, value in overrides.items():
             cfg[key] = value
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def runtime_folder(tmp_path_factory, monkeypatch):
+    # the task locks live in the user's runtime folder (gui/task_state.py: lock_path): the tests
+    # keep theirs in a temporary one
+    folder = tmp_path_factory.getbasetemp() / 'runtime'
+    folder.mkdir(exist_ok=True)
+    monkeypatch.setenv('XDG_RUNTIME_DIR', str(folder))
+    return folder
 
 
 @pytest.fixture(scope='session')

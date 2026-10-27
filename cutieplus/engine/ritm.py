@@ -5,7 +5,7 @@ Each interaction (one frame, one image modality, one target object, its ordered 
 own predictor state; the network is shared. Only the active interaction holds GPU tensors.
 Switching to another interaction keeps the previous one as a CPU snapshot, taken through RITM's
 own state API (the one its click undo uses), and reconstructs the next one from its snapshot or,
-when there is none (evicted, or a restarted worker), by replaying its accepted clicks in order.
+when there is none (evicted), by replaying its accepted clicks in order.
 
 The click path is the original one: ClickInteraction and ClickController (gui/interaction.py,
 gui/click_controller.py) run exactly as in the labeling window, so the masks are the same.
@@ -116,8 +116,7 @@ class RitmEngine:
     def open(self, interaction_id: str, image: np.ndarray, prev_prob: torch.Tensor,
              target_object: int, clicks: Optional[List[Click]] = None) -> None:
         """Registers an interaction on the CPU; the GPU is used from its first click. clicks:
-        accepted clicks of an interaction reopened elsewhere (a restarted worker); they are
-        replayed when it becomes active."""
+        accepted clicks to start from; they are replayed when it becomes active."""
         if interaction_id in self.interactions:
             raise InteractionError(f'interaction {interaction_id} is already open')
         if len(self.interactions) >= self.max_interactions:

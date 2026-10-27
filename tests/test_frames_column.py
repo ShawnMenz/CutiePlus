@@ -3,63 +3,48 @@ The task browser's Frames column: the sequence's frame count until it is marked 
 frames of each of its intervals (the dataset's clips) in order, joined by '/'. A click on its header
 does not sort; the other columns still do.
 """
-import json
-from os import path
-
 import pytest
 
-from gui.task_state import (INTERVAL_FILE, PROGRESS_FILE, TASK_FILE, discard_task,
-                            intervals_payload, summarize_task)
+from gui.task_state import discard_task, intervals_payload, work_folder, write_sections
 from tests.conftest import compose_gui_config
-from tests.helpers import make_task
+from tests.helpers import make_task, summary_of
 
 pytestmark = pytest.mark.slow
 
 SUBMITTED = {'last_edited': '2026-10-12T10:00:00+00:00', 'last_edited_by': 'alice',
              'edited_by': ['alice'], 'review_at': '2026-10-12T11:00:00+00:00', 'review_by': 'alice'}
 DONE = dict(SUBMITTED, done_at='2026-10-12T12:00:00+00:00', done_by='bob')
-CURATED = object()  # keep the curated interval make_task writes (the whole sequence)
 
-# sequence: (progress, saved intervals, curated interval, Frames text)
+# sequence: (progress, saved intervals, Frames text)
 EXPECTED = {
-    '0001': (DONE, [(1, 5), (8, 12), (20, 25)], CURATED, '5/5/6'),
-    '0002': (DONE, [(3, 12)], CURATED, '10'),
-    '0003': (DONE, None, [5, 24], '20'),  # the curated interval
-    '0004': (DONE, None, None, '30'),  # no interval: the whole sequence
-    '0005': (SUBMITTED, [(1, 5), (8, 12)], CURATED, '30'),  # not done yet
-    '0006': (DONE, [(1, 10), (15, 30)], CURATED, '30'),  # discarded: no done mark
-    '0007': (None, None, CURATED, '30'),  # not started
+    '0001': (DONE, [(1, 5), (8, 12), (20, 25)], '5/5/6'),
+    '0002': (DONE, [(3, 12)], '10'),
+    '0003': (DONE, [(5, 24)], '20'),
+    '0004': (DONE, None, '30'),  # no interval: the whole sequence
+    '0005': (SUBMITTED, [(1, 5), (8, 12)], '30'),  # not done yet
+    '0006': (DONE, [(1, 10), (15, 30)], '30'),  # discarded: no done mark
+    '0007': (None, None, '30'),  # not started
 }
-
-
-def write(file_path, payload):
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f)
 
 
 @pytest.fixture
 def root(tmp_path):
     base = str(tmp_path)
-    for sequence, (progress, intervals, curated, _) in EXPECTED.items():
+    for sequence, (progress, intervals, _) in EXPECTED.items():
         made = make_task(base, sequence=sequence, frame_count=30, height=24, width=32)
         if progress:
-            write(path.join(made.workspace, PROGRESS_FILE), progress)
+            write_sections(made.workspace, progress=progress)
         if intervals:
-            write(path.join(made.workspace, INTERVAL_FILE), intervals_payload(intervals))
-        if curated is not CURATED:
-            task_path = path.join(made.workspace, TASK_FILE)
-            with open(task_path, encoding='utf-8') as f:
-                task = json.load(f)
-            task['curated_interval'] = curated
-            write(task_path, task)
-    discard_task(path.join(base, 'tasks', 'main', '0006'), 'carol', True)
-    return path.join(base, 'tasks')
+            write_sections(made.workspace, intervals=intervals_payload(intervals))
+    root = str(tmp_path / 'tasks')
+    discard_task(work_folder(root, 'main', '0006'), 'carol', True)
+    return root
 
 
 def test_the_summary_lists_the_clips(root):
-    assert summarize_task(path.join(root, 'main', '0001'))['clips'] == [(1, 5), (8, 12), (20, 25)]
-    assert summarize_task(path.join(root, 'main', '0003'))['clips'] == [(5, 24)]
-    summary = summarize_task(path.join(root, 'main', '0004'))
+    assert summary_of(work_folder(root, 'main', '0001'))['clips'] == [(1, 5), (8, 12), (20, 25)]
+    assert summary_of(work_folder(root, 'main', '0003'))['clips'] == [(5, 24)]
+    summary = summary_of(work_folder(root, 'main', '0004'))
     assert summary['clips'] == [(1, 30)] and summary['intervals'] == 1 and summary['frames'] == 30
 
 
@@ -76,7 +61,7 @@ def test_frames_shows_the_interval_lengths_once_done_and_does_not_sort(root, qap
             return [table.item(row, number).text() for row in range(table.rowCount())]
 
         shown = dict(zip(column(SEQUENCE_COLUMN), column(FRAMES_COLUMN)))
-        assert shown == {sequence: expected[3] for sequence, expected in EXPECTED.items()}
+        assert shown == {sequence: expected[2] for sequence, expected in EXPECTED.items()}
         first = next(row for row in range(table.rowCount())
                      if table.item(row, SEQUENCE_COLUMN).text() == '0001')
         assert table.item(first, FRAMES_COLUMN).toolTip() == \

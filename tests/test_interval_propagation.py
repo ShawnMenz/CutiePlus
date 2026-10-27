@@ -1,14 +1,12 @@
 """
 F and B started inside an interval stay inside it (up to its last / first frame); started outside
-every interval they run as before. The coordinator side is in test_service.py.
+every interval they run as before.
 """
-import json
-from os import path
 
 import pytest
 
 from cutieplus.engine.policies import frames_after_start, propagation_bounds
-from gui.task_state import INTERVAL_FILE, intervals_payload
+from gui.task_state import intervals_payload, write_sections
 from tests.conftest import compose_gui_config
 from tests.helpers import make_task
 
@@ -37,8 +35,8 @@ def test_the_window_propagates_inside_the_interval_of_the_current_frame(tmp_path
                                                                           cpu_networks):
     from gui.main_controller import MainController
     task = make_task(str(tmp_path), frame_count=16, mask_anchors=(0, 8))
-    with open(path.join(task.workspace, INTERVAL_FILE), 'w', encoding='utf-8') as f:
-        json.dump(intervals_payload([(1, 5), (9, 13)]), f)  # ti 0-4 and 8-12
+    write_sections(task.workspace,
+                   intervals=intervals_payload([(1, 5), (9, 13)]))  # ti 0-4 and 8-12
     controller = MainController(compose_gui_config(task.workspace), networks=cpu_networks)
     gui = controller.gui
 

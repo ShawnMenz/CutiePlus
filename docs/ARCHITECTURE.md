@@ -1,25 +1,19 @@
-# CutiePlus architecture before the shared service (review, October 2026)
+# CutiePlus architecture (review, October 2026)
 
-This document records how the labeling tool worked when the shared GPU service was started
-(commit `039c919`). It is the reference for the refactoring described in
-[SHARED_SERVICE.md](SHARED_SERVICE.md); the [modifications](MODIFICATIONS.md) list what CutiePlus
-changed relative to the original Cutie.
+This document records how the labeling tool worked when it was reviewed in October 2026 (commit
+`039c919`). The inference has since moved, unchanged, into `cutieplus/engine/` (model loading, RITM
+interactions, step-based Cutie propagation, the task-mode policies), which the window reaches
+through `cutieplus/backends/local.py`; the masks are the same, which `tests/test_engine.py` and
+`tests/test_baseline_controller.py` check against the original code. The
+[modifications](MODIFICATIONS.md) list what CutiePlus changed relative to the original Cutie.
 
 ## Processes
 
-Every annotator connects through an SSH tunnel to their own TigerVNC desktop (`:2`, `:3`, ... on
-ports 5902, 5903, ...) under the one shared Linux account, and runs `interactive_demo.py --tasks
-<task root>` there. Each run is one PySide6 process with its own task browser
-(`gui/task_browser.py`). The browser loads Cutie and RITM on the first *Open* and keeps them for
-the life of the process, so N annotators hold N copies of both models on the one GPU (about
-450-660 MB each when idle, measured with `nvidia-smi` on the lab host).
-
-Annotators are identified from `DISPLAY`: screen `:N` is VNC port `5900 + N`, and
-`<task root>/annotators.json` names the annotator of each port (`gui/annotators.py`).
-Saving that list keeps the screens in step with it (`gui/vnc_screens.py`): each screen is
-`cutie-screen@N`, a service of the account's own systemd, enabled for every saved port and disabled
-for every removed one; names removed from the list are kept as inactive and drawn red in the browser.
-Only the session on the list's `admin_port` may change it.
+One person labels at the desktop. `interactive_demo.py --tasks <task root>` is one PySide6 process
+with a task browser (`gui/task_browser.py`). The browser loads Cutie and RITM on the first *Open*
+and keeps them for the life of the process (about 450-660 MB of GPU memory when idle, measured with
+`nvidia-smi` on the lab host), and opens one task at a time in the labeling window
+(`gui/main_controller.py`).
 
 ## Model initialization and CUDA
 
@@ -38,7 +32,7 @@ Only the session on the list's `admin_port` may change it.
 
 ## Mutable inference state
 
-None of the following can be shared between users or between propagation jobs.
+None of the following can be shared between windows or between propagation jobs.
 
 ### Cutie (`cutie/inference/inference_core.py`)
 
@@ -88,7 +82,7 @@ GPU memory of one interaction grows with its clicks: a full-resolution probabili
 ## Small targets
 
 At window open (`configure_task_resolution`), the median area of the mask anchors (else of up to
-25 prefill masks) at the default internal size (480 px) decides the processing size: below
+25 pregenerated masks) at the default internal size (480 px) decides the processing size: below
 1,500 px the sequence is processed at 960 px with upscaling. It is decided once per window.
 
 ## Video propagation (`MainController.on_propagate`)
@@ -113,33 +107,38 @@ during a run cannot redirect the saves.
 
 - `ResourceManager.get_image` and `get_mask`: LRU caches of `buffer_size` (20) entries; a mask
   entry is invalidated when its frame is saved or deleted. A missing mask falls back to the
-  prefill (binarized), then to nothing.
+  pregenerated mask of the input (binarized), then to nothing.
 - `ImageFeatureStore`: per-frame features, deleted after each step.
 
 ## Locking and identity
 
-- `TaskLock` (`gui/task_state.py`): an exclusive `flock` on `<task>/lock.json`, released on close
-  or by the kernel when the process dies; the file describes the holder (labeler, display, pid).
-- The browser takes the same lock while it exports a task that is not open in its window.
-- The labeler is `--labeler`, else the annotator of the screen's port, else `$CUTIE_LABELER`,
-  else the account name.
+- `TaskLock` (`gui/task_state.py`): an exclusive `flock` on the task's lock file, released on close
+  or by the kernel when the process dies; the file describes the holder (labeler, host, pid). It
+  lives outside the output, in `$XDG_RUNTIME_DIR/cutie-locks/` (`lock_path`).
+- The labeler is `--labeler`, else `$CUTIE_LABELER`, else the account name.
 
 ## Official annotation data and the functions that change it
 
+The input (`workspace/cutie_tasks/<subset>/`: frames, `targets.json`, `categories.json`,
+`annotation/` pregenerated masks; `gui/task_input.py`) is only read; the Import window
+(`gui/task_import.py`) moves whole subsets into it. Everything below lives in the sequence's work
+folder, `workspace/cutie_output/<subset>/<sequence>/`, made on first open. It holds `masks/` and
+`metadata.json` only; each record is a section of `metadata.json`.
+
 | Data | Written by |
 |---|---|
-| `masks/<frame>.png` (palette PNG) | `ResourceManager.save_mask` (background threads) from clicks, *Reset frame/object*, *Import mask*, *C* on a frame without a file, propagation; `delete_mask` (*Delete* anchor); `apply_frame_state` (undo/redo, written directly); `clear_sequence_masks` (*Reset all*) |
-| `anchors.json` | `TaskState.set_anchor` (`mark_anchor` after every human edit, `commit_anchor`), `remove_anchor`, `restore_anchor` (undo/redo), `clear_mask_references` |
-| `prefill.json` | `clear_mask_references` only (created by the pipeline) |
-| `progress.json` | `TaskState.touch` (every change), `submit_for_review` (*Save binary PNGs*), `mark_done` (browser) |
-| `interval.json`, `description.json` | `save_interval_pairs`, `on_interval_description_change`, `on_description_change`, `on_export_binary` |
-| `binary_masks/`, `interval.txt`, `description.txt` | `on_export_binary` |
-| export trees `cutie_masks_<modality>/<seq>` | the external export command (`task_set.json`), run by the window or the browser; removed by *Reset all* |
+| `masks/<frame>.png` (palette PNG) | `ResourceManager.save_mask` (background threads) from clicks, *Reset frame*, *Import mask*, *C* on a frame without a file, propagation; `delete_mask` (*Delete* anchor); `apply_frame_state` (undo/redo, written directly); `clear_sequence_masks` (*Reset all*) |
+| `anchors` | `TaskState.set_anchor` (`mark_anchor` after every human edit, `commit_anchor`), `remove_anchor`, `restore_anchor` (undo/redo), `clear_mask_references` |
+| `source` | `ensure_work_folder` (the browser's *Open* and *Discard*) |
+| `progress` | `TaskState.touch` (every change, in the same write as the anchors), `submit_for_review` (*Save*), `mark_done` (browser) |
+| `intervals`, `description`, `category` | `save_interval_pairs`, `on_interval_description_change`, `on_description_change`, `on_category_chosen`, `LocalTaskBackend.submit` (*Save*) |
+| `attention`, `discard` | `TaskState.save_attention` (*Need Attention*), `discard_task` (browser) |
 
-`visualization/` and `soft_masks/` are optional derived outputs, off by default.
-
-JSON files are written to a temporary file and renamed (`_write_json`), without `fsync`. Before
-this branch, mask PNGs were written in place.
+Every write (`write_sections`) reads `metadata.json` again and replaces only its own sections,
+under a lock of the process: the browser and its labeling window write the same file. It is
+written to a temporary file and renamed (`_write_json`), without `fsync`. Before this branch,
+mask PNGs were written in place. A plain workspace (not a task) also has the original Cutie's
+`visualization/`, `soft_masks/` and `binary_masks/`.
 
 ## Undo and redo
 
@@ -149,13 +148,19 @@ clicks (RITM's own state stack), then whole edits. Propagation is not undoable.
 
 ## Export and review
 
-Not started, in progress (any change), under review (*Save binary PNGs*), done (*Mark done* in
-the browser, which exports first when the export is missing or older than the last change). The
-export runs the command of `task_set.json` with `QProcess`; `export_is_current` compares the
-export's `exported_at` with `progress.json`'s `last_edited` (1 s resolution). The window's *Ctrl+Q*
-(`MainController.on_quit_done`) chains the steps: Save binary PNGs, its own export, then
-`TaskBackend.mark_done(quit_at)` once the export succeeds and the task is still under review, and
-closes the window.
+Not started, in progress (any change), under review (*Save*, `MainController.on_save` →
+`TaskBackend.submit`), done (*Mark done* in the browser). The window's *Ctrl+Q*
+(`MainController.on_quit_done`) chains the steps: Save, then `TaskBackend.mark_done(quit_at)`
+while the task is still under review, and closes the window.
+
+The browser's *Export* (`gui/dataset_export.py`) writes the dataset into `workspace/cutie_export/`,
+laid out as a subset of the input: `visual/`, `thermal/`, `annotation/` (L 0/255 masks) and
+`seqinfo/<clip>_seqinfo.ini`. Each interval of each done sequence is a clip, numbered from 1 in
+the browser's order and zero-padded to the digits of the count. `plan_export` lists the clips and
+the problems that stop it; `lock_clips` takes every exported task's `TaskLock`; `write_export`
+(in a thread, `ExportWorker`) builds `.cutie_export.partial/` and puts it in place of the previous
+export only once complete. The seqinfo's `originalSource` is `<tab>/<sequence>`, and
+`intervalStart` / `intervalEnd` are frames of that sequence.
 
 ## GUI-to-GPU dependencies
 
@@ -174,11 +179,11 @@ closes the window.
    branch: `task_done()` always runs, mask files are written to a temporary file and renamed,
    and failures are reported in the window (`ResourceManager.check_saves`). Covered by
    `tests/test_resource_manager.py`.
-2. CUDA is initialized by importing `gui/interactive_utils.py` (above).
-3. A mask anchor without a mask file (and without a prefill) makes every propagation fail in
+2. CUDA is initialized by importing `gui/interactive_utils.py` (above). Fixed since: the color
+   tables are made per device when first used.
+3. A mask anchor without a mask file (and without a pregenerated mask) makes every propagation fail in
    `rebuild_permanent_memory` (`torch.from_numpy(None)`), after the run button has already
    switched to *Pause*.
 4. `MEMORY_READ_BUDGET` encodes one GPU's capacity and ignores other processes.
-5. Every process loads its own models; nothing coordinates GPU memory between annotators.
-6. RITM empties the CUDA cache after every click, which also discards the cached blocks of any
+5. RITM empties the CUDA cache after every click, which also discards the cached blocks of any
    other work in the process.

@@ -1,10 +1,9 @@
 """
-The original mode: the labeling window's process holds Cutie and RITM and writes the task files
-itself (masks through the ResourceManager's save threads, anchors and progress through
-TaskState). The inference runs through the same engine as the shared service's GPU worker.
+The labeling window's backend: its process holds Cutie and RITM and writes the task files itself
+(masks through the ResourceManager's save threads, anchors and progress through TaskState). The
+inference runs through cutieplus/engine.
 """
 import os
-import shutil
 from os import path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -27,16 +26,15 @@ from cutieplus.engine.propagation import PropagationPlan, PropagationRuntime, me
 from cutieplus.engine.ritm import RitmEngine
 from gui.edit_history import FrameState
 from gui.exporter import convert_mask_to_binary
-from gui.resource_manager import ResourceManager, write_atomically
+from gui.resource_manager import ResourceManager, SaveError, write_atomically
 from gui.task_state import (TaskState, attention_of, discard_of, mark_done, submit_for_review,
-                            task_status, write_description_text, write_interval_text)
+                            task_status)
 
 # frames read ahead of a propagation run
 PREFETCH_FRAMES = 8
 
 
 class LocalTaskBackend:
-    kind = 'local'
 
     def __init__(self, cfg: DictConfig, networks, res_man: ResourceManager,
                  task: Optional[TaskState]):
@@ -252,12 +250,17 @@ class LocalTaskBackend:
 
     # task data
     def set_intervals(self, intervals: List[Interval],
-                      descriptions: Optional[Dict[Interval, str]] = None) -> None:
-        self.task.save_intervals(intervals, descriptions)
+                      descriptions: Optional[Dict[Interval, str]] = None,
+                      categories: Optional[Dict[Interval, str]] = None) -> None:
+        self.task.save_intervals(intervals, descriptions, categories)
         self.task.touch()
 
     def set_description(self, text: str) -> None:
         self.task.save_description(text)
+        self.task.touch()
+
+    def set_category(self, name: str) -> None:
+        self.task.save_category(name)
         self.task.touch()
 
     def set_attention(self, flagged: bool) -> None:
@@ -265,15 +268,9 @@ class LocalTaskBackend:
 
     def export_binary(self, target_objects: List[int],
                       progress: Callable[[float], None]) -> Optional[BinaryExport]:
-        """Binary PNGs of the masks in binary_masks/; a task also writes its intervals and
-        description there and goes under review. None when there are no masks."""
+        """A plain workspace's binary PNGs of the masks, in binary_masks/. None when there are no
+        masks."""
         self.res_man.save_queue.join()
-        intervals = None
-        if self.task is not None:
-            intervals, _ = self.task.intervals(self.res_man.T)
-            descriptions = self.task.interval_descriptions(self.res_man.T)
-            self.task.save_intervals(intervals,
-                                     self.task.added_interval_descriptions(self.res_man.T))
         mask_folder = self.res_man.mask_dir
         save_folder = path.join(self.res_man.workspace, 'binary_masks')
         if not path.exists(mask_folder):
@@ -281,35 +278,35 @@ class LocalTaskBackend:
         os.makedirs(save_folder, exist_ok=True)
         convert_mask_to_binary(mask_folder, save_folder, target_objects,
                                progress_callback=progress)
-        if self.task is not None:
-            write_interval_text(save_folder, intervals)
-            write_description_text(save_folder, [descriptions[interval] for interval in intervals])
-            submit_for_review(self.res_man.workspace, self.task.labeler)
-        return BinaryExport(save_folder, intervals)
+        return BinaryExport(save_folder)
 
-    def reset_all_masks(self, export_dirs: List[str]) -> Tuple[int, int]:
-        """(mask PNGs removed, export trees removed); raises OSError part way."""
+    def submit(self) -> List[Interval]:
+        """Save (Ctrl+S) of a task: its masks and metadata are written as it is labeled; this
+        waits for the last masks, keeps each added interval's description and category as they
+        stand (they no longer follow the sequence's), and submits the task for review. Returns
+        its intervals."""
+        self.res_man.save_queue.join()
+        try:
+            self.res_man.check_saves()
+        except SaveError as exc:
+            raise BackendError(f'a mask was not saved ({exc})') from exc
+        frame_count = self.res_man.T
+        intervals, _ = self.task.intervals(frame_count)
+        self.task.save_intervals(intervals, self.task.added_interval_descriptions(frame_count),
+                                 self.task.added_interval_categories(frame_count))
+        submit_for_review(self.res_man.workspace, self.task.labeler)
+        return intervals
+
+    def reset_all_masks(self) -> int:
+        """Mask PNGs removed; raises OSError part way."""
         removed = self.res_man.clear_sequence_masks()
-        removed_exports = 0
         if self.task is not None:
             self.task.clear_mask_references()
-            for directory in export_dirs:
-                if path.isdir(directory):
-                    shutil.rmtree(directory)
-                    removed_exports += 1
-        return removed, removed_exports
-
-    # the external export command (task_set.json) runs in the window; local mode records nothing
-    def begin_export(self) -> Optional[str]:
-        return None
-
-    def finish_export(self, export_id: Optional[str], ok: bool) -> dict:
-        return {'status': 'complete' if ok else 'failed', 'detail': None}
+        return removed
 
     def mark_done(self, quit_at: Optional[str] = None) -> None:
-        """Right after an export started once the task was submitted, as the task browser's
-        Mark done after its export: any change since the submission puts the task back in
-        progress, so a task still under review is exported as it is."""
+        """Right after Ctrl+Q has submitted the task: any change since the submission puts the
+        task back in progress, so a task still under review is marked done as it was saved."""
         workspace = self.res_man.workspace
         if discard_of(workspace):
             raise BackendError('the task is discarded: restore it first')

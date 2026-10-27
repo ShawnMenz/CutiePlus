@@ -1,6 +1,6 @@
 """
 The look of every window ("soft cards"): one green accent, rounded controls, and controls grouped
-into rounded cards. It stays flat (no shadows, gradients or animations), which keeps a VNC screen
+into rounded cards. It stays flat (no shadows, gradients or animations), which keeps drawing
 quick. The theme package (pyqtdarktheme, see gui/theme.py) draws the widgets in light or dark; this
 module gives it the accent and adds a style sheet on top, built for the light or the dark tones.
 The eye-care theme is the light one with every white and light-gray surface (the window, the cards,
@@ -8,10 +8,11 @@ the boxes, the buttons, every table row) in EYE_CARE_WHITE.
 
 Widgets opt in with dynamic properties, which the style sheet selects on:
   QPushButton  variant = primary (filled green), tonal (green tint), danger (red outline),
-               attention (orange outline, filled while checked), toggle (plain, filled green
-               while checked)
+               attention (orange outline, filled while checked), info (blue outline: the task
+               browser's Import, Export, Refresh), toggle (plain, filled green while checked)
   QFrame       card = true (see Card)
-  QLabel       pill = accent (green tint), key (a key name); cardTitle = true
+  QLabel       pill = accent (green tint), key (a key name), null (gray: no category), category
+               (see category_pill); cardTitle = true
 """
 from typing import Optional, Union
 
@@ -24,10 +25,12 @@ PRIMARY = '#00853E'  # the main color: filled buttons, the progress, the slider 
 SECONDARY = '#509E2F'  # hover, interval bands, and the accent of the dark theme
 PRESSED = '#006B32'
 WHITE = '#ffffff'
+DARK_TEXT = '#1f2328'  # text on a light category color
 EYE_CARE_WHITE = '#FAF9DE'  # the eye-care theme's surfaces: a soft cream, easier on the eyes
 EYE_CARE_HOVER = '#F0EFD5'  # the cream 4 % darker: a control under the pointer
 ATTENTION = '#ef6c00'  # Need Attention (the task browser's Attention status is red)
 DANGER = ('#d32f2f', '#ef5350')  # light, dark
+INFO = '#00A9E0'  # the task browser's Import, Export and Refresh
 
 RADIUS = 8  # px: buttons, boxes
 CARD_RADIUS = 12
@@ -107,6 +110,13 @@ QPushButton[variant="attention"] {{ background: transparent; color: {attention};
                                    border: 1px solid {attention}; font-weight: 600; }}
 QPushButton[variant="attention"]:hover {{ background: rgba(239, 108, 0, 0.10); }}
 QPushButton[variant="attention"]:checked {{ background: {attention}; color: {white}; }}
+QPushButton[variant="info"] {{ background: transparent; color: {info}; border: 1px solid {info};
+                              font-weight: 600; }}
+QPushButton[variant="info"]:hover {{ background: rgba(0, 169, 224, 0.10); }}
+QPushButton[variant="info"]:pressed {{ background: rgba(0, 169, 224, 0.20); }}
+QPushButton[variant="danger"]:disabled, QPushButton[variant="attention"]:disabled,
+QPushButton[variant="info"]:disabled {{
+    color: {muted}; border-color: {border}; background: transparent; }}
 QPushButton[variant="toggle"]:checked {{ background: {primary}; color: {white}; border-color: {primary}; }}
 
 QLineEdit, QAbstractSpinBox, QComboBox {{ background: {input}; color: {text};
@@ -129,6 +139,13 @@ QTextEdit#frameCounter {{ background: {window}; border: 1px solid {border}; bord
                          padding: 0 4px; }}
 QLabel[pill="accent"] {{ background: {tonal}; color: {tonal_text}; border-radius: 11px; padding: 2px 10px;
                         font-weight: 600; }}
+QFrame[intervalSet="true"] {{ background: transparent; border-radius: {radius}px; }}
+QFrame[intervalSet="true"]:hover {{ background: {alternate}; }}
+QFrame[intervalSet="true"][selected="true"] {{ background: {tonal}; }}
+QLabel[emptyNotice="true"] {{ color: {muted}; font-size: 12pt; background: transparent; }}
+QStackedWidget#taskPages {{ background: transparent; }}
+QLabel[pill="null"] {{ background: {border}; color: {muted}; border-radius: 11px; padding: 2px 10px;
+                      font-weight: 600; }}
 QLabel[pill="key"] {{ background: {card}; color: {text}; border: 1px solid {input_border};
                      border-radius: 12px; padding: 3px 12px; }}
 QLabel[pill="frame"] {{ background: {window}; border: 1px solid {border}; border-radius: 12px;
@@ -201,7 +218,7 @@ def style_sheet(dark: bool, eye_care: bool = False) -> str:
     return STYLE_SHEET.format(points=FONT_POINTS, radius=RADIUS, card_radius=CARD_RADIUS,
                               primary=PRIMARY, secondary=SECONDARY, pressed=PRESSED, white=white,
                               white_text_disabled=white_text_disabled, attention=ATTENTION,
-                              **colors)
+                              info=INFO, **colors)
 
 
 def app_font() -> QFont:
@@ -227,6 +244,28 @@ def set_variant(button: QWidget, variant: Optional[str]) -> QWidget:
 
 def set_pill(label: QLabel, kind: str) -> QLabel:
     label.setProperty('pill', kind)
+    restyle(label)
+    return label
+
+
+def contrast_text(color: str) -> str:
+    """The text color that reads best on a #RRGGBB background: near-black or white, whichever
+    contrasts more (WCAG relative luminance)."""
+    channels = [int(color.lstrip('#')[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055)**2.4 for c in channels]
+    luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    return DARK_TEXT if (luminance + 0.05) / 0.05 > 1.05 / (luminance + 0.05) else WHITE
+
+
+def category_pill(label: QLabel, color: Optional[str]) -> QLabel:
+    """A category's pill: filled with its color (#RRGGBB) with text that reads on it; gray
+    without one (no category, or one missing from categories.json)."""
+    if color is None:
+        label.setStyleSheet('')
+        return set_pill(label, 'null')
+    label.setProperty('pill', 'category')
+    label.setStyleSheet(f'QLabel {{ background: {color}; color: {contrast_text(color)}; '
+                        'border-radius: 11px; padding: 2px 10px; font-weight: 600; }')
     restyle(label)
     return label
 

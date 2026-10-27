@@ -1,13 +1,9 @@
 """
-What the labeling window asks of a backend. Two backends implement it:
+What the labeling window asks of its backend, LocalTaskBackend (cutieplus/backends/local.py): the
+window's process holds the models and writes the task files itself. The window draws; the backend
+runs the models and changes the task's official data.
 
-- LocalTaskBackend (cutieplus/backends/local.py): the original mode. The window's process holds
-  the models and writes the task files itself.
-- SharedTaskBackend (cutieplus/backends/shared.py): the shared service. The coordinator runs the
-  models in its GPU worker and is the only writer of the task's official data.
-
-The interface carries numpy arrays and plain values, never Qt objects; in shared mode it never
-carries CUDA tensors.
+The interface carries numpy arrays, tensors and plain values, never Qt objects.
 """
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
@@ -24,18 +20,12 @@ class BackendError(Exception):
     """An operation was refused or failed; the message is meant for the window's log."""
 
 
-class LeaseLost(BackendError):
-    """The task is no longer held by this window (expired session, another window took it);
-    nothing more can be changed until the task is opened again."""
-
-
 @dataclass
 class FrameUpdate:
     """A frame after a change of its official data."""
     ti: int
     mask: Optional[np.ndarray]  # the frame's mask file after the change; None: no file
     anchor: Optional[dict]  # the frame's anchor entry after the change; None: not an anchor
-    content_revision: Optional[int] = None  # shared mode: the task revision of the change
 
 
 @dataclass
@@ -51,18 +41,17 @@ class PropagatedFrame:
     ti: int
     kind: str  # 'seed' | 'anchor' | 'frame'
     mask: np.ndarray
-    prob: Optional[torch.Tensor] = None  # local mode only (soft display)
+    prob: Optional[torch.Tensor] = None  # the soft result, for the display
     image: Optional[np.ndarray] = None  # the anchor-modality frame, when the backend read it
 
 
 @dataclass
 class PropagationProgress:
-    state: str  # 'queued' | 'running' | 'finished' | 'cancelled' | 'failed'
+    state: str  # 'running' | 'finished' | 'cancelled' | 'failed'
     frames: List[PropagatedFrame] = field(default_factory=list)  # since the last call, in order
     messages: List[str] = field(default_factory=list)
     stop_reason: Optional[str] = None  # 'end' | 'empty_anchor' | 'cancelled' | an error
     stopped_at: Optional[int] = None  # the empty anchor that stopped the run
-    queue_position: Optional[int] = None  # shared mode, while queued
     masks_written: int = 0
 
     @property
@@ -72,8 +61,7 @@ class PropagationProgress:
 
 @dataclass
 class BinaryExport:
-    folder: str
-    intervals: Optional[List[Interval]]  # task mode
+    folder: str  # a plain workspace's binary_masks/
 
 
 @dataclass
@@ -82,12 +70,10 @@ class GpuGauges:
     used: Optional[float] = None
     total: Optional[float] = None
     torch_used: Optional[float] = None
-    label: Optional[str] = None  # e.g. the GPU's name in shared mode
 
 
 class TaskBackend(Protocol):
-    kind: str  # 'local' | 'shared'
-    device: str  # where the window's display tensors live ('cpu' in shared mode)
+    device: str  # where the models and the window's display tensors live
     resolution_message: Optional[str]
 
     # clicks (RITM); one interaction at a time per window
@@ -116,15 +102,17 @@ class TaskBackend(Protocol):
     # task data
     # descriptions: the texts of the added intervals (the first one's is the sequence's)
     def set_intervals(self, intervals: List[Interval],
-                      descriptions: Optional[Dict[Interval, str]] = None) -> None: ...
+                      descriptions: Optional[Dict[Interval, str]] = None,
+                      categories: Optional[Dict[Interval, str]] = None) -> None: ...
     def set_description(self, text: str) -> None: ...
+    def set_category(self, name: str) -> None: ...  # one of the subset's categories
     def set_attention(self, flagged: bool) -> None: ...  # task.attention follows
+    # a plain workspace's binary PNGs; a task's Save submits it for review instead
     def export_binary(self, target_objects: List[int],
                       progress: Callable[[float], None]) -> Optional[BinaryExport]: ...
-    def reset_all_masks(self, export_dirs: List[str]) -> Tuple[int, int]: ...
-    def begin_export(self) -> Optional[str]: ...
-    def finish_export(self, export_id: Optional[str], ok: bool) -> dict: ...
-    # accepts the task under review once it is exported; quit_at: when Ctrl+Q asked for it
+    def submit(self) -> List[Interval]: ...
+    def reset_all_masks(self) -> int: ...
+    # accepts the task under review; quit_at: when Ctrl+Q asked for it
     def mark_done(self, quit_at: Optional[str] = None) -> None: ...
 
     # memory settings and gauges

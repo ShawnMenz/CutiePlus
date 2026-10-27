@@ -2,11 +2,9 @@
 The color theme of the GUI: Auto follows the desktop's light/dark setting, Light and Dark are fixed,
 and Eye care is Light with its white and light-gray surfaces (the window, the cards, the boxes, the
 buttons, every table row) in cream (#FAF9DE). The task browser's theme button cycles them. The
-choice is kept per screen (DISPLAY) in the user's Qt settings, so every VNC screen of one account
-keeps its own, and is applied when the program starts.
+choice is kept in the user's Qt settings and applied when the program starts.
 """
 import importlib.util
-import os
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
@@ -21,7 +19,7 @@ def settings() -> QSettings:
 
 
 def settings_key() -> str:
-    return f'theme/{os.environ.get("DISPLAY") or "default"}'
+    return 'theme'
 
 
 def saved_theme() -> str:
@@ -53,7 +51,7 @@ def effective_theme(theme: str) -> str:
     try:
         import darkdetect
         detected = darkdetect.theme()
-    except Exception:  # no desktop setting to read (a VNC screen)
+    except Exception:  # no desktop setting to read
         detected = None
     return detected.lower() if detected else 'dark'
 
@@ -68,8 +66,7 @@ def apply_theme(theme: str) -> bool:
     try:
         import qdarktheme
         # Auto is resolved here: the theme package's own Auto watches the desktop with a
-        # gsettings process that outlives a window killed on restart, and a VNC screen's desktop
-        # never switches themes anyway
+        # gsettings process that outlives a window killed on restart
         resolved = effective_theme(theme)
         eye_care = theme == EYE_CARE
         qdarktheme.setup_theme(resolved, custom_colors=custom_colors(eye_care),
@@ -81,12 +78,11 @@ def apply_theme(theme: str) -> bool:
 
 
 def setting(name: str, default=None):
-    """A per-screen choice of the window (e.g. whether the Advanced card is open), kept as the
-    theme is."""
-    return settings().value(f'{name}/{os.environ.get("DISPLAY") or "default"}', default)
+    """A choice of the window (e.g. whether the Advanced card is open), kept as the theme is."""
+    return settings().value(name, default)
 
 
 def save_setting(name: str, value) -> None:
     stored = settings()
-    stored.setValue(f'{name}/{os.environ.get("DISPLAY") or "default"}', value)
+    stored.setValue(name, value)
     stored.sync()

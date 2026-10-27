@@ -25,7 +25,7 @@ def join_within(res_man: ResourceManager, seconds: float) -> bool:
     return not waiter.is_alive()
 
 
-def test_masks_fall_back_to_prefill(tmp_path):
+def test_masks_fall_back_to_the_pregenerated_ones(tmp_path):
     task = make_task(str(tmp_path), mask_anchors=(0, ), empty_anchors=(3, ), prefill=(2, ))
     res_man = manager(task)
     try:
@@ -33,9 +33,9 @@ def test_masks_fall_back_to_prefill(tmp_path):
         assert np.array_equal(res_man.get_mask(0), ellipse_mask(0, task.frame_count))
         assert np.array_equal(res_man.get_mask(2), ellipse_mask(2, task.frame_count))  # binary
         assert res_man.get_mask(1) is None
-        assert res_man.mask_source(0) == 'anchor: ls'
-        assert res_man.mask_source(2) == 'prefill: sam3'
-        assert res_man.mask_source(3) == 'empty anchor: ls'
+        assert res_man.mask_source(0) == 'anchor'
+        assert res_man.mask_source(2) == 'pregenerated'  # from the input's annotation/
+        assert res_man.mask_source(3) == 'empty anchor'
         assert res_man.mask_source(1) == 'no mask'
         # thermal frames are read from their own directory
         assert not np.array_equal(res_man.get_image(1, 'thermal'), res_man.get_image(1))

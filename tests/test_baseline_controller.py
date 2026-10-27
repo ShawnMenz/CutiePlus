@@ -1,7 +1,7 @@
 """
 The labeling window's behaviour in the original local mode, compared with the recording made from
 the original implementation (tests/make_baseline.py): masks after each step, anchors, review
-status and the binary export.
+status and the work folder (masks/ and metadata.json only).
 """
 import json
 from os import path
@@ -33,7 +33,7 @@ def test_local_session_matches_baseline(tmp_path, qapp, cpu_networks):
         recorded = json.load(f)
     assert result['anchors'] == recorded['anchors']
     assert result['progress_keys'] == recorded['progress_keys']
-    assert result['binary_masks'] == recorded['binary_masks']
+    assert result['work_folder'] == ['masks', 'metadata.json']
 
 
 def test_closed_window_releases_the_task(tmp_path, qapp, cpu_networks):

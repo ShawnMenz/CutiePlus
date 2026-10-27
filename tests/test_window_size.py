@@ -1,13 +1,12 @@
 """
-A labeling window fills the screen (the VNC desktop, which follows the viewer's window); other
-windows open at their preferred size when it fits.
+A labeling window fills the screen; other windows open at their preferred size when it fits.
 """
 import pytest
 
 from tests.conftest import compose_gui_config
 from tests.helpers import make_task
 
-SMALLEST_DESKTOP = (1379, 796)  # the smallest VNC viewer window seen on the lab machine
+SMALLEST_DESKTOP = (1379, 796)  # a small screen: the window must still fit it
 
 
 def test_fill_maximizes_and_keeps_the_preferred_size_for_later(qapp):

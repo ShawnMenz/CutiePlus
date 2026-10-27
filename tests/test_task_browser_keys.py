@@ -2,8 +2,6 @@
 The task browser's keys: D marks the selected sequence done (as the Mark done button), except
 while the filter box has the focus, where it is just a letter.
 """
-import time
-
 from gui.task_state import submit_for_review, task_status
 from tests.conftest import compose_gui_config
 from tests.helpers import make_task
@@ -24,19 +22,15 @@ def test_d_marks_the_selected_sequence_done_but_types_in_the_filter(tmp_path, qa
         # in the filter box, D is a letter
         browser.search.setFocus()
         QTest.keyClick(browser.search, Qt.Key.Key_D)
-        assert browser.search.text() == 'd' and not browser.exports
+        assert browser.search.text() == 'd'
         assert task_status(task.workspace) == 'under review'
         browser.search.clear()
 
-        # on the list: the selected sequence is exported (no export yet), then marked done
+        # on the list: the selected sequence is marked done
         table = browser.tables['main']
         table.selectRow(0)
         table.setFocus()
         QTest.keyClick(table, Qt.Key.Key_D)
-        deadline = time.monotonic() + 30
-        while browser.exports and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.02)
         assert task_status(task.workspace) == 'done', browser.console.toPlainText()
     finally:
         browser.close()

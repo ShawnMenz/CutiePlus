@@ -1,28 +1,22 @@
 {
   "anchors": {
     "000001": {
-      "kind": "mask",
-      "origin": "ls",
-      "ls_file": "label_0.json"
+      "kind": "mask"
     },
     "000005": {
       "kind": "mask",
-      "by": "tester",
-      "origin": "cutie"
+      "by": "tester"
     },
     "000010": {
       "kind": "mask",
-      "by": "tester",
-      "origin": "cutie"
+      "by": "tester"
     },
     "000012": {
       "kind": "empty",
-      "by": "tester",
-      "origin": "cutie"
+      "by": "tester"
     },
     "000014": {
-      "kind": "empty",
-      "origin": "ls"
+      "kind": "empty"
     }
   },
   "progress_keys": [
@@ -31,22 +25,5 @@
     "last_edited_by",
     "review_at",
     "review_by"
-  ],
-  "binary_masks": [
-    "000001.png",
-    "000002.png",
-    "000003.png",
-    "000004.png",
-    "000005.png",
-    "000006.png",
-    "000007.png",
-    "000008.png",
-    "000009.png",
-    "000010.png",
-    "000011.png",
-    "000012.png",
-    "000013.png",
-    "description.txt",
-    "interval.txt"
   ]
 }

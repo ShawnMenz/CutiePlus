@@ -1,1 +1,1 @@
-"""Backends of the labeling window: local (the original mode) and shared (the service)."""
+"""The labeling window's backend (local.py) and the interface the window uses (base.py)."""

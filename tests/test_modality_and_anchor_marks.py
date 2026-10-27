@@ -1,7 +1,7 @@
 """
 The labeling window propagates on the modality it shows (T switches it), and the frame slider
 marks the anchors with small hollow rings: black (white in a dark theme) per mask anchor, magenta
-per empty anchor. The shared service's side of the modality is in test_service.py.
+per empty anchor.
 """
 import pytest
 

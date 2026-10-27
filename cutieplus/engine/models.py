@@ -1,7 +1,6 @@
 """
 Loading the two models: Cutie (propagation) and RITM (clicks). The weights are only read; the
-same loader serves the local mode (once per labeling process) and the GPU worker (once for
-everyone).
+labeling process loads them once and reuses them for every task it opens.
 """
 import hashlib
 import json

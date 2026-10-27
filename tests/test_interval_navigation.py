@@ -2,12 +2,10 @@
 { / } move to the previous / next interval start of a task, around the ends; Shift+R then plays
 the interval moved to.
 """
-import json
-from os import path
 
 import pytest
 
-from gui.task_state import INTERVAL_FILE, interval_index_from, intervals_payload
+from gui.task_state import interval_index_from, intervals_payload, write_sections
 from tests.conftest import compose_gui_config
 from tests.helpers import make_task
 
@@ -33,8 +31,7 @@ def test_the_keys_move_the_window_between_interval_starts(tmp_path, qapp, cpu_ne
     from PySide6.QtGui import QKeySequence, QShortcut
     from gui.main_controller import MainController
     task = make_task(str(tmp_path), frame_count=30)
-    with open(path.join(task.workspace, INTERVAL_FILE), 'w', encoding='utf-8') as f:
-        json.dump(intervals_payload(INTERVALS), f)
+    write_sections(task.workspace, intervals=intervals_payload(INTERVALS))
     controller = MainController(compose_gui_config(task.workspace), networks=cpu_networks)
     gui = controller.gui
     slider = gui.tl_slider

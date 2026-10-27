@@ -55,7 +55,7 @@ def test_clicks_match_the_original(networks, device, sequence):
 @pytest.mark.models
 @pytest.mark.parametrize('budget', [2 << 30, 0], ids=['snapshot', 'replay'])
 def test_interleaved_interactions_keep_their_state(networks, device, sequence, budget):
-    """Two annotators click in turn: each interaction is rebuilt (from its CPU snapshot, or by
+    """Two interactions take clicks in turn: each one is rebuilt (from its CPU snapshot, or by
     replaying its clicks when there is no snapshot) and gives what it gives alone."""
     visual, thermal, masks, _ = sequence
     _, click_ctrl = networks

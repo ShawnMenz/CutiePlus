@@ -3,11 +3,11 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPalette, QPen, QRegion, QValidator
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit, QPushButton,
-                               QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit,
+                               QPushButton, QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
                                QStyleOptionSlider, QToolButton, QWidget)
 
-from gui.style import restyle
+from gui.style import PRIMARY, SECONDARY, category_pill, restyle
 
 # room for the title bar and borders that the window manager adds around a window
 WINDOW_FRAME = QSize(16, 48)
@@ -24,14 +24,14 @@ STATUS_COLORS = {
     'anchor': ('#7b1fa2', '#c38bff'),
     'empty anchor': ('#c2185b', '#ff7eb3'),
     'propagated': ('#00796b', '#4dd0c4'),
-    'prefill': ('#8d7b00', '#e3cf4a'),
+    'pregenerated': ('#8d7b00', '#e3cf4a'),
     'no mask': ('#757575', '#b0b0b0'),
 }
 STATUS_MEANING = {
     'anchor': 'a human decision, never overwritten',
     'empty anchor': 'target absent: propagation stops here',
     'propagated': 'written by Cutie',
-    'prefill': 'model mask, not reviewed yet',
+    'pregenerated': 'model mask, not reviewed yet',
     'no mask': 'nothing yet',
 }
 
@@ -46,7 +46,7 @@ def status_kind(source: str) -> str:
 
 def frame_label_html(file_name: str, modality: Optional[str], source: Optional[str],
                      dark: bool) -> str:
-    """'000001.jpg (RGB) [anchor: ls]' with the modality and the status colored: visual is shown
+    """'000001.jpg (RGB) [anchor]' with the modality and the status colored: visual is shown
     as RGB in red, green and blue, thermal in orange-red. A plain workspace has no modality or
     source: just the file name."""
     text = html.escape(file_name)
@@ -93,14 +93,14 @@ class LogView(QPlainTextEdit):
 class FrameSlider(QSlider):
     """The frame slider. Frames are stepped with A / D, so the arrow keys are left alone (a slider
     would otherwise step on them); Home / End and PageUp / PageDown still move it. In task mode it
-    shows the task's intervals as bands along the groove, the one being previewed stronger, and
-    its anchors as small hollow rings on the groove: black (white in a dark theme) for a mask anchor,
-    magenta for an empty one."""
+    shows the task's intervals as bands along the groove, the selected one (the set the window
+    shows) in bold green, and its anchors as small hollow rings on the groove: black (white in a
+    dark theme) for a mask anchor, magenta for an empty one."""
 
-    # the secondary green (gui/style.py), as rounded segments on the groove
-    BAND_COLOR = (80, 158, 47)
-    BAND_ALPHA, ACTIVE_ALPHA = 110, 210
-    BAND_HEIGHT = 10  # px
+    # rounded segments on the groove: the selected interval in the primary green and a little
+    # taller, the others in the secondary green (gui/style.py)
+    BAND_COLOR, SELECTED_BAND_COLOR = SECONDARY, PRIMARY
+    BAND_HEIGHT, SELECTED_BAND_HEIGHT = 10, 12  # px
     BAND_GAP = 2  # px between two intervals that touch, so they read as two clips
     ANCHOR_DIAMETER = 10  # px: a ring smaller than the handle
     ANCHOR_PEN = 2  # px: its outline
@@ -109,7 +109,7 @@ class FrameSlider(QSlider):
     def __init__(self, orientation) -> None:
         super().__init__(orientation)
         self.intervals: List[Tuple[int, int]] = []  # 1-indexed (start, end)
-        self.active_interval: Optional[Tuple[int, int]] = None
+        self.selected_interval: Optional[Tuple[int, int]] = None
         self.mask_anchors: Tuple[int, ...] = ()  # 0-indexed frames
         self.empty_anchors: Tuple[int, ...] = ()
 
@@ -123,9 +123,10 @@ class FrameSlider(QSlider):
         self.intervals = [tuple(interval) for interval in intervals]
         self.update()
 
-    def set_active_interval(self, interval: Optional[Tuple[int, int]]) -> None:
-        self.active_interval = interval
-        self.update()
+    def set_selected_interval(self, interval: Optional[Tuple[int, int]]) -> None:
+        if interval != self.selected_interval:
+            self.selected_interval = interval
+            self.update()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
@@ -171,17 +172,17 @@ class FrameSlider(QSlider):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         groove = self.groove_rect()
-        top = groove.center().y() - self.BAND_HEIGHT / 2 + 0.5
-        radius = self.BAND_HEIGHT / 2
         for start, end in self.intervals:
+            selected = (start, end) == self.selected_interval
+            height = self.SELECTED_BAND_HEIGHT if selected else self.BAND_HEIGHT
+            top = groove.center().y() - height / 2 + 0.5
+            radius = height / 2
             left = max(centre(start) - step / 2, groove.left()) + self.BAND_GAP / 2
             right = min(centre(end) + step / 2, groove.right()) - self.BAND_GAP / 2
-            color = QColor(*self.BAND_COLOR)
-            color.setAlpha(self.ACTIVE_ALPHA if (start, end) == self.active_interval else self.BAND_ALPHA)
-            painter.setBrush(color)
+            painter.setBrush(QColor(self.SELECTED_BAND_COLOR if selected else self.BAND_COLOR))
             width = max(right - left, 2)
-            painter.drawRoundedRect(QRectF(left, top, width, self.BAND_HEIGHT),
-                                    min(radius, width / 2), radius)
+            painter.drawRoundedRect(QRectF(left, top, width, height), min(radius, width / 2),
+                                    radius)
         painter.end()
 
     def groove_rect(self):
@@ -244,8 +245,7 @@ class TextBox(QLineEdit):
     text (Ctrl+C / X / V, Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, Ctrl+A, Home / End, Ctrl + arrows, Shift
     to select), and no window shortcut acts on the frames, anchors, zoom or masks, except Ctrl+S
     (save, which saves the text too), Ctrl+Q (quit and mark done, which saves it too) and F1
-    (tips). From a Mac, the Command key (Meta here, when
-    the VNC viewer passes it on) and Option (Alt) work as in a Mac text field."""
+    (tips). The Mac keys work too: Command (Meta) and Option (Alt) as in a Mac text field."""
 
     # the window shortcuts that still work while typing
     WINDOW_KEYS = (QKeySequence('Ctrl+S'), QKeySequence('Ctrl+Q'), QKeySequence(Qt.Key.Key_F1))
@@ -266,7 +266,7 @@ class TextBox(QLineEdit):
             'Meta+Shift+Left': lambda: self.home(True),
             'Meta+Shift+Right': lambda: self.end(True),
             'Meta+Backspace': self.delete_to_start,
-            # (Option + Shift + arrows never arrive: the VNC desktop's openbox takes them)
+            # (Option + Shift + arrows are not bound)
             'Alt+Left': lambda: self.cursorWordBackward(False),
             'Alt+Right': lambda: self.cursorWordForward(False),
             'Alt+Backspace': self.delete_word_back,
@@ -358,17 +358,19 @@ REMOVE_INTERVAL_TEXT = REMOVE_INTERVAL_LABEL.replace('- ', '-\u2060\u00a0', 1)
 class IntervalPair(QWidget):
     """One kept interval of a task: [start] - [end], each interval a clip of its own. Every pair
     but the first has a button that removes it (or cancels it, when it was never complete); an
-    added pair starts blank. An added pair also has its own description box; the first interval's
-    is the sequence's. The window places an added pair's description_edit and remove_button, so
-    the rows line up."""
+    added pair starts blank. An added pair also has its own description box and category; the
+    first interval's are the sequence's. The window shows one set (category, description,
+    interval) at a time and places an added pair's description_edit and remove_button."""
 
     removed = Signal(object)
     invalid = False  # overlaps another pair, so it is not saved
 
     def __init__(self, frame_count: int, start: Optional[int] = None, end: Optional[int] = None,
-                 removable: bool = False, description: Optional[str] = None) -> None:
+                 removable: bool = False, description: Optional[str] = None,
+                 category: Optional[str] = None) -> None:
         super().__init__()
         self.removable = removable
+        self.category = category  # an added interval's; None for the first (the sequence's)
         self.description_edit: Optional[QLineEdit] = None
         # the text an emptied description box gets back: the last one kept
         self.kept_description = description or ''
@@ -419,6 +421,11 @@ class IntervalPair(QWidget):
         self.description_edit.setToolTip(f'{text}\n\nThis interval\'s description: Enter or click '
                                          'elsewhere to save; a change needs a new review.')
 
+    def frames_text(self) -> str:
+        # the interval as typed, … for a blank box: '95-140', '150-…'
+        start, end = (('…' if box.is_blank() else str(box.value())) for box in self.boxes())
+        return f'{start}-{end}'
+
     def entry(self) -> Optional[Tuple[int, int]]:
         # (start, end), or None while a box is blank (an added interval not filled in yet)
         if self.start_box.is_blank() or self.end_box.is_blank():
@@ -453,6 +460,79 @@ class IntervalPair(QWidget):
                 box.setProperty('invalid', invalid)
                 restyle(box)
         self.invalid = invalid
+
+
+class ElidedLabel(QLabel):
+    """A one-line label that cuts its text with '…' to the width it is given; the whole text is
+    its tooltip."""
+
+    def __init__(self, text: str = '') -> None:
+        super().__init__()
+        self.full_text = ''
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(40)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self.full_text = text
+        self.setToolTip(text)
+        self.elide()
+
+    def elide(self) -> None:
+        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.TextElideMode.ElideRight,
+                                                   max(self.width(), 40)))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.elide()
+
+
+class IntervalSetRow(QFrame):
+    """A row of the labeling window's set list: the set's number, its category pill, its
+    description (cut to fit) and its frames; tinted when it is the selected set. A click selects
+    it."""
+
+    clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setProperty('intervalSet', True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.number = QLabel()
+        self.number.setProperty('intervalCount', True)  # muted
+        self.number.setFixedWidth(22)
+        self.number.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.category = QLabel()
+        self.description = ElidedLabel()
+        self.frames = QLabel()  # 'Interval: 95-140', the word in bold
+        self.frames.setTextFormat(Qt.TextFormat.RichText)
+        self.frames.setMinimumWidth(
+            self.frames.fontMetrics().horizontalAdvance('Interval: 00000-00000') + 8)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(10)
+        layout.addWidget(self.number)
+        layout.addWidget(self.category)
+        layout.addWidget(self.description, 1)
+        layout.addWidget(self.frames)
+
+    def show_set(self, number: int, category: str, color: Optional[str], description: str,
+                 frames: str, selected: bool) -> None:
+        self.number.setText(str(number))
+        self.category.setText(category)
+        category_pill(self.category, color)
+        self.description.set_full_text(description)
+        self.frames.setText(f'<b>Interval:</b> {html.escape(frames)}')
+        if self.property('selected') != selected:
+            self.setProperty('selected', selected)
+            restyle(self)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 def create_parameter_box(min_val: float, max_val: float, text: str, step: float=1, callback=None):
@@ -509,10 +589,9 @@ def layout_widget(layout: QLayout) -> QWidget:
 
 def fit_window(window: QWidget, preferred: QSize, fill: bool = False) -> None:
     """Shows a top-level window at its preferred size, centred on the screen, or maximized when
-    that does not fit. A window that stops fitting later, e.g. when a VNC viewer shrinks the
-    remote desktop to its own window, is maximized then. fill: maximized from the start (the VNC
-    desktop follows the viewer's window, so the window fills that); un-maximized from its title
-    bar, it has the preferred size, centred."""
+    that does not fit. A window that stops fitting later, e.g. when the screen's resolution
+    changes, is maximized then. fill: maximized from the start; un-maximized from its title bar,
+    it has the preferred size, centred."""
     screen = window.screen()
     available = screen.availableGeometry()
     outer = preferred + WINDOW_FRAME

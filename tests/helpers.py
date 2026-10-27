@@ -1,12 +1,12 @@
 """
-Synthetic RGB-T tasks for the tests: the same files RGBT_MOT's tools/cutie_tasks.py writes
-(task_set.json, task.json, anchors.json, prefill.json, masks/), with small frames of a textured
+Synthetic RGB-T tasks for the tests: an input subset (gui/task_input.py: visual/ and thermal/
+frames, categories.json, targets.json, annotation/ pregenerated masks) and the sequence's work
+folder (gui/task_state.py: masks/ and metadata.json), with small frames of a textured
 ellipse moving across a textured background. Everything lives under a temporary directory; the
 real workspace is never touched.
 """
 import json
 import os
-import sys
 from dataclasses import dataclass, field
 from os import path
 from typing import Dict, List, Optional, Tuple
@@ -66,10 +66,10 @@ def frame_name(index: int) -> str:
 
 @dataclass
 class SyntheticTask:
-    root: str  # task root (task_set.json)
-    split: str
+    root: str  # the input root: <root>/<split>/{visual,thermal}/<sequence>
+    split: str  # the subset (tab)
     sequence: str
-    workspace: str  # <root>/<split>/<sequence>
+    workspace: str  # the work folder: <base>/cutie_output/<split>/<sequence>
     frame_dirs: Dict[str, str]
     frame_count: int
     names: List[str] = field(default_factory=list)
@@ -83,26 +83,21 @@ class SyntheticTask:
         return read_mask(file_path) if path.exists(file_path) else None
 
     def anchors(self) -> dict:
-        with open(path.join(self.workspace, 'anchors.json'), encoding='utf-8') as f:
-            return json.load(f)
+        from gui.task_state import ANCHORS, read_metadata
+        return read_metadata(self.workspace)[ANCHORS]
 
     def progress(self) -> dict:
-        progress_path = path.join(self.workspace, 'progress.json')
-        if not path.exists(progress_path):
-            return {}
-        with open(progress_path, encoding='utf-8') as f:
-            return json.load(f)
+        from gui.task_state import PROGRESS, read_section
+        return read_section(self.workspace, PROGRESS, {})
 
 
-FAKE_EXPORT = '''
-import json, os, sys
-from datetime import datetime, timezone
-tree = sys.argv[1]
-os.makedirs(os.path.join(tree, "masks"), exist_ok=True)
-with open(os.path.join(tree, "metadata.json"), "w") as f:
-    json.dump({"exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, f)
-print("exported", tree)
-'''
+CATEGORY, CATEGORY_COLOR = 'car', '#00CF00'
+DESCRIPTION = 'The red car moving right.'
+
+
+def write_json(file_path: str, payload) -> None:
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
 
 
 def make_task(base: str,
@@ -112,89 +107,65 @@ def make_task(base: str,
               mask_anchors: Tuple[int, ...] = (0, ),
               empty_anchors: Tuple[int, ...] = (),
               prefill: Tuple[int, ...] = (),
-              anchor_modality: str = 'visual',
               height: int = HEIGHT,
               width: int = WIDTH,
-              seed: int = 0) -> SyntheticTask:
-    """A task root under base with one task; frames under base/frames. Mask anchors get the true
-    target mask (origin 'ls', like Label Studio imports)."""
+              seed: int = 0,
+              target: Optional[dict] = None,
+              in_targets: bool = True) -> SyntheticTask:
+    """One sequence in subset split of the input root base/tasks, and its work folder under
+    base/cutie_output. Mask anchors get the true target mask; prefill frames get it as a pregenerated mask (annotation/). target: the sequence's
+    entry in targets.json (default the red car); in_targets=False leaves it out of the file."""
+    from gui.task_input import read_sequence
+    from gui.task_state import ensure_work_folder, write_sections
     root = path.join(base, 'tasks')
-    workspace = path.join(root, split, sequence)
-    frame_root = path.join(base, 'frames')
-    os.makedirs(workspace, exist_ok=True)
+    tab = path.join(root, split)
+    os.makedirs(tab, exist_ok=True)
     visual, thermal = render_frames(frame_count, seed, height, width)
     frame_dirs = {}
-    files = {}
     for modality, frames in (('visual', visual), ('thermal', thermal)):
-        directory = path.join(frame_root, modality, sequence)
+        directory = path.join(tab, modality, sequence)
         os.makedirs(directory, exist_ok=True)
-        files[modality] = []
         for index, frame in enumerate(frames):
-            file_name = frame_name(index) + '.jpg'
-            Image.fromarray(frame).save(path.join(directory, file_name), quality=95)
-            files[modality].append(file_name)
+            Image.fromarray(frame).save(path.join(directory, frame_name(index) + '.jpg'),
+                                        quality=95)
         frame_dirs[modality] = directory
     names = [frame_name(i) for i in range(frame_count)]
+    write_json(path.join(tab, 'categories.json'), [{'name': CATEGORY, 'color': CATEGORY_COLOR}])
+    targets_path = path.join(tab, 'targets.json')
+    targets = {}
+    if path.exists(targets_path):
+        with open(targets_path, encoding='utf-8') as f:
+            targets = json.load(f)
+    if in_targets:
+        targets[sequence] = target or {'category': CATEGORY, 'description': DESCRIPTION}
+    write_json(targets_path, targets)
+    if prefill:
+        annotation = path.join(tab, 'annotation', sequence)
+        os.makedirs(annotation, exist_ok=True)
+        for index in prefill:
+            Image.fromarray(ellipse_mask(index, frame_count, height, width) * 255).save(
+                path.join(annotation, names[index] + '.png'))
 
-    export_script = path.join(base, 'fake_export.py')
-    with open(export_script, 'w', encoding='utf-8') as f:
-        f.write(FAKE_EXPORT)
-    csv_path = path.join(base, 'curated.csv')
-    with open(csv_path, 'w', encoding='utf-8') as f:
-        f.write('split,name\n' + ''.join(f'{split},seq\n' for _ in range(int(sequence))))
-    task_set = {
-        'format': 1,
-        'splits': [split],
-        'curated_csv': csv_path,
-        'export_tree': path.join(base, 'exports', 'cutie_masks_{modality}', '{sequence}'),
-        'export_command': [sys.executable, export_script,
-                           path.join(base, 'exports', 'cutie_masks_' + anchor_modality, '{sequence}')],
-    }
-    with open(path.join(root, 'task_set.json'), 'w', encoding='utf-8') as f:
-        json.dump(task_set, f, indent=2)
-
-    task = {
-        'format': 1,
-        'sequence_id': sequence,
-        'split': split,
-        'anchor_modality': anchor_modality,
-        'frame_dirs': frame_dirs,
-        'frame_count': frame_count,
-        'frame_files': files,
-        'width': width,
-        'height': height,
-        'category': 'car',
-        'description': 'The red car moving right.',
-        'curated_interval': [1, frame_count],
-    }
-    with open(path.join(workspace, 'task.json'), 'w', encoding='utf-8') as f:
-        json.dump(task, f, indent=2)
-
+    workspace = ensure_work_folder(root, read_sequence(root, split, sequence))
     os.makedirs(path.join(workspace, 'masks'), exist_ok=True)
     anchors = {}
     for index in mask_anchors:
         save_palette_mask(path.join(workspace, 'masks', names[index] + '.png'),
                           ellipse_mask(index, frame_count, height, width))
-        anchors[names[index]] = {'kind': 'mask', 'origin': 'ls', 'ls_file': f'label_{index}.json'}
+        anchors[names[index]] = {'kind': 'mask'}
     for index in empty_anchors:
-        anchors[names[index]] = {'kind': 'empty', 'origin': 'ls'}
-    with open(path.join(workspace, 'anchors.json'), 'w', encoding='utf-8') as f:
-        json.dump(dict(sorted(anchors.items())), f, indent=2)
-
-    prefill_map = {}
-    if prefill:
-        prefill_dir = path.join(base, 'prefill', sequence)
-        os.makedirs(prefill_dir, exist_ok=True)
-        for index in prefill:
-            file_path = path.join(prefill_dir, names[index] + '.png')
-            Image.fromarray(ellipse_mask(index, frame_count, height, width) * 255).save(file_path)
-            prefill_map[names[index]] = {'source': 'sam3', 'path': file_path}
-    with open(path.join(workspace, 'prefill.json'), 'w', encoding='utf-8') as f:
-        json.dump(prefill_map, f, indent=2)
+        anchors[names[index]] = {'kind': 'empty'}
+    write_sections(workspace, anchors=dict(sorted(anchors.items())))
     return SyntheticTask(root, split, sequence, workspace, frame_dirs, frame_count, names)
 
 
+def summary_of(workspace: str) -> dict:
+    """The task browser's row of a work folder."""
+    from gui.task_state import source_of, summarize_task
+    return summarize_task(source_of(workspace), workspace)
+
+
 def strip_times(anchors: dict) -> dict:
-    """anchors.json without its timestamps, for comparisons."""
+    """The anchors without their timestamps, for comparisons."""
     return {name: {k: v for k, v in entry.items() if k != 'updated_at'}
             for name, entry in anchors.items()}

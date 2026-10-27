@@ -1,6 +1,6 @@
 # Modified from https://github.com/seoungwugoh/ivs-demo
 
-from typing import Literal, List
+from typing import Literal, List, Optional, Tuple
 import numpy as np
 
 import torch
@@ -32,8 +32,8 @@ Some constants fro visualization
 color_map_np = np.frombuffer(davis_palette, dtype=np.uint8).reshape(-1, 3).copy()
 # scales for better visualization
 color_map_np = (color_map_np.astype(np.float32) * 1.5).clip(0, 255).astype(np.uint8)
-# display only (saved masks keep the DAVIS palette): the first object in cyan, apart from the
-# green/red click dots
+# display only (saved masks keep the DAVIS palette): the first object, the target, in its
+# category's color (set_target_color), cyan without one
 TARGET_MASK_COLOR = (0, 255, 255)
 color_map_np[1] = TARGET_MASK_COLOR
 color_map = color_map_np.tolist()
@@ -44,6 +44,16 @@ _COLOR_MAP_CPU = torch.from_numpy(color_map_np) / 255
 grayscale_weights = np.array([[0.3, 0.59, 0.11]]).astype(np.float32)
 _GRAYSCALE_WEIGHTS_CPU = torch.from_numpy(grayscale_weights).unsqueeze(0)
 _device_tables = {}
+
+
+def set_target_color(color: Optional[Tuple[int, int, int]]) -> None:
+    """The color the target (object 1) is drawn in: its category's, else TARGET_MASK_COLOR.
+    One labeling window is open at a time, so the table is the window's."""
+    global _COLOR_MAP_CPU
+    color_map_np[1] = color or TARGET_MASK_COLOR
+    color_map[1] = [int(value) for value in color_map_np[1]]
+    _COLOR_MAP_CPU = torch.from_numpy(color_map_np) / 255
+    _device_tables.clear()  # copied again to the image's device on next use
 
 
 def _tables_on(device: torch.device) -> tuple:

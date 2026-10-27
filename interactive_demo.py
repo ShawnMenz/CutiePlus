@@ -26,71 +26,26 @@ def get_arguments():
     parser.add_argument('--workspace',
                         help='directory for storing buffered images (if needed) and output masks',
                         default=None)
-    parser.add_argument('--num_objects', type=int, default=1)
     parser.add_argument('--workspace_init_only', action='store_true',
                         help='initialize the workspace and exit')
     parser.add_argument('--tasks', default=None,
-                        help='task root with task_set.json: start the task browser')
-    parser.add_argument('--task_split', default=None, help='browser tab to show first')
+                        help='the input folder, one subset per subfolder: start the task browser '
+                        '(the default without --images, --video or --workspace: '
+                        'workspace/cutie_tasks)')
+    parser.add_argument('--task_split', default=None, help='browser tab (subset) to show first')
     parser.add_argument('--labeler', default=None,
                         help='name recorded on task edits; default $CUTIE_LABELER, else the OS user')
-    parser.add_argument('--backend', choices=('local', 'shared'),
-                        default=os.environ.get('CUTIEPLUS_BACKEND'),
-                        help='local: this process runs the models (the original mode); shared: '
-                        'the CutiePlus service runs them on its GPU worker '
-                        '(python -m cutieplus.coordinator start --tasks ...). Default: '
-                        '$CUTIEPLUS_BACKEND, else the word in <task root>/.cutieplus/backend, '
-                        'else local')
-    parser.add_argument('--service-socket', default=None,
-                        help='the service socket; default <task root>/.cutieplus/coordinator.sock')
 
     args = parser.parse_args()
-    if args.backend is None:
-        from cutieplus.paths import chosen_backend
-        args.backend = chosen_backend(task_root_for(args))
+    if args.tasks is None and args.images is None and args.video is None and args.workspace is None:
+        from gui.task_input import DEFAULT_INPUT
+        args.tasks = DEFAULT_INPUT
     return args
-
-
-def task_root_for(args):
-    from os import path
-    if args.tasks is not None:
-        return path.abspath(args.tasks)
-    if args.workspace is not None:
-        return path.dirname(path.dirname(path.abspath(args.workspace)))
-    return None
-
-
-def connect_to_service(args):
-    """The shared mode's connection to the coordinator, with its session; exits with a clear
-    message when the service is not running."""
-    from cutieplus.client import ClientError, ServiceClient
-    from gui.task_state import labeler_name
-    task_root = task_root_for(args)
-    if task_root is None:
-        sys.exit('The shared service works on tasks: give --tasks or a task --workspace.')
-    from cutieplus.paths import socket_for
-    socket_path = socket_for(task_root, socket=args.service_socket)
-    client = ServiceClient(socket_path, labeler_name(args.labeler, task_root),
-                           reconnect_seconds=5)
-    try:
-        hello = client.connect()
-    except ClientError as exc:
-        sys.exit(f'{exc}\nStart it with: python -m cutieplus.coordinator start --tasks {task_root}')
-    client.reconnect_seconds = 60
-    client.start_heartbeat()
-    log.info(f'Connected to the CutiePlus service ({hello.get("gpu")}), session '
-             f'{client.session_id}')
-    return client
 
 
 if __name__ in "__main__":
     # input arguments
     args = get_arguments()
-    # logging
-    log = logging.getLogger()
-    if args.backend == 'shared':
-        # the GPU belongs to the service's worker: this window never initializes CUDA
-        os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
     # perform slow imports after parsing args
     import torch
@@ -99,15 +54,16 @@ if __name__ in "__main__":
     from PySide6.QtWidgets import QApplication
     from gui.main_controller import MainController
 
+    # logging
+    log = logging.getLogger()
+
     # getting hydra's config without using its decorator
     initialize(version_base='1.3.2', config_path="cutie/config", job_name="gui")
     cfg = compose(config_name="gui_config")
 
     # general setup
     torch.set_grad_enabled(False)
-    if args.backend == 'shared':
-        device = 'cpu'  # only for drawing; the models run in the service
-    elif torch.cuda.is_available():
+    if torch.cuda.is_available():
         device = 'cuda'
     elif torch.backends.mps.is_available():
         device = 'mps'
@@ -115,41 +71,29 @@ if __name__ in "__main__":
         device = 'cpu'
     args.device = device
     log.info(f'Using device: {device}')
-    service = connect_to_service(args) if args.backend == 'shared' else None
 
-    from gui.task_state import TaskLocked, TaskState
-    if (args.tasks is not None or TaskState.is_task(args.workspace)) and args.num_objects != 1:
-        log.warning('A Cutie task labels one target; ignoring --num_objects.')
-        args.num_objects = 1
+    from gui.task_state import TaskLocked
+    args.num_objects = 1  # a window labels one object, the target
 
     # merge arguments into config
     args = vars(args)
     with open_dict(cfg):
         for k, v in args.items():
-            if k in ('backend', 'service_socket'):
-                continue
             assert k not in cfg, f'Argument {k} already exists in config'
             cfg[k] = v
 
     # start everything
     app = QApplication(sys.argv)
     # the theme package is optional (apply_theme falls back to Qt's built-in style); the theme is
-    # the one last chosen with the browser's theme button on this screen, Auto at first
+    # the one last chosen with the browser's theme button, Auto at first
     from gui.theme import apply_theme, saved_theme
     apply_theme(saved_theme())
     if cfg['tasks'] is not None:
         from gui.task_browser import TaskBrowser
-        browser = TaskBrowser(cfg, cfg['tasks'], cfg['task_split'], service=service)
-        code = app.exec()
-        if service is not None:
-            service.close()
-        sys.exit(code)
+        browser = TaskBrowser(cfg, cfg['tasks'], cfg['task_split'])
+        sys.exit(app.exec())
     try:
-        if service is not None:
-            from cutieplus.backends.shared import SharedTaskBackend
-            ex = MainController(cfg, backend_factory=SharedTaskBackend.factory(service))
-        else:
-            ex = MainController(cfg)
+        ex = MainController(cfg)
     except TaskLocked as exc:
         print(f'{exc} Close it there first.', file=sys.stderr)
         sys.exit(1)

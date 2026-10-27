@@ -1,7 +1,7 @@
 """
 The box beside Play video sets the playback speed of R and Shift+R in frames per second, also
 during playback; every window starts at 24, unless the Lock button beside the box keeps a speed for
-the following windows of the screen (until it is unlocked). The original Cutie's layer view is not
+the following windows (until it is unlocked), on any display. The original Cutie's layer view is not
 offered (no "layer" visualization, no Import layer), its UIUC overlay is not loaded, and nothing
 about it is logged.
 """
@@ -79,7 +79,6 @@ def test_lock_keeps_the_speed_for_the_following_windows(tmp_path, qapp, cpu_netw
     from gui.gui import LOCK_LABEL, LOCKED_LABEL, PLAYBACK_FPS
     from gui.main_controller import MainController
     task = make_task(str(tmp_path), frame_count=6)
-    monkeypatch.setenv('DISPLAY', ':3')
 
     def open_window():
         return MainController(compose_gui_config(task.workspace), networks=cpu_networks).gui
@@ -107,17 +106,10 @@ def test_lock_keeps_the_speed_for_the_following_windows(tmp_path, qapp, cpu_netw
             gui.stop_playback()
         finally:
             gui.close()
-    monkeypatch.setenv('DISPLAY', ':4')  # another annotator's screen keeps its own
+    monkeypatch.setenv('DISPLAY', ':4')  # not kept per display
     gui = open_window()
     try:
-        assert gui.play_fps_box.value() == PLAYBACK_FPS
-        assert not gui.play_fps_lock_button.isChecked()
-    finally:
-        gui.close()
-
-    monkeypatch.setenv('DISPLAY', ':3')
-    gui = open_window()
-    try:
+        assert gui.play_fps_box.value() == 10 and gui.play_fps_lock_button.isChecked()
         gui.play_fps_lock_button.click()  # unlock: back to the default, here and after
         assert gui.play_fps_box.value() == PLAYBACK_FPS and gui.play_fps_box.isEnabled()
         assert gui.play_fps_lock_button.text() == LOCK_LABEL

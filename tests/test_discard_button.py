@@ -1,7 +1,7 @@
 """
-The task browser's Discard button (local mode): it asks first, shows the sequence as discarded
-(dark gray, italics), hides it with Hide done / discarded, refuses Mark done and Export, and
-reads Restore on a discarded sequence. The shared service's side is in test_export_review.py.
+The task browser's Discard button: it asks first, shows the sequence as discarded
+(dark gray, italics), hides it with Hide done / discarded, refuses Mark done, and reads Restore
+on a discarded sequence. Export leaves a discarded sequence out (tests/test_dataset_export.py).
 """
 from gui.task_state import discard_of, submit_for_review, task_status
 from tests.conftest import compose_gui_config
@@ -34,10 +34,8 @@ def test_discard_and_restore_from_the_browser(tmp_path, qapp):
         assert 'is discarded: it is left out of the dataset' in browser.console.toPlainText()
 
         browser.on_mark_done()
-        browser.on_export()
-        log = browser.console.toPlainText()
-        assert 'is discarded: restore it first' in log and 'it is not exported' in log
-        assert not browser.exports and task_status(task.workspace) == 'under review'
+        assert 'is discarded: restore it first' in browser.console.toPlainText()
+        assert task_status(task.workspace) == 'under review'
 
         browser.hide_done.setChecked(True)
         assert table.isRowHidden(0)

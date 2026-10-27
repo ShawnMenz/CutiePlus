@@ -36,8 +36,7 @@ def main() -> None:
     os.makedirs(DATA, exist_ok=True)
     np.savez_compressed(path.join(DATA, 'baseline_local_session.npz'), **flatten(result))
     with open(path.join(DATA, 'baseline_local_session.json'), 'w', encoding='utf-8') as f:
-        json.dump({key: result[key] for key in ('anchors', 'progress_keys', 'binary_masks')}, f,
-                  indent=2)
+        json.dump({key: result[key] for key in ('anchors', 'progress_keys')}, f, indent=2)
     print('baseline written to', DATA)
 
 

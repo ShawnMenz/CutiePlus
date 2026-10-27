@@ -2,7 +2,7 @@
 Step-based Cutie propagation.
 
 The labeling window used to propagate in one loop. PropagationRuntime does the same work one GPU
-step at a time, so a scheduler can serve a click between two steps: each mask anchor put into the
+step at a time, so the window handles its events between two steps: each mask anchor put into the
 permanent memory is one step, the start frame is one step, and every following frame is one step.
 Between steps the whole Cutie temporal state stays inside the runtime's InferenceCore, untouched.
 

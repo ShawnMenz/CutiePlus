@@ -29,7 +29,7 @@ python cutie/eval_vos.py dataset=[dataset] weights=[path to model file] model=[s
 - To test on your own data, use `dataset=generic` and directly specify the image/mask directories. Example:
 
 ```bash
-python cutie/eval_vos.py dataset=generic image_directory=examples/images mask_directory=examples/masks size=480
+python cutie/eval_vos.py dataset=generic image_directory=<images> mask_directory=<masks> size=480
 ```
 
 - To separate outputs from different models/settings, specify `exp_id=[some unique id]`.

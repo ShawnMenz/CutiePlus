@@ -4,15 +4,13 @@ done, in every tab (main and long), whatever the tab shown; each is a clip of th
 sequence flagged for attention after Mark done still counts; a discarded one never does. The
 statistics sit in a card of their own, apart from the messages.
 """
-import json
 from os import path
 
 import pytest
 
-from gui.task_state import (ATTENTION_FILE, INTERVAL_FILE, PROGRESS_FILE, TASK_SET_FILE,
-                            discard_task, intervals_payload, summarize_task)
+from gui.task_state import discard_task, intervals_payload, work_folder, write_sections
 from tests.conftest import compose_gui_config
-from tests.helpers import make_task
+from tests.helpers import make_task, summary_of
 
 pytestmark = pytest.mark.slow
 
@@ -21,17 +19,12 @@ SUBMITTED = {'last_edited': '2026-10-12T10:00:00+00:00', 'last_edited_by': 'alic
 DONE = dict(SUBMITTED, done_at='2026-10-12T12:00:00+00:00', done_by='bob')
 
 
-def write(workspace, name, payload):
-    with open(path.join(workspace, name), 'w', encoding='utf-8') as f:
-        json.dump(payload, f)
-
-
 def task(base, split, sequence, progress=None, intervals=None):
     made = make_task(base, sequence=sequence, split=split, frame_count=30, height=24, width=32)
     if progress:
-        write(made.workspace, PROGRESS_FILE, progress)
+        write_sections(made.workspace, progress=progress)
     if intervals:
-        write(made.workspace, INTERVAL_FILE, intervals_payload(intervals))
+        write_sections(made.workspace, intervals=intervals_payload(intervals))
     return made
 
 
@@ -39,29 +32,24 @@ def task(base, split, sequence, progress=None, intervals=None):
 def root(tmp_path):
     base = str(tmp_path)
     task(base, 'main', '0001', DONE, [(1, 5), (8, 12), (20, 25)])  # 3
-    task(base, 'main', '0002', DONE)  # the curated interval: 1
+    task(base, 'main', '0002', DONE)  # the whole sequence: 1
     task(base, 'main', '0003', SUBMITTED, [(1, 5), (8, 12)])  # under review: 0
     flagged = task(base, 'main', '0004', DONE)  # flagged after Mark done: 1
-    write(flagged.workspace, ATTENTION_FILE, {'at': '2026-10-12T13:00:00+00:00', 'by': 'carol'})
+    write_sections(flagged.workspace, attention={'at': '2026-10-12T13:00:00+00:00', 'by': 'carol'})
     task(base, 'long', '0005', DONE, [(1, 10), (15, 30)])  # 2
     discarded = task(base, 'long', '0006', DONE, [(1, 10), (15, 30)])  # discarded: 0
     discard_task(discarded.workspace, 'carol', True)
     task(base, 'main', '0007')  # not started: 0
-    task_root = path.join(base, 'tasks')
-    with open(path.join(task_root, TASK_SET_FILE), encoding='utf-8') as f:
-        task_set = json.load(f)
-    task_set['splits'] = ['main', 'long']
-    write(task_root, TASK_SET_FILE, task_set)
-    return task_root
+    return path.join(base, 'tasks')
 
 
 def test_the_summary_tells_done_and_how_many_intervals(root):
-    first = summarize_task(path.join(root, 'main', '0001'))
+    first = summary_of(work_folder(root, 'main', '0001'))
     assert first['done'] and first['intervals'] == 3
-    flagged = summarize_task(path.join(root, 'main', '0004'))
+    flagged = summary_of(work_folder(root, 'main', '0004'))
     assert flagged['status'] == 'Attention' and flagged['done'] and flagged['intervals'] == 1
-    assert not summarize_task(path.join(root, 'long', '0006'))['done']
-    assert not summarize_task(path.join(root, 'main', '0003'))['done']
+    assert not summary_of(work_folder(root, 'long', '0006'))['done']
+    assert not summary_of(work_folder(root, 'main', '0003'))['done']
 
 
 def test_the_browser_totals_the_done_intervals_of_every_tab(root, qapp):
@@ -77,7 +65,7 @@ def test_the_browser_totals_the_done_intervals_of_every_tab(root, qapp):
         assert browser.stats.text().endswith('Total Intervals: 7')
 
         # Mark done on another sequence adds its intervals
-        write(path.join(root, 'main', '0003'), PROGRESS_FILE, DONE)
+        write_sections(work_folder(root, 'main', '0003'), progress=DONE)
         browser.refresh_task('main', '0003')
         assert browser.stats.text().endswith('Total Intervals: 9')
 

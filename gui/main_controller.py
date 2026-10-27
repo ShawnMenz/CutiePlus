@@ -1,5 +1,4 @@
 import os
-import time
 from dataclasses import dataclass, field
 from os import path
 import logging
@@ -18,17 +17,17 @@ from cutieplus.backends.base import BackendError, ClickResult, TaskBackend
 from cutieplus.backends.local import LocalTaskBackend
 from cutieplus.engine import models
 
+from gui.category_colors import hex_to_rgb
 from gui.interactive_utils import *
+from gui.interactive_utils import set_target_color
 from gui.resource_manager import ResourceManager, SaveError
 from gui.gui import GUI
 from gui.gui_utils import REMOVE_INTERVAL_TEXT
 from gui.click_controller import ClickController
 from gui.exporter import convert_frames_to_video
 from gui.edit_history import Edit, EditHistory, FrameState
-from gui.task_export import start_export
-from gui.task_state import (DESCRIPTION_TEXT, INTERVAL_TEXT, TASK_SET_FILE, TaskLock, TaskState,
-                            check_intervals, discard_of, export_command, format_intervals,
-                            labeler_name, load_task_set, task_root_of, utc_now)
+from gui.task_state import (TaskLock, TaskState, category_text, check_intervals, discard_of,
+                            format_intervals, labeler_name, utc_now)
 
 log = logging.getLogger()
 
@@ -56,25 +55,18 @@ class MainController():
     def __init__(self,
                  cfg: DictConfig,
                  networks: Optional[Tuple[torch.nn.Module, ClickController]] = None,
-                 on_task_event: Optional[Callable[['MainController', str], None]] = None,
-                 backend_factory: Optional[Callable[..., TaskBackend]] = None) -> None:
-        """networks: models loaded by load_networks, to reuse them across tasks (local mode).
-        on_task_event: called with 'exported' after an export, 'under review' once the task is
-        submitted, 'attention' when Need Attention is toggled, 'done' once Ctrl+Q has marked it
+                 on_task_event: Optional[Callable[['MainController', str], None]] = None) -> None:
+        """networks: models loaded by load_networks, to reuse them across tasks.
+        on_task_event: called with 'under review' once the task is submitted, 'attention' when Need Attention is toggled, 'done' once Ctrl+Q has marked it
         done, and 'closed' once the window has closed and every pending save is written.
-        backend_factory: the shared service's backend (cutieplus.backends.shared); without it
-        the window runs the models itself (local mode).
         Raises TaskLocked when another window has the task open."""
         super().__init__()
 
         self.initialized = False
         self.on_task_event = on_task_event
-        self.export_process = None
-        self.export_id = None  # shared mode: the export the coordinator verifies
-        self.browser_exporting = False
         self.close_requested = False
         self.closed = False
-        # Ctrl+Q (quit and mark done): when it was pressed, while the export it started runs
+        # Ctrl+Q (quit and mark done): when it was pressed, while it saves the task
         self.quit_done_at: Optional[str] = None
 
         # setting up the workspace
@@ -89,18 +81,16 @@ class MainController():
             cfg["workspace"] = path.join(cfg['workspace_root'], basename)
 
         # a task is open in one window at a time; taken before anything is loaded, so a refusal
-        # leaves nothing to undo (shared mode: the service's lease, taken by the backend factory)
+        # leaves nothing to undo
         self.task_lock = None
         self.backend: Optional[TaskBackend] = None
         init_only = 'workspace_init_only' in cfg and cfg['workspace_init_only']
         if TaskState.is_task(cfg['workspace']) and not init_only:
             # one name for the lock and the task's records
-            labeler = labeler_name(cfg['labeler'] if 'labeler' in cfg else None,
-                                   task_root_of(cfg['workspace']))
+            labeler = labeler_name(cfg['labeler'] if 'labeler' in cfg else None)
             with open_dict(cfg):
                 cfg['labeler'] = labeler
-            if backend_factory is None:
-                self.task_lock = TaskLock.acquire(cfg['workspace'], labeler)
+            self.task_lock = TaskLock.acquire(cfg['workspace'], labeler)
 
         # reading arguments
         self.cfg = cfg
@@ -108,13 +98,11 @@ class MainController():
         self.device = cfg['device']
         self.amp = cfg['amp']
 
-        # initializing the network(s): the local mode runs them in this process
-        self.cutie = self.click_ctrl = None
-        if backend_factory is None:
-            if networks is None:
-                self.initialize_networks()
-            else:
-                self.cutie, self.click_ctrl = networks
+        # initializing the network(s)
+        if networks is None:
+            self.initialize_networks()
+        else:
+            self.cutie, self.click_ctrl = networks
 
         # main components
         self.res_man = ResourceManager(cfg)
@@ -124,10 +112,7 @@ class MainController():
         if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
             return
         try:
-            if backend_factory is None:
-                self.backend = LocalTaskBackend(cfg, self.networks, self.res_man, self.task)
-            else:
-                self.backend = backend_factory(cfg, self.res_man, self.task)
+            self.backend = LocalTaskBackend(cfg, self.networks, self.res_man, self.task)
         except BaseException:
             self.res_man.close()
             if self.task_lock is not None:
@@ -143,7 +128,7 @@ class MainController():
         self.interaction_edit: Optional[Edit] = None
         self.interaction_type: str = 'Click'
         self.curr_ti: int = 0
-        self.curr_object: int = 1
+        self.curr_object: int = 1  # the one object a window labels (the target)
         self.propagating: bool = False
         self.propagate_direction: Literal['forward', 'backward', 'none'] = 'none'
         self.last_ex = self.last_ey = 0
@@ -170,6 +155,7 @@ class MainController():
         # the object id used for popup/layer overlay
         self.vis_target_objects = list(range(1, self.num_objects + 1))
 
+        self.show_category_color()  # before the first frame is drawn
         self.load_current_image_mask()
         self.show_current_frame()
 
@@ -197,7 +183,6 @@ class MainController():
         # the default overlay, off (SHOW_DEFAULT_LAYER)
         if SHOW_DEFAULT_LAYER:
             self._try_load_layer(DEFAULT_LAYER, quiet=True)
-        self.gui.set_object_color(self.curr_object)
         self.update_config()
         if self.task is not None:
             self.configure_task_resolution()
@@ -208,17 +193,6 @@ class MainController():
     @property
     def networks(self) -> Tuple[torch.nn.Module, ClickController]:
         return self.cutie, self.click_ctrl
-
-    def hit_number_key(self, number: int):
-        if number == self.curr_object:
-            return
-        self.curr_object = number
-        self.gui.object_dial.setValue(number)
-        # the next click starts an interaction for the new object
-        self.reset_this_interaction()
-        self.gui.text(f'Current object changed to {number}.')
-        self.gui.set_object_color(number)
-        self.show_current_frame()
 
     def click_fn(self, action: Literal['left', 'right'], x: int, y: int):
         if self.propagating:
@@ -416,7 +390,6 @@ class MainController():
 
         # propagate till the end, a step at a time; the backend saves the propagated masks and
         # never touches an anchor's
-        queued_shown = None
         try:
             while self.propagating:
                 progress = self.backend.advance_propagation()
@@ -428,20 +401,15 @@ class MainController():
                     # the run ends on the empty anchor that stopped it
                     self.curr_ti = progress.stopped_at
                     self.gui.tl_slider.setValue(self.curr_ti)
-                if progress.queue_position is not None and progress.queue_position != queued_shown:
-                    queued_shown = progress.queue_position
-                    self.gui.text(f'Waiting for the GPU: {queued_shown} job(s) ahead.')
                 if progress.done:
                     if progress.state == 'failed':
                         self.gui.text(f'Propagation failed: {progress.stop_reason}')
                     break
                 self.update_memory_gauges()
                 self.gui.process_events()
-                if not progress.frames and self.backend.kind != 'local':
-                    time.sleep(0.015)  # waiting for the service
         except BackendError as exc:
             self.gui.text(f'Propagation stopped: {exc}')
-        except Exception as exc:  # e.g. out of GPU memory in local mode
+        except Exception as exc:  # e.g. out of GPU memory
             log.exception('Propagation failed')
             self.gui.text(f'Propagation failed: {exc}')
         finally:
@@ -504,9 +472,6 @@ class MainController():
             # get mask from interaction
             self.complete_interaction()
 
-        if self.backend.kind != 'local':
-            self.gui.text('The permanent memory is rebuilt from the anchors of a task.')
-            return
         self.convert_current_image_mask_torch()
         self.gui.text(f'Permanent memory saved at {self.curr_ti}.')
         self.curr_prob = self.backend.commit_to_permanent_memory(self.curr_image_torch,
@@ -530,7 +495,7 @@ class MainController():
         self.report_save_errors()
         # the window's signal connections keep this controller alive, so release its GPU and
         # frame memory here rather than waiting for it to be collected (the processor also
-        # caches image features, which clear_memory keeps); shared mode: releases the lease
+        # caches image features, which clear_memory keeps)
         self.curr_prob = self.curr_image_torch = self.interacted_prob = None
         self.overlay_layer_torch = None
         try:
@@ -546,66 +511,18 @@ class MainController():
         if self.on_task_event is not None:
             self.on_task_event(self, 'closed')
 
-    def task_set(self) -> Optional[dict]:
-        task_root = task_root_of(self.cfg['workspace'])
-        if not path.isfile(path.join(task_root, TASK_SET_FILE)):
-            self.gui.text(f'No {TASK_SET_FILE} in {task_root}; export with the pipeline tool.')
-            return None
-        return load_task_set(task_root)
-
-    def on_export(self) -> bool:
-        # an ad-hoc export; it does not change the review status. Returns whether it started
-        if (self.task is None or self.propagating or self.export_process is not None
-                or self.browser_exporting):
-            return False
-        if discard_of(self.task.workspace):
-            self.gui.text('This sequence is discarded: it is not exported (Restore in the task '
-                          'browser brings it back).')
-            return False
-        task_set = self.task_set()
-        if task_set is None:
-            return False
-        self.backend.wait_for_saves()
-        try:
-            # shared mode: recorded with the content revision it exports
-            self.export_id = self.backend.begin_export()
-        except BackendError as exc:
-            self.gui.text(f'Export not started: {exc}')
-            return False
-        command = export_command(task_set, self.task.split, self.task.sequence_id)
-        self.gui.text(f'Exporting {self.task.sequence_id}...')
-        self.export_process = start_export(command, self.gui.text, self.on_export_finished)
-        self.gui.refresh_reset_button_state()
-        return True
-
-    def on_export_finished(self, ok: bool) -> None:
-        self.export_process = None
-        result = self.backend.finish_export(self.export_id, ok)
-        if ok and result['status'] != 'complete':
-            self.gui.text(f'The export is not accepted ({result["status"]}): {result["detail"]}')
-            ok = False
-        self.gui.refresh_reset_button_state()
-        self.gui.text('Export finished.' if ok else 'Export failed; see the messages above.')
-        if ok and self.on_task_event is not None:
-            self.on_task_event(self, 'exported')
-        if self.quit_done_at is not None:
-            self.finish_quit_done(ok)
-
     def on_quit_done(self) -> None:
         """Ctrl+Q, for a labeler who reviews their own work (labeling and review at the same
-        time): after a warning, saves the binary PNGs (which submits the task), exports it, marks
-        it done and closes the window. The done mark keeps when Ctrl+Q was pressed (quit_at)."""
+        time): after a warning, saves the task (which submits it), marks it done and closes the
+        window. The done mark keeps when Ctrl+Q was pressed (quit_at)."""
         if self.task is None:
             self.gui.text('Ctrl+Q marks a task done; Q closes the window.')
             return
         if self.quit_done_at is not None:
-            self.gui.text('Already quitting: the window closes once the export finishes.')
+            self.gui.text('Already quitting.')
             return
         if self.propagating:
             self.gui.text('Pause the propagation first.')
-            return
-        if self.export_process is not None or self.browser_exporting:
-            self.gui.text('The task is being exported; press Ctrl+Q again once that finishes.')
             return
         if discard_of(self.task.workspace):
             self.gui.text('This sequence is discarded: it is not marked done (Restore in the task '
@@ -615,7 +532,7 @@ class MainController():
             self.gui.text('This sequence needs attention: toggle Need Attention off first.')
             return
         # the intervals and descriptions typed are saved first, so the warning shows them; none
-        # may be left out, as Save binary PNGs would
+        # may be left out, as Save would
         self.backend.wait_for_saves()
         unsaved = self.save_typed_intervals()
         self.on_description_change()
@@ -627,23 +544,11 @@ class MainController():
         if not self.gui.confirm_quit_done():
             return
         self.quit_done_at = utc_now()
-        if not self.on_export_binary():
+        if not self.on_save():
             self.quit_done_at = None
-            self.gui.text('Not marked done: the binary PNGs were not saved.')
+            self.gui.text('Not marked done: the task was not saved.')
             return
-        if not self.on_export():
-            self.quit_done_at = None
-            self.gui.text('Not marked done: the export did not start.')
-            return
-        self.gui.text(f'{self.task.sequence_id} is marked done once the export finishes; the '
-                      'window then closes. An edit before that keeps it open, and not done.')
-
-    def finish_quit_done(self, exported: bool) -> None:
-        # Ctrl+Q, once its export has finished: the done mark, then the window closes
         quit_at, self.quit_done_at = self.quit_done_at, None
-        if not exported:
-            self.gui.text('Not marked done: the export failed. The window stays open.')
-            return
         try:
             self.backend.mark_done(quit_at)
         except BackendError as exc:
@@ -677,8 +582,8 @@ class MainController():
         self.gui.text(f'{name} is an anchor ({self.current_anchor()["kind"]}).')
 
     def apply_commit(self, commit: Callable[[], object]) -> bool:
-        """Runs a change of the frame's official data; a refusal (shared mode: e.g. the task
-        was lost) is shown and the frame reloaded. Returns whether it was applied."""
+        """Runs a change of the frame's official data; a refusal is shown and the frame
+        reloaded. Returns whether it was applied."""
         try:
             commit()
             return True
@@ -791,53 +696,58 @@ class MainController():
                 self.on_task_event(self, 'attention')
         self.gui.refresh_attention_button()  # the saved state, also after a failure
 
-    def on_export_binary(self) -> bool:
-        # export masks in binary format for other applications, e.g., ProPainter
-        # (task mode: this also submits the task for review, whatever its status). Returns
-        # whether they were saved
+    def on_save(self) -> bool:
+        # Ctrl+S: a task is saved and submitted for review (save_task); a plain workspace exports
+        # its masks as binary PNGs. Returns whether it was done
         if self.propagating:
             self.gui.text('Pause the propagation first.')
             return False
         self.backend.wait_for_saves()
         if self.task is not None:
-            # the intervals and the description are saved with every submission
-            unsaved = self.save_typed_intervals()
-            if unsaved:
-                self.gui.text(f'{unsaved} interval{"" if unsaved == 1 else "s"} not saved '
-                              '(not complete, or overlapping): the saved intervals are used.')
-            self.on_description_change()
+            return self.save_task()
+        return self.export_binary_masks()
+
+    def save_task(self) -> bool:
+        # the masks and metadata.json are written as the task is labeled; the typed intervals and
+        # the description are saved too, and the task goes under review, whatever its status
+        unsaved = self.save_typed_intervals()
+        if unsaved:
+            self.gui.text(f'{unsaved} interval{"" if unsaved == 1 else "s"} not saved '
+                          '(not complete, or overlapping): the saved intervals are used.')
+        self.on_description_change()
+        try:
+            intervals = self.backend.submit()
+        except BackendError as exc:
+            self.gui.text(f'Not saved: {exc}')
+            return False
+        self.gui.text(f'Saved {self.task.sequence_id} '
+                      f'(interval{"" if len(intervals) == 1 else "s"} '
+                      f'{format_intervals(intervals)}) in {self.task.workspace}')
+        if self.quit_done_at is None:  # Ctrl+Q marks it done itself
+            self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
+                          'Mark done accepts it, any further edit reopens it.')
+        if self.on_task_event is not None:
+            self.on_task_event(self, 'under review')
+        return True
+
+    def export_binary_masks(self) -> bool:
+        # a plain workspace: its masks in binary format for other applications, e.g., ProPainter
         mask_folder = path.join(self.cfg['workspace'], 'masks')
-        if path.exists(mask_folder):
-            self.gui.text(f'Exporting binary masks -- please wait')
-            self.gui.process_events()
-            try:
-                export = self.backend.export_binary(self.vis_target_objects,
-                                                    self.gui.progressbar_update)
-            except BackendError as exc:
-                self.gui.progressbar_update(0)
-                self.gui.text(f'Binary masks not saved: {exc}')
-                return False
-            save_folder = export.folder
-            intervals = export.intervals
-            self.gui.text(f'Binary masks exported to {save_folder}')
+        if not path.exists(mask_folder):
+            self.gui.text(f'No masks found in {mask_folder}')
+            return False
+        self.gui.text(f'Exporting binary masks -- please wait')
+        self.gui.process_events()
+        try:
+            export = self.backend.export_binary(self.vis_target_objects,
+                                                self.gui.progressbar_update)
+        except BackendError as exc:
             self.gui.progressbar_update(0)
-            if self.task is not None:
-                if len(intervals) == 1:
-                    self.gui.text(f'Interval {format_intervals(intervals)} saved to '
-                                  f'{path.join(save_folder, INTERVAL_TEXT)}')
-                else:
-                    self.gui.text(f'Intervals {format_intervals(intervals)} ({len(intervals)} clips) '
-                                  f'saved to {path.join(save_folder, INTERVAL_TEXT)}')
-                self.gui.text(f'Description{"s, one per interval," if len(intervals) > 1 else ""} '
-                              f'saved to {path.join(save_folder, DESCRIPTION_TEXT)}')
-                if self.quit_done_at is None:  # Ctrl+Q marks it done itself
-                    self.gui.text(f'{self.task.sequence_id} is under review; the task browser\'s '
-                                  'Mark done accepts it, any further edit reopens it.')
-                if self.on_task_event is not None:
-                    self.on_task_event(self, 'under review')
-            return True
-        self.gui.text(f'No masks found in {mask_folder}')
-        return False
+            self.gui.text(f'Binary masks not saved: {exc}')
+            return False
+        self.gui.text(f'Binary masks exported to {export.folder}')
+        self.gui.progressbar_update(0)
+        return True
 
     def save_typed_intervals(self) -> int:
         """Saves the interval boxes as typed; returns how many intervals are not saved (not
@@ -877,8 +787,9 @@ class MainController():
     def save_interval_pairs(self, quiet: bool = False) -> bool:
         """Saves the complete interval pairs, each added one with its description, when they
         changed and do not overlap; a pair with a blank box is still being typed and is left out.
-        A new list of intervals or a new description is a change that needs a new review. Returns
-        whether anything was saved; quiet: no message when it was."""
+        A new list of intervals, or a new description or category of an added one, is a change
+        that needs a new review. Returns whether anything was saved; quiet: no message when it
+        was."""
         pairs = self.gui.interval_pairs
         for pair in pairs[1:]:
             if not pair.description():  # a clip always has a description
@@ -896,31 +807,43 @@ class MainController():
             self.gui.text('Intervals not saved: ' + ' '.join(problems)
                           + f' Change one, or remove it with {REMOVE_INTERVAL_TEXT}.')
             return False
-        # the first pair's interval is described by the sequence's description
+        # the first pair's interval is described by the sequence's description and category
         descriptions = {pair.entry(): pair.description() for pair in complete
                         if pair is not pairs[0]}
+        categories = {pair.entry(): pair.category for pair in complete if pair is not pairs[0]}
         saved_intervals = self.task.intervals(self.T)[0]
         saved_descriptions = self.task.added_interval_descriptions(self.T)
-        if intervals == saved_intervals and descriptions == saved_descriptions:
+        saved_categories = self.task.added_interval_categories(self.T)
+        if (intervals == saved_intervals and descriptions == saved_descriptions
+                and categories == saved_categories):
             self.keep_descriptions(complete)
             return False
         try:
-            self.backend.set_intervals(intervals, descriptions)
+            self.backend.set_intervals(intervals, descriptions, categories)
         except BackendError as exc:
             self.gui.text(f'Intervals not saved: {exc}')
             return False
         self.keep_descriptions(complete)
-        # the slider shows the saved intervals; Shift+R starts again from the first
+        # the slider shows the saved intervals, the selected one bold; Shift+R starts again from
+        # the first
         self.gui.tl_slider.set_intervals(intervals)
+        self.gui.tl_slider.set_selected_interval(self.gui.selected_pair().entry())
         self.gui.preview_index = 0
         if quiet:
             pass
-        elif intervals == saved_intervals:
+        elif intervals == saved_intervals and descriptions != saved_descriptions:
             changed = [interval for interval in intervals
                        if descriptions.get(interval) != saved_descriptions.get(interval)]
             self.gui.text(f'Description{"" if len(changed) == 1 else "s"} of interval'
                           f'{"" if len(changed) == 1 else "s"} {format_intervals(changed)} changed; '
                           'the task needs a new review.')
+        elif intervals == saved_intervals:
+            changed = [interval for interval in intervals
+                       if categories.get(interval) != saved_categories.get(interval)]
+            self.gui.text(f'Category of interval{"" if len(changed) == 1 else "s"} '
+                          f'{format_intervals(changed)}: '
+                          f'{", ".join(category_text(categories[i]) for i in changed)}; the task '
+                          'needs a new review.')
         elif len(intervals) == 1:
             self.gui.text(f'Interval set to {format_intervals(intervals)}; the task needs a new '
                           'review.')
@@ -966,9 +889,48 @@ class MainController():
         if self.on_task_event is not None:
             self.on_task_event(self, 'description')
 
-    def on_object_dial_change(self):
-        object_id = self.gui.object_dial.value()
-        self.hit_number_key(object_id)
+    def show_category_color(self) -> None:
+        # the target is drawn in the selected set's category color (categories.json), cyan
+        # without one
+        color = None
+        if self.task is not None:
+            selected = self.gui.selected_category()
+            color = next((category.color for category in self.task.categories
+                          if category.name == selected), None)
+        set_target_color(hex_to_rgb(color) if color else None)
+
+    def on_category_chosen(self, name: str) -> None:
+        # the category menu's choice; a new category is a change that needs a new review
+        if self.task is None or name == self.task.category:
+            return
+        try:
+            self.backend.set_category(name)
+        except BackendError as exc:
+            self.gui.text(f'Category not saved: {exc}')
+            return
+        self.gui.show_category()
+        self.gui.refresh_set_list()
+        self.show_category_color()
+        self.show_current_frame()
+        self.gui.text(f'Category: {name}; the task needs a new review.')
+        if self.on_task_event is not None:
+            self.on_task_event(self, 'category')
+
+    def on_interval_category_chosen(self, pair, name: str) -> None:
+        # the category menu's choice for an added interval: saved with the interval, once its
+        # start and end are filled in; a change that needs a new review
+        if self.task is None or name == pair.category:
+            return
+        pair.category = name
+        self.gui.show_category()
+        self.gui.refresh_set_list()
+        self.show_category_color()
+        self.show_current_frame()
+        if pair.entry() is None:
+            self.gui.text(f'Category: {name}; it is saved with the interval once its start and '
+                          'end are filled in.')
+            return
+        self.save_interval_pairs()
 
     def on_fps_dial_change(self):
         self.output_fps = self.gui.fps_dial.value()
@@ -1006,29 +968,12 @@ class MainController():
         self.record_edit(self.curr_ti, before)
         self.show_current_frame()
 
-    def on_reset_object(self):
-        if self.propagating:
-            self.gui.text('Pause the propagation first.')
-            return
-        before = self.frame_state(self.curr_ti)
-        self.curr_mask[self.curr_mask == self.curr_object] = 0
-        if self.curr_prob is not None:
-            self.curr_prob[self.curr_object] = 0
-        if not self.apply_commit(lambda: self.backend.commit_frame(
-                self.curr_ti, self.curr_mask, anchor='edit')):
-            return
-        self.reset_this_interaction()
-        self.record_edit(self.curr_ti, before)
-        self.show_current_frame()
-
     def reset_block_reason(self) -> Optional[str]:
         if self.closed:
             return 'The window is closing.'
         if getattr(self, 'propagating', False):
             return 'Pause propagation before resetting all masks.'
-        if self.export_process is not None or self.browser_exporting:
-            return 'Wait for the task export to finish before resetting all masks.'
-        return self.task.reset_block_reason() if self.task is not None else None
+        return None
 
     def on_reset_all_frame_masks(self) -> None:
         reason = self.reset_block_reason()
@@ -1038,18 +983,6 @@ class MainController():
             return
         if not self.gui.confirm_reset_all_masks():
             return
-        # The curated CSV or export state can change while the dialog is open.
-        reason = self.reset_block_reason()
-        if reason is not None:
-            self.gui.text(reason)
-            self.gui.refresh_reset_button_state()
-            return
-        try:
-            export_dirs = self.task.export_directories() if self.task is not None else []
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.gui.text(f'Cannot locate the Cutie exports; no masks removed: {exc}')
-            return
-
         self.backend.wait_for_saves()
         reason = self.reset_block_reason()
         if reason is not None:
@@ -1062,7 +995,7 @@ class MainController():
         self.interacted_prob = None
         reset_error = None
         try:
-            removed, removed_exports = self.backend.reset_all_masks(export_dirs)
+            removed = self.backend.reset_all_masks()
         except (OSError, BackendError) as exc:
             reset_error = exc
         finally:
@@ -1078,8 +1011,8 @@ class MainController():
             self.gui.text(f'Mask reset stopped after a filesystem error; check the workspace: '
                           f'{reset_error}')
             return
-        self.gui.text(f'Reset all frame masks: removed {removed} local PNGs and '
-                      f'{removed_exports} Cutie export trees for this sequence.')
+        self.gui.text(f'Reset all frame masks: removed {removed} local PNGs for this sequence'
+                      f'{"; its pregenerated masks show again" if self.task and self.task.prefill else ""}.')
 
     def complete_interaction(self):
         if self.interaction is not None:
@@ -1214,7 +1147,7 @@ class MainController():
             self.gui.long_mem_gauge.setValue(round(curr_long_tokens / max(1, max_long_tokens) * 100))
 
         else:
-            # nothing in memory yet; in shared mode, the memory is the worker's during a run
+            # nothing in memory yet
             for gauge in (self.gui.perm_mem_gauge, self.gui.work_mem_gauge,
                           self.gui.long_mem_gauge):
                 gauge.setFormat('No propagation yet')

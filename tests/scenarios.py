@@ -4,7 +4,6 @@ window's buttons and keys call them. It is run against the original code to reco
 (tests/make_baseline.py) and against the refactored code by the tests, which compare the results.
 """
 import os
-from os import path
 from typing import Callable, Dict
 
 import numpy as np
@@ -67,10 +66,10 @@ def run_session(controller, task: SyntheticTask, log: Callable[[str], None] = la
     controller.on_undo()
     steps['restored_9'] = task.mask(task.names[9])
 
-    # reset the object on frame 11 (an edit), then submit for review
+    # reset frame 11 (an edit: its mask becomes empty), then submit for review
     go_to(controller, 11)
-    controller.on_reset_object()
-    controller.on_export_binary()
+    controller.on_reset_mask()
+    controller.on_save()
 
     controller.gui.close()
     return {
@@ -78,7 +77,7 @@ def run_session(controller, task: SyntheticTask, log: Callable[[str], None] = la
         'masks': {name: task.mask(name) for name in task.names},
         'anchors': strip_times(task.anchors()),
         'progress_keys': sorted(task.progress()),
-        'binary_masks': sorted(os.listdir(path.join(task.workspace, 'binary_masks'))),
+        'work_folder': sorted(os.listdir(task.workspace)),
     }
 
 

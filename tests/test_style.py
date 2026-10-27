@@ -1,6 +1,6 @@
 """
 The look of every window (gui/style.py): the green accent and the style sheet on top of the theme,
-button variants, rounded cards (the Advanced card folds and remembers it per screen), and the
+button variants, rounded cards (the Advanced card folds and remembers it), and the
 task browser's status pills. The eye-care theme is the light one with every white and light-gray
 surface (the window, the cards, the boxes, the buttons, every table row) in #FAF9DE.
 """
@@ -115,11 +115,13 @@ def test_the_window_uses_the_variants_and_remembers_the_advanced_card(tmp_path, 
                      gui.commit_button, gui.reset_all_masks_button, gui.attention_button)}
         assert variants == {'Propagate forward (F)': 'primary',
                             'Propagate backward (B)': 'primary',
-                            'Save binary PNGs (Ctrl+S)': 'primary', 'Mark as anchor (C)': 'tonal',
+                            'Save (Ctrl+S)': 'primary', 'Mark as anchor (C)': 'tonal',
                             'Reset all frame masks': 'danger', 'Need Attention': 'attention'}
         gui.on_add_interval()
         assert gui.interval_pairs[1].remove_button.property('variant') == 'danger'
-        assert gui.task_label.property('pill') == 'accent'
+        # the category pill in the category's color (categories.json), with text that reads
+        assert gui.task_label.property('pill') == 'category'
+        assert 'background: #00CF00' in gui.task_label.styleSheet()
         # the controls of the original Cutie wait folded in the Advanced card
         assert not gui.advanced_card.is_expanded()
         assert gui.advanced_card.body.isAncestorOf(gui.clear_all_mem_button)
@@ -128,7 +130,7 @@ def test_the_window_uses_the_variants_and_remembers_the_advanced_card(tmp_path, 
         assert gui.advanced_card.is_expanded()
     finally:
         gui.close()
-    gui = open_window().gui  # open again on this screen: as it was left
+    gui = open_window().gui  # open again: as it was left
     try:
         assert gui.advanced_card.is_expanded()
     finally:
@@ -149,5 +151,26 @@ def test_the_browser_draws_the_status_as_pills(tmp_path, qapp):
         browser.resize(1100, 700)
         assert not browser.grab().isNull()  # paints the pills
         assert table.item(0, STATUS_COLUMN).text() == 'not started'  # the item keeps its text
+    finally:
+        browser.close()
+
+
+def test_the_browser_input_buttons_are_blue_and_a_disabled_one_grey(tmp_path, qapp):
+    # every one is enabled now; the style keeps a disabled one grey
+    from PySide6.QtWidgets import QPushButton
+    from gui.style import INFO, style_sheet
+    from gui.task_browser import TaskBrowser
+    task = make_task(str(tmp_path), frame_count=6)
+    browser = TaskBrowser(compose_gui_config(device='cpu'), task.root)
+    try:
+        buttons = {button.text(): button for button in browser.findChildren(QPushButton)}
+        assert INFO == '#00A9E0'
+        for name in ('Import', 'Export', 'Refresh'):
+            assert buttons[name].property('variant') == 'info'
+        assert all(buttons[name].isEnabled() for name in ('Import', 'Export', 'Refresh'))
+        for dark in (False, True):
+            sheet = style_sheet(dark)
+            assert 'QPushButton[variant="info"] { background: transparent; color: #00A9E0;' in sheet
+            assert 'QPushButton[variant="info"]:disabled {' in sheet  # grey, as every disabled one
     finally:
         browser.close()

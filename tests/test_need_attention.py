@@ -1,7 +1,6 @@
 """
 Need Attention in the labeling window (a toggle, orange) and the task browser's Attention status
-(red); Mark done waits until the flag is off. The shared service's side is in
-test_export_review.py.
+(red); Mark done waits until the flag is off.
 """
 import pytest
 

@@ -1,7 +1,6 @@
 """
 Inference policies of task mode, as pure functions: the processing size chosen for small targets,
-memory tokens per frame, and which mask anchors go into the permanent memory. The labeling window
-(local mode) and the shared service use the same functions, so both decide alike.
+memory tokens per frame, and which mask anchors go into the permanent memory.
 """
 import math
 from dataclasses import dataclass
@@ -16,8 +15,7 @@ SMALL_TARGET_AREA = 1500
 SMALL_TARGET_INTERNAL_SIZE = 960
 TARGET_AREA_SAMPLES = 25
 # memory tokens x query tokens one propagation step may compare. The original release fixed it
-# at 4e8, described as ~8 GB of GPU memory. It is now a quality and speed cap only: the memory
-# side is measured on the GPU at run time (cutieplus.gpu), which can lower the limit further.
+# at 4e8, described as ~8 GB of GPU memory; it does not look at the GPU's free memory.
 LEGACY_MEMORY_READ_BUDGET = 4e8
 
 

@@ -1,49 +1,51 @@
 """
-Task browser: lists the Cutie tasks under a task root (<root>/<split>/<sequence>/, made by
-RGBT_MOT's tools/cutie_tasks.py), opens one at a time in the labeling window, and exports them.
-The models are loaded on the first open and reused for every task after that.
+Task browser: lists the sequences of the input (gui/task_input.py), one tab per subset, and opens
+one at a time in the labeling window; Import (gui/import_dialog.py) adds subsets, and Export
+writes the dataset from the done sequences (gui/dataset_export.py). Each sequence's work is kept
+in its work folder (gui/task_state.py: work_folder), made when it is first opened. The models are
+loaded on the first open and reused for every task after that.
 
-Several browsers (one per labeler session) can share a task root: a task is open in one window
-at a time (TaskLock), and Open by shows who has it. Annotators lists everyone who has changed a
-task, and the bottom line counts their tasks.
+A task is open in one window at a time (TaskLock), and Open by shows which window has it.
+Annotators lists everyone who has changed a task, and the Statistics card counts their tasks.
 """
 import copy
 import html
 import os
+import threading
 from collections import Counter
 from os import path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from omegaconf import DictConfig, open_dict
-from PySide6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPalette, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
-                               QStyle,
-                               QStyledItemDelegate, QStyleOptionViewItem, QTabWidget,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+                               QProgressDialog, QPushButton, QStyle,
+                               QStackedWidget, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from cutieplus.backends.base import BackendError
-from gui.annotator_manager import AnnotatorManager
-from gui.annotators import load_inactive, may_manage
+from gui.dataset_export import (ExportCancelled, ExportPlan, export_root_of, free_space_problem,
+                                lock_clips, plan_export, release_locks, write_export)
 from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
+from gui.import_dialog import ImportDialog
 from gui.style import GAP, Card, set_variant
-from gui.task_export import start_export
-from gui.task_state import (ATTENTION_STATUS, DISCARDED_STATUS, TASK_FILE, TaskLock, TaskLocked,
-                            attention_of, curated_split, describe_attention, describe_holder,
-                            discard_of, discard_task, export_command,
-                            export_is_current, labeler_name, load_task_set, lock_holder, mark_done,
-                            summarize_task, task_status)
+from gui.task_input import InputError, SequenceInput, find_tabs, read_tab, unorganized_parts
+from gui.task_state import (ATTENTION_STATUS, DISCARDED_STATUS, TaskLocked, attention_of,
+                            describe_attention, describe_holder, discard_of, discard_task,
+                            ensure_work_folder, labeler_name, lock_holder, mark_done,
+                            summarize_task, task_status, work_folder)
 from gui.theme import (THEMES, apply_theme, has_theme_package, next_theme, save_theme,
                        saved_theme)
 
-COLUMNS = ('Sequence', 'Frames', 'Anchors', 'Status', 'Annotators', 'Open by', 'Modality', 'Target')
+COLUMNS = ('Sequence', 'Frames', 'Anchors', 'Status', 'Annotators', 'Open by', 'Target')
 SEQUENCE_COLUMN, FRAMES_COLUMN, STATUS_COLUMN, ANNOTATORS_COLUMN, OPEN_BY_COLUMN, TARGET_COLUMN = \
-    0, 1, 3, 4, 5, 7
+    0, 1, 3, 4, 5, 6
 # on a Status item: how many intervals the sequence adds to the dataset (0 unless marked done)
 CONFIRMED_INTERVALS_ROLE = Qt.ItemDataRole.UserRole + 1
-LOCK_REFRESH_MS = 10000  # Open by follows the other sessions
+LOCK_REFRESH_MS = 10000  # Open by follows the other windows
 STATUS_COLORS = {
     'not started': QColor(140, 140, 140),
     'in progress': QColor(230, 150, 30),
@@ -55,6 +57,27 @@ STATUS_COLORS = {
 # discarded: dark gray, lighter in a dark theme where dark gray would vanish
 DISCARDED_COLORS = (STATUS_COLORS[DISCARDED_STATUS], QColor(150, 150, 150))
 HIDDEN_BY_HIDE_DONE = ('done', DISCARDED_STATUS)
+
+
+class ExportWorker(QObject):
+    """Writes the export in a thread of its own; the signals reach the browser in its thread."""
+    progress = Signal(int, int)  # frames written, frames
+    finished = Signal(object, str)  # the ExportReport, else None and the error ('' if cancelled)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel = threading.Event()
+
+    def run(self, plan: ExportPlan, export_root: str) -> None:
+        try:
+            report = write_export(plan, export_root, self.progress.emit, self.cancel.is_set)
+        except ExportCancelled:
+            self.finished.emit(None, '')
+            return
+        except Exception as exc:  # shown in the messages; the previous export stays
+            self.finished.emit(None, str(exc) or type(exc).__name__)
+            return
+        self.finished.emit(report, '')
 
 
 def theme_button_text(theme: str) -> str:
@@ -118,56 +141,33 @@ class TargetDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-INACTIVE_COLOR = QColor('#EF4B81')  # a name removed from Manage annotators
+class TaskTable(QTableWidget):
+    """A tab's table of sequences, with a notice in the middle of its rows' area while it lists
+    none (no sequence in the subset, all done or discarded and hidden, or none matching the
+    filter)."""
+
+    def __init__(self, rows: int, columns: int) -> None:
+        super().__init__(rows, columns)
+        self.notice = empty_notice(QLabel(self.viewport()))
+        self.notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.notice.hide()
+
+    def show_notice(self, text: Optional[str]) -> None:
+        self.notice.setText(text or '')
+        self.notice.setGeometry(self.viewport().rect())
+        self.notice.setVisible(bool(text))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.notice.setGeometry(self.viewport().rect())
 
 
-class AnnotatorsDelegate(QStyledItemDelegate):
-    """Draws the Annotators column with the inactive names (removed from Manage annotators, see
-    gui/annotators.py) in red. The item's own text stays the plain 'name, name', which sorting
-    and filtering use; the names come from the item's user data."""
-
-    TEXT_MARGIN = 3
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.inactive: Set[str] = set()
-
-    def paint(self, painter, option, index):
-        names = index.data(Qt.ItemDataRole.UserRole)
-        if not names or self.inactive.isdisjoint(names):
-            return super().paint(painter, option, index)
-        shown = QStyleOptionViewItem(option)
-        self.initStyleOption(shown, index)
-        shown.text = ''  # the style draws the background and the selection; the text is ours
-        widget = shown.widget
-        style = widget.style() if widget is not None else QApplication.style()
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, shown, painter, widget)
-
-        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, shown, widget)
-        rect = rect.adjusted(self.TEXT_MARGIN, 0, -self.TEXT_MARGIN, 0)
-        color = shown.palette.color(QPalette.ColorRole.Text)
-        metrics = QFontMetrics(shown.font)
-        align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-        pieces = []  # (text, color): each name, then its comma in the text color
-        for number, name in enumerate(names):
-            if number:
-                pieces.append((', ', color))
-            pieces.append((name, INACTIVE_COLOR if name in self.inactive else color))
-        painter.save()
-        painter.setFont(shown.font)
-        left = rect.left()
-        for text, pen in pieces:
-            room = rect.right() + 1 - left
-            width = metrics.horizontalAdvance(text)
-            if width > room:  # the last piece that fits, elided
-                text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
-                width = room
-            painter.setPen(pen)
-            painter.drawText(QRect(left, rect.top(), width, rect.height()), align, text)
-            left += width
-            if left > rect.right():
-                break
-        painter.restore()
+def empty_notice(label: QLabel) -> QLabel:
+    # a muted message, centered both ways (gui/style.py)
+    label.setProperty('emptyNotice', True)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setWordWrap(True)
+    return label
 
 
 class StatusDelegate(QStyledItemDelegate):
@@ -226,26 +226,17 @@ class StatusDelegate(QStyledItemDelegate):
 
 class TaskBrowser(QWidget):
 
-    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None,
-                 service=None):
-        """service: the shared mode's connection (cutieplus.client.ServiceClient); without it the
-        browser loads the models itself on the first Open (local mode)."""
+    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None):
         super().__init__()
         self.cfg = cfg
-        self.task_root = path.abspath(task_root)
-        self.task_set = load_task_set(self.task_root)
-        self.service = service
+        self.task_root = path.abspath(task_root)  # the input root
         self.networks = None
         self.controller: Optional[MainController] = None
-        self.exports: Dict[Tuple[str, str], QProcess] = {}
-        # shared mode: (task id, lease epoch, whether the browser took the lease, export id)
-        self.service_exports: Dict[Tuple[str, str], tuple] = {}
-        # tasks this browser exports without having them open in its window
-        self.export_locks: Dict[Tuple[str, str], TaskLock] = {}
-        # only what --labeler said: the name itself follows the annotator list (refresh_identity)
-        self.cli_labeler = cfg['labeler'] if 'labeler' in cfg else None
-        self.labeler = ''
-        self.refresh_identity()
+        # (tab, sequence) -> the input sequence, and the frames of its anchor modality
+        self.sources: Dict[Tuple[str, str], SequenceInput] = {}
+        self.frame_counts: Dict[Tuple[str, str], int] = {}
+        self.labeler = labeler_name(cfg['labeler'] if 'labeler' in cfg else None)
+        self.setWindowTitle(f'Cutie tasks: {self.task_root} · {self.labeler}')
         self.search = QLineEdit()
         self.search.setPlaceholderText('Filter by sequence, annotator or target text')
         self.search.setClearButtonEnabled(True)
@@ -258,8 +249,7 @@ class TaskBrowser(QWidget):
         self.theme_button = QPushButton()
         self.theme_button.setToolTip('Color theme: Auto follows the desktop; Eye care is Light '
                                      'with every white or light-gray surface in #FAF9DE. Click to '
-                                     'cycle Auto, Light, Dark, Eye care. Remembered for this '
-                                     'screen.')
+                                     'cycle Auto, Light, Dark, Eye care. Remembered.')
         self.theme_button.setMinimumWidth(
             max(QFontMetrics(self.theme_button.font()).horizontalAdvance(theme_button_text(name))
                 for name in THEMES) + 32)
@@ -268,51 +258,29 @@ class TaskBrowser(QWidget):
         self.show_theme()
         self.target_delegate = TargetDelegate(self)
         self.status_delegate = StatusDelegate(self)
-        self.annotators_delegate = AnnotatorsDelegate(self)
-        self.annotators_delegate.inactive = load_inactive(self.task_root)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)  # no frame around the tables: they sit on a card
+        # one table per subset of the input, in the order of find_tabs (refresh keeps it)
         self.tables: Dict[str, QTableWidget] = {}
         # each tab's sort, (column, order): a click on Frames, which does not sort, keeps it
         self.sort_keys: Dict[str, Tuple[int, Qt.SortOrder]] = {}
-        for split in self.task_set['splits']:
-            if not path.isdir(path.join(self.task_root, split)):
-                continue
-            table = QTableWidget(0, len(COLUMNS))
-            table.setHorizontalHeaderLabels(COLUMNS)
-            table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-            table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-            table.verticalHeader().setVisible(False)
-            # airy rows, no grid lines, alternate rows tinted (gui/style.py)
-            table.verticalHeader().setDefaultSectionSize(32)
-            table.setShowGrid(False)
-            table.setAlternatingRowColors(True)
-            table.horizontalHeader().setHighlightSections(False)
-            table.setItemDelegateForColumn(STATUS_COLUMN, self.status_delegate)
-            table.setFrameShape(QFrame.Shape.NoFrame)
-            table.horizontalHeader().setSectionResizeMode(TARGET_COLUMN, QHeaderView.ResizeMode.Stretch)
-            table.doubleClicked.connect(self.on_open)
-            table.itemSelectionChanged.connect(self.show_discard_action)
-            table.setItemDelegateForColumn(TARGET_COLUMN, self.target_delegate)
-            table.setItemDelegateForColumn(ANNOTATORS_COLUMN, self.annotators_delegate)
-            # sorting moves the rows, but the view keeps its hidden rows by position
-            table.model().layoutChanged.connect(self.apply_filter)
-            header = table.horizontalHeader()
-            self.sort_keys[split] = (header.sortIndicatorSection(), header.sortIndicatorOrder())
-            header.sortIndicatorChanged.connect(
-                lambda column, order, split=split: self.on_sort_indicator(split, column, order))
-            self.tables[split] = table
-            self.tabs.addTab(table, split)
 
         open_button = set_variant(QPushButton('Open'), 'primary')
         open_button.clicked.connect(self.on_open)
         export_button = QPushButton('Export')
+        export_button.setToolTip('Write the dataset: every interval of every done sequence, in '
+                                 'every tab, as a clip of workspace/cutie_export/ (numbered from '
+                                 '1). It replaces the previous export once complete.')
         export_button.clicked.connect(self.on_export)
+        # a running export: its worker, progress dialog and the locks of its sequences
+        self.export_worker: Optional[ExportWorker] = None
+        self.export_progress: Optional[QProgressDialog] = None
+        self.export_locks = []
+        self.export_plan: Optional[ExportPlan] = None
         done_button = set_variant(QPushButton('Mark done (D)'), 'tonal')
-        done_button.setToolTip('D: mark the selected sequence done (it is exported first when '
-                               'its export is missing or older than its last change).')
+        done_button.setToolTip('D: mark the selected sequence done; it must be under review (Save '
+                               'in the labeling window).')
         done_button.clicked.connect(self.on_mark_done)
         # the filter box keeps the letter for itself while it has the focus
         QShortcut(QKeySequence(Qt.Key.Key_D), self).activated.connect(self.on_mark_done)
@@ -320,15 +288,15 @@ class TaskBrowser(QWidget):
         self.discard_button = set_variant(QPushButton('Discard'), 'danger')
         self.discard_button.setToolTip(
             'Leave the selected sequence out of the dataset: its done mark and Need Attention are '
-            'removed, and it cannot be exported or marked done. On a discarded sequence the '
-            'button restores it.')
+            'removed, and it cannot be marked done. On a discarded sequence the button restores '
+            'it.')
         self.discard_button.clicked.connect(self.on_discard)
         refresh_button = QPushButton('Refresh')
         refresh_button.clicked.connect(self.refresh)
-        # Manage annotators for the admin, Annotator list (read-only) for everyone else
-        self.manage_button = QPushButton()
-        self.manage_button.clicked.connect(self.on_manage_annotators)
-        self.show_manage_button()
+        import_button = QPushButton('Import')
+        import_button.setToolTip('Add subsets of the input (each is a tab), or move the input '
+                                 'found directly in the input folder into main/.')
+        import_button.clicked.connect(self.on_import)
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(140)
@@ -337,16 +305,16 @@ class TaskBrowser(QWidget):
         self.stats.setTextFormat(Qt.TextFormat.RichText)
         self.stats.setWordWrap(True)
         self.stats.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.stats.setToolTip(f'Total Intervals: the intervals of the sequences marked done, in '
-                              f'every tab ({", ".join(self.task_set["splits"])}); each is a clip '
-                              'of the dataset. Discarded sequences never count.')
         self.tabs.currentChanged.connect(self.update_stats)
         self.tabs.currentChanged.connect(self.show_discard_action)
 
+        # the input and the export on the left, the selected sequence's actions on the right
         buttons = QHBoxLayout()
+        for button in (import_button, export_button, refresh_button):
+            set_variant(button, 'info')  # blue; a disabled one grey, as every disabled button
+            buttons.addWidget(button)
         buttons.addStretch(1)
-        for button in (open_button, export_button, done_button, self.discard_button,
-                       refresh_button, self.manage_button):
+        for button in (open_button, done_button, self.discard_button):
             buttons.addWidget(button)
         # rounded cards (gui/style.py): the filter, the tasks with their actions, the messages
         layout = QVBoxLayout()
@@ -358,9 +326,15 @@ class TaskBrowser(QWidget):
         filter_row.addWidget(self.hide_done)
         filter_row.addWidget(self.theme_button)
         layout.addWidget(Card(filter_row))
+        # the tabs, or, before any subset is imported, a message in their place
+        self.no_data = empty_notice(QLabel())
+        self.task_pages = QStackedWidget()
+        self.task_pages.setObjectName('taskPages')  # on the card's color (gui/style.py)
+        self.task_pages.addWidget(self.tabs)
+        self.task_pages.addWidget(self.no_data)
         tasks = QVBoxLayout()
         tasks.setSpacing(GAP)
-        tasks.addWidget(self.tabs, 1)
+        tasks.addWidget(self.task_pages, 1)
         tasks.addLayout(buttons)
         layout.addWidget(Card(tasks, stretch=True), 1)
         # the messages and the statistics, side by side so the table keeps its height
@@ -372,8 +346,6 @@ class TaskBrowser(QWidget):
         self.setLayout(layout)
 
         self.refresh()
-        for table in self.tables.values():
-            table.setColumnWidth(STATUS_COLUMN, self.status_delegate.column_width(table.font()))
         if initial_split in self.tables:
             self.tabs.setCurrentWidget(self.tables[initial_split])
         self.lock_timer = QTimer(self)
@@ -384,43 +356,9 @@ class TaskBrowser(QWidget):
     def log(self, text: str) -> None:
         self.console.appendPlainText(text)
 
-    def refresh_identity(self) -> str:
-        """Who this session labels as: --labeler, else the annotator assigned to this screen's
-        port, else $CUTIE_LABELER, else the account name. Read again whenever it matters, so a
-        saved change of the annotator list is effective without a restart."""
-        self.labeler = labeler_name(self.cli_labeler, self.task_root)
-        title = f'Cutie tasks: {self.task_root} · {self.labeler}'
-        if self.windowTitle() != title:
-            self.setWindowTitle(title)
-        self.refresh_inactive()
-        self.show_manage_button()
-        return self.labeler
-
-    def show_manage_button(self) -> None:
-        button = getattr(self, 'manage_button', None)  # not yet made on the first call
-        if button is not None:
-            button.setText('Manage annotators' if may_manage(self.task_root) else 'Annotator list')
-
-    def refresh_inactive(self) -> None:
-        """The removed annotators, drawn red: read again with the identity, so a removal saved
-        on any screen shows here within a lock refresh."""
-        delegate = getattr(self, 'annotators_delegate', None)  # not yet made on the first call
-        inactive = load_inactive(self.task_root)
-        if delegate is None or delegate.inactive == inactive:
-            return
-        delegate.inactive = inactive
-        for table in self.tables.values():
-            for row in range(table.rowCount()):
-                item = table.item(row, ANNOTATORS_COLUMN)
-                item.setToolTip(self.annotators_tip(item.data(Qt.ItemDataRole.UserRole) or []))
-            table.viewport().update()
-
-    def annotators_tip(self, names: List[str]) -> str:
-        if not names:
-            return ''
-        inactive = self.annotators_delegate.inactive
-        return 'changed by ' + ', '.join(f'{name} (removed)' if name in inactive else name
-                                         for name in names)
+    @staticmethod
+    def annotators_tip(names: List[str]) -> str:
+        return 'changed by ' + ', '.join(names) if names else ''
 
     def status_color(self, status: str) -> QColor:
         if status == DISCARDED_STATUS:
@@ -457,29 +395,83 @@ class TaskBrowser(QWidget):
         save_theme(self.theme)
         self.show_theme()
 
-    def on_manage_annotators(self) -> None:
-        dialog = AnnotatorManager(self.task_root, self)
-        dialog.saved.connect(self.on_annotators_saved)
-        dialog.exec()
-
-    def on_annotators_saved(self, count: int) -> None:
-        self.log(f'Annotators saved ({count}). This screen records as {self.refresh_identity()}.')
-
     def task_dir(self, split: str, sequence: str) -> str:
-        return path.join(self.task_root, split, sequence)
+        # the sequence's work folder (it exists once the sequence has been opened)
+        return work_folder(self.task_root, split, sequence)
+
+    def summary(self, split: str, sequence: str) -> dict:
+        key = (split, sequence)
+        return summarize_task(self.sources[key], self.task_dir(split, sequence),
+                              self.frame_counts[key])
+
+    def make_table(self, split: str) -> QTableWidget:
+        table = TaskTable(0, len(COLUMNS))
+        table.setHorizontalHeaderLabels(COLUMNS)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        # airy rows, no grid lines, alternate rows tinted (gui/style.py)
+        table.verticalHeader().setDefaultSectionSize(32)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setHighlightSections(False)
+        table.setItemDelegateForColumn(STATUS_COLUMN, self.status_delegate)
+        table.setFrameShape(QFrame.Shape.NoFrame)
+        table.horizontalHeader().setSectionResizeMode(TARGET_COLUMN, QHeaderView.ResizeMode.Stretch)
+        table.setColumnWidth(STATUS_COLUMN, self.status_delegate.column_width(table.font()))
+        table.doubleClicked.connect(self.on_open)
+        table.itemSelectionChanged.connect(self.show_discard_action)
+        table.setItemDelegateForColumn(TARGET_COLUMN, self.target_delegate)
+        # sorting moves the rows, but the view keeps its hidden rows by position
+        table.model().layoutChanged.connect(self.apply_filter)
+        header = table.horizontalHeader()
+        self.sort_keys[split] = (header.sortIndicatorSection(), header.sortIndicatorOrder())
+        header.sortIndicatorChanged.connect(
+            lambda column, order, split=split: self.on_sort_indicator(split, column, order))
+        return table
 
     def refresh(self) -> None:
-        for split, table in self.tables.items():
-            split_dir = path.join(self.task_root, split)
-            # hidden names are tasks still being built
-            sequences = sorted(name for name in os.listdir(split_dir) if not name.startswith('.')
-                               and path.isfile(path.join(split_dir, name, TASK_FILE)))
+        """Reads the input again: its subsets (a tab each, a new one added, a gone one removed)
+        and every sequence's row."""
+        try:
+            tabs = find_tabs(self.task_root)
+        except InputError as exc:
+            tabs = []
+            self.log(str(exc))
+        if not tabs and unorganized_parts(self.task_root):
+            self.log(f'The input in {self.task_root} is not in a subset yet: press Import, then '
+                     'Save, to move it into main/.')
+            self.no_data.setText('No data imported.\nPress Import, then Save, to move the input '
+                                 'into main/.')
+        else:
+            self.no_data.setText('No data imported.\nPress Import to add a subset.')
+        self.task_pages.setCurrentWidget(self.tabs if tabs else self.no_data)
+        names = [tab.name for tab in tabs]
+        for split in [split for split in self.tables if split not in names]:
+            self.tabs.removeTab(self.tabs.indexOf(self.tables.pop(split)))
+        for index, tab in enumerate(tabs):
+            if tab.name not in self.tables:
+                self.tables[tab.name] = self.make_table(tab.name)
+                self.tabs.insertTab(index, self.tables[tab.name], tab.name)
+        self.tables = {name: self.tables[name] for name in names}
+        self.sources, self.frame_counts = {}, {}
+        for tab in tabs:
+            contents = read_tab(tab)
+            for problem in contents.problems:
+                self.log(problem)
+            table = self.tables[tab.name]
             table.setSortingEnabled(False)
-            table.setRowCount(len(sequences))
-            for row, sequence in enumerate(sequences):
-                self.fill_row(table, row, summarize_task(self.task_dir(split, sequence)))
+            table.setRowCount(len(contents.sequences))
+            for row, source in enumerate(contents.sequences):
+                key = (tab.name, source.sequence)
+                self.sources[key] = source
+                summary = summarize_task(source, self.task_dir(*key))
+                self.frame_counts[key] = summary['frames']
+                self.fill_row(table, row, summary)
             table.setSortingEnabled(True)
-            self.tabs.setTabText(self.tabs.indexOf(table), f'{split} ({len(sequences)})')
+            self.tabs.setTabText(self.tabs.indexOf(table),
+                                 f'{tab.name} ({len(contents.sequences)})')
         self.apply_filter()
         self.update_stats()
 
@@ -490,6 +482,9 @@ class TaskBrowser(QWidget):
         if split is None:
             self.stats.clear()
             return
+        self.stats.setToolTip(f'Total Intervals: the intervals of the sequences marked done, in '
+                              f'every tab ({", ".join(self.tables)}); each is a clip of the '
+                              'dataset. Discarded sequences never count.')
         counts = Counter(table.item(row, STATUS_COLUMN).text() for row in range(table.rowCount()))
         parts = [f'<span style="color:{self.status_color(status).name()}">{status} '
                  f'{counts[status]}</span>' for status in reversed(STATUS_COLORS)]
@@ -521,14 +516,14 @@ class TaskBrowser(QWidget):
             return ''
         if not holder:
             return 'another window'
-        text = f'{holder.get("labeler", "?")} ({holder.get("display") or "no display"})'
+        text = f'{holder.get("labeler", "?")} (pid {holder.get("pid", "?")})'
         return f'{text} {holder["activity"]}' if holder.get('activity') else text
 
     def fill_row(self, table: QTableWidget, row: int, summary: dict) -> None:
         values = (summary['sequence'], frames_text(summary),
                   f'{summary["mask_anchors"]} + {summary["empty_anchors"]} empty', summary['status'],
                   ', '.join(summary['annotators']), self.open_by_text(summary['open_by']),
-                  summary['modality'], summary['target'])
+                  summary['target'])
         for column, value in enumerate(values):
             item = UnsortedItem() if column == FRAMES_COLUMN else QTableWidgetItem()
             item.setData(Qt.ItemDataRole.DisplayRole, value)
@@ -565,9 +560,8 @@ class TaskBrowser(QWidget):
             table.setItem(row, column, item)
 
     def refresh_locks(self) -> None:
-        # other sessions open and close tasks; a row whose holder changed is reread whole, since
+        # other windows open and close tasks; a row whose holder changed is reread whole, since
         # its anchors and status may have changed too
-        self.refresh_identity()  # the annotator list may have been saved from another screen
         for split, table in self.tables.items():
             changed = []
             for row in range(table.rowCount()):
@@ -578,7 +572,7 @@ class TaskBrowser(QWidget):
             if changed:
                 table.setSortingEnabled(False)
                 for row, sequence in changed:
-                    self.fill_row(table, row, summarize_task(self.task_dir(split, sequence)))
+                    self.fill_row(table, row, self.summary(split, sequence))
                 table.setSortingEnabled(True)
         self.apply_filter()
         self.update_stats()
@@ -590,7 +584,7 @@ class TaskBrowser(QWidget):
         for row in range(table.rowCount()):
             if table.item(row, SEQUENCE_COLUMN).text() == sequence:
                 table.setSortingEnabled(False)
-                self.fill_row(table, row, summarize_task(self.task_dir(split, sequence)))
+                self.fill_row(table, row, self.summary(split, sequence))
                 table.setSortingEnabled(True)
                 self.apply_filter()  # e.g. a sequence just marked done leaves a list that hides done
                 self.update_stats()
@@ -610,9 +604,23 @@ class TaskBrowser(QWidget):
                           or (hide_done
                               and table.item(row, STATUS_COLUMN).text() in HIDDEN_BY_HIDE_DONE))
                 table.setRowHidden(row, hidden)
-            # a hidden row cannot stay selected: Open / Export / Mark done would act on it unseen
+            # a hidden row cannot stay selected: Open / Mark done / Discard would act on it unseen
             if any(table.isRowHidden(index.row()) for index in table.selectionModel().selectedRows()):
                 table.clearSelection()
+        for split, table in self.tables.items():
+            listed = any(not table.isRowHidden(row) for row in range(table.rowCount()))
+            table.show_notice(None if listed else self.empty_text(split, table))
+
+    def empty_text(self, split: str, table: QTableWidget) -> str:
+        # why a tab lists no sequence
+        if table.rowCount() == 0:
+            return f'No sequences in {split}.'
+        statuses = [table.item(row, STATUS_COLUMN).text() for row in range(table.rowCount())
+                    if table.item(row, STATUS_COLUMN) is not None]
+        if self.hide_done.isChecked() and all(status in HIDDEN_BY_HIDE_DONE for status in statuses):
+            return (f'Every sequence in {split} is done or discarded: nothing left to label.\n'
+                    'Untick Hide done / discarded to list them.')
+        return f'No sequence matches "{self.search.text().strip()}".'
 
     def selected_task(self) -> Optional[Tuple[str, str]]:
         table = self.tabs.currentWidget()
@@ -627,12 +635,8 @@ class TaskBrowser(QWidget):
         return (self.controller is not None
                 and (self.controller.task.split, self.controller.task.sequence_id) == (split, sequence))
 
-    def window_exporting(self, split: str, sequence: str) -> bool:
-        # the labeling window's own Export task masks; a second export would write the same tree
-        return self.is_open(split, sequence) and self.controller.export_process is not None
-
     def refuse_if_held_elsewhere(self, split: str, sequence: str, action: str) -> bool:
-        # another session's window (or export) has the task: its unsaved work is out of reach
+        # another window has the task: its unsaved work is out of reach
         holder = lock_holder(self.task_dir(split, sequence))
         if holder is None or holder.get('pid') == os.getpid():
             return False
@@ -650,9 +654,6 @@ class TaskBrowser(QWidget):
             self.controller.gui.raise_()
             self.controller.gui.activateWindow()
             return
-        if (split, sequence) in self.exports:
-            self.log(f'{split}/{sequence} is being exported; open it once the export finishes.')
-            return
         # checked before closing the current task, which would be closed for nothing
         if self.refuse_if_held_elsewhere(split, sequence, 'open it'):
             return
@@ -661,28 +662,21 @@ class TaskBrowser(QWidget):
                 self.log('Pause the propagation before switching tasks.')
                 return
             # writes pending saves; on_task_event clears the controller
-            if not self.controller.gui.close():
-                self.log('The open task is exporting; switch tasks once the export finishes.')
-                return
-        backend_factory = None
-        if self.service is not None:
-            from cutieplus.backends.shared import SharedTaskBackend
-            backend_factory = SharedTaskBackend.factory(self.service)
-        elif self.networks is None:
+            self.controller.gui.close()
+        if self.networks is None:
             self.log('Loading models...')
             QApplication.processEvents()
             self.networks = load_networks(self.cfg)
         cfg = copy.deepcopy(self.cfg)
         with open_dict(cfg):
-            cfg['workspace'] = self.task_dir(split, sequence)
-            cfg['labeler'] = self.refresh_identity()
+            cfg['workspace'] = ensure_work_folder(self.task_root, self.sources[(split, sequence)])
+            cfg['labeler'] = self.labeler
         self.log(f'Opening {split}/{sequence}.')
         try:
             self.controller = MainController(cfg, networks=self.networks,
-                                             on_task_event=self.on_task_event,
-                                             backend_factory=backend_factory)
+                                             on_task_event=self.on_task_event)
         except TaskLocked as exc:
-            # another session took it after the check above
+            # another window took it after the check above
             self.log(str(exc))
             self.refresh_task(split, sequence)
             return
@@ -697,13 +691,17 @@ class TaskBrowser(QWidget):
             self.controller = None
         self.refresh_task(controller.task.split, controller.task.sequence_id)
 
-    def on_export(self) -> None:
-        selection = self.selected_task()
-        if selection is not None:
-            self.export_task(*selection, then_mark_done=False)
+    def on_import(self) -> None:
+        dialog = ImportDialog(self.task_root, self)
+        dialog.imported.connect(self.on_imported)
+        dialog.exec()
+
+    def on_imported(self, summary: str) -> None:
+        self.log(summary)
+        self.refresh()
 
     def on_mark_done(self) -> None:
-        # accepts a task under review; exports it first when the export is missing or stale
+        # accepts a task under review
         selection = self.selected_task()
         if selection is None:
             return
@@ -715,11 +713,6 @@ class TaskBrowser(QWidget):
             self.log(f'{split}/{sequence} needs attention: open it and toggle Need Attention off '
                      'first.')
             return
-        self.refresh_identity()
-        if self.window_exporting(split, sequence):
-            self.log(f'{split}/{sequence} is being exported from its labeling window; '
-                     'mark it done once that finishes.')
-            return
         if self.refuse_if_held_elsewhere(split, sequence, 'mark it done'):
             return
         if self.is_open(split, sequence):
@@ -730,24 +723,12 @@ class TaskBrowser(QWidget):
         workspace = self.task_dir(split, sequence)
         status = task_status(workspace)
         if status != 'under review':
-            self.log(f'{split}/{sequence} is {status}: save its binary PNGs in the labeling window '
-                     'to submit it for review first.')
+            self.log(f'{split}/{sequence} is {status}: save it in the labeling window (Ctrl+S) to '
+                     'submit it for review first.')
             return
-        if self.service is not None:
-            # the review and the export must be of the task's current content
-            status = self.service.call('export_status', task_id=f'{split}/{sequence}')
-            if not status['review_current']:
-                self.log(f'{split}/{sequence} changed after it was submitted; save its binary PNGs '
-                         'again to submit it for review.')
-            elif status['export_current']:
-                self.shared_mark_done(split, sequence)
-            else:
-                self.export_task(split, sequence, then_mark_done=True)
-            return
-        if export_is_current(workspace, self.task_set):
-            self.finish_mark_done(split, sequence)
-        else:
-            self.export_task(split, sequence, then_mark_done=True)
+        mark_done(workspace, self.labeler)
+        self.log(f'{split}/{sequence} is done.')
+        self.refresh_task(split, sequence)
 
     def selected_status(self) -> Optional[str]:
         # the Status of the selected row, without asking for a selection
@@ -765,15 +746,14 @@ class TaskBrowser(QWidget):
     def confirm_discard(self, split: str, sequence: str) -> bool:
         answer = QMessageBox.question(
             self, 'Discard', f'Discard {split}/{sequence}?\n\nIt is left out of the dataset: its '
-            'done mark and Need Attention are removed, and it cannot be exported or marked done. '
-            'Its masks and anchors stay; Restore brings it back.',
+            'done mark and Need Attention are removed, and it cannot be marked done. Its masks '
+            'and anchors stay; Restore brings it back.',
             QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Discard
 
     def on_discard(self) -> None:
         # the selected sequence is left out of the dataset, or restored when it is discarded
-        from cutieplus.client import ClientError, new_request_id
         selection = self.selected_task()
         if selection is None:
             return
@@ -783,180 +763,121 @@ class TaskBrowser(QWidget):
         action = 'discard it' if discarded else 'restore it'
         if self.refuse_if_held_elsewhere(split, sequence, action):
             return
-        if (split, sequence) in self.exports or self.window_exporting(split, sequence):
-            self.log(f'{split}/{sequence} is being exported; {action} once that finishes.')
-            return
         if self.is_open(split, sequence) and self.controller.propagating:
             self.log('Pause the propagation first.')
             return
         if discarded and not self.confirm_discard(split, sequence):
             return
-        self.refresh_identity()
-        if self.service is not None:
-            lease = self.service_lease(split, sequence)
-            if lease is None:
-                return
-            task_id, epoch, taken = lease
-            try:
-                self.service.call('set_discard', task_id=task_id, lease_epoch=epoch,
-                                  discarded=discarded, request_id=new_request_id())
-            except ClientError as exc:
-                self.log(f'{split}/{sequence}: not {"discarded" if discarded else "restored"}: '
-                         f'{exc}')
-                return
-            finally:
-                self.release_service_lease(task_id, epoch, taken)
-        else:
-            discard_task(workspace, self.labeler, discarded)
+        ensure_work_folder(self.task_root, self.sources[(split, sequence)])
+        discard_task(workspace, self.labeler, discarded)
         if discarded:
             if self.is_open(split, sequence):
                 self.controller.task.attention = None  # its window's Need Attention is off
                 self.controller.gui.refresh_attention_button()
             self.log(f'{split}/{sequence} is discarded: it is left out of the dataset.')
-            if curated_split(self.task_root, sequence) == 'done':
-                self.log(f'Its row in the curated CSV says done: {split}/{sequence} stays in the '
-                         'dataset until that row changes (Cutie never edits the CSV).')
         else:
             self.log(f'{split}/{sequence} is restored; it needs a review and Mark done again.')
         self.refresh_task(split, sequence)
 
-    def service_lease(self, split: str, sequence: str) -> Optional[Tuple[str, int, bool]]:
-        """(task id, lease epoch, taken here) of a task the browser exports or marks done in shared
-        mode: the open window's lease, else a lease of the browser's own session."""
-        from cutieplus.client import ClientError
-        if self.is_open(split, sequence):
-            backend = self.controller.backend
-            return backend.task_id, backend.epoch, False
+    def on_export(self) -> None:
+        """The dataset (gui/dataset_export.py): the intervals of every done sequence, in every tab,
+        after a confirmation. Every exported sequence is locked while it is written."""
+        if self.export_worker is not None:
+            self.export_progress.raise_()
+            return
+        self.log('Export: reading the done sequences...')
+        QApplication.processEvents()
+        plan = plan_export(self.task_root)
+        for warning in plan.warnings:
+            self.log(warning)
+        if plan.problems:
+            for problem in plan.problems:
+                self.log(problem)
+            self.log('Not exported: fix the problems above first.')
+            return
+        if not plan.clips:
+            self.log('Nothing to export: no sequence is done.')
+            return
+        export_root = export_root_of(self.task_root)
+        problem = free_space_problem(plan, export_root)
+        if problem:
+            self.log(f'Not exported: {problem}')
+            return
+        if not self.confirm_export(plan, export_root):
+            return
         try:
-            reply = self.service.call('open_task', workspace=self.task_dir(split, sequence))
-        except ClientError as exc:
-            self.log(f'{split}/{sequence}: {exc}')
-            self.refresh_task(split, sequence)
-            return None
-        return reply['task_id'], reply['lease_epoch'], True
-
-    def release_service_lease(self, task_id: str, epoch: int, taken: bool) -> None:
-        if taken:
-            try:
-                self.service.call('close_task', task_id=task_id, lease_epoch=epoch)
-            except Exception as exc:
-                self.log(f'Releasing {task_id}: {exc}')
-
-    def shared_mark_done(self, split: str, sequence: str, lease=None) -> None:
-        from cutieplus.client import ClientError, new_request_id
-        lease = lease or self.service_lease(split, sequence)
-        if lease is None:
+            self.export_locks = lock_clips(plan, self.labeler)
+        except TaskLocked as exc:
+            self.log(f'Not exported: {exc} Close it, then press Export again.')
             return
-        task_id, epoch, taken = lease
-        try:
-            self.service.call('mark_done', task_id=task_id, lease_epoch=epoch,
-                              request_id=new_request_id())
-            self.log(f'{split}/{sequence} is done.')
-        except ClientError as exc:
-            self.log(f'{split}/{sequence} is not marked done: {exc}')
-        finally:
-            if lease is not None and not self.service_exports.get((split, sequence)):
-                self.release_service_lease(task_id, epoch, taken)
-        self.refresh_task(split, sequence)
+        self.refresh_locks()  # Open by: exporting
+        self.export_plan = plan
+        self.export_progress = QProgressDialog(
+            f'Exporting {len(plan.clips)} clips into {export_root}...', 'Cancel', 0, plan.frames,
+            self)
+        self.export_progress.setWindowTitle('Export')
+        self.export_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.export_progress.setMinimumDuration(0)
+        self.export_progress.setAutoClose(False)
+        self.export_progress.setAutoReset(False)
+        self.export_worker = ExportWorker()
+        self.export_progress.canceled.connect(self.export_worker.cancel.set)
+        self.export_worker.progress.connect(self.on_export_progress)
+        self.export_worker.finished.connect(self.on_exported)
+        self.export_progress.show()
+        threading.Thread(target=self.export_worker.run, args=(plan, export_root),
+                         daemon=True).start()
 
-    def finish_mark_done(self, split: str, sequence: str) -> None:
-        workspace = self.task_dir(split, sequence)
-        if attention_of(workspace):  # flagged while it was being exported
-            self.log(f'{split}/{sequence} is exported, but it needs attention: it is not marked '
-                     'done.')
-        elif task_status(workspace) == 'under review':
-            mark_done(workspace, self.labeler)
-            self.log(f'{split}/{sequence} is done.')
+    def confirm_export(self, plan: ExportPlan, export_root: str) -> bool:
+        names = plan.names()
+        replaced = (' The previous export there is replaced once this one is complete.'
+                    if path.exists(export_root) else '')
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle('Export')
+        dialog.setText(f'Export {len(plan.clips)} clip{"" if len(plan.clips) == 1 else "s"}, '
+                       f'{names[0]} to {names[-1]}, into {export_root}?')
+        dialog.setInformativeText(
+            f'Each is an interval of one of the {plan.sequences} done sequences, in every tab: '
+            f'{plan.frames} frames, whose images are copied ({plan.bytes / 2**30:.1f} GB), with '
+            f'their masks and a seqinfo file.{replaced}')
+        export_button = dialog.addButton('Export', QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = dialog.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is export_button
+
+    def on_export_progress(self, done: int, total: int) -> None:
+        if self.export_progress is not None:
+            self.export_progress.setValue(done)
+
+    def on_exported(self, report, error: str) -> None:
+        release_locks(self.export_locks)
+        self.export_locks = []
+        self.export_progress.close()
+        self.export_worker = self.export_progress = None
+        export_root = export_root_of(self.task_root)
+        if report is None:
+            self.log(f'Export stopped: {error}. The previous export is unchanged.' if error else
+                     'Export cancelled; the previous export is unchanged.')
         else:
-            self.log(f'{split}/{sequence} changed during the export; it needs a new review.')
-        self.refresh_task(split, sequence)
-
-    def export_task(self, split: str, sequence: str, then_mark_done: bool) -> None:
-        if discard_of(self.task_dir(split, sequence)):
-            self.log(f'{split}/{sequence} is discarded: it is not exported.')
-            return
-        if (split, sequence) in self.exports or self.window_exporting(split, sequence):
-            self.log(f'{split}/{sequence} is already being exported.')
-            return
-        if self.service is not None:
-            if self.is_open(split, sequence) and self.controller.propagating:
-                self.log('Pause the propagation before exporting.')
-                return
-            lease = self.service_lease(split, sequence)
-            if lease is None:
-                return
-            try:
-                export_id = self.service.call('begin_export', task_id=lease[0],
-                                              lease_epoch=lease[1])['export_id']
-            except Exception as exc:
-                self.log(f'{split}/{sequence} is not exported: {exc}')
-                self.release_service_lease(*lease)
-                return
-            self.service_exports[(split, sequence)] = lease + (export_id, )
-            if self.is_open(split, sequence):
-                self.controller.browser_exporting = True
-                self.controller.gui.refresh_reset_button_state()
-        elif self.is_open(split, sequence):
-            if self.controller.propagating:
-                self.log('Pause the propagation before exporting.')
-                return
-            self.controller.res_man.save_queue.join()
-            self.controller.browser_exporting = True
-            self.controller.gui.refresh_reset_button_state()
-        else:
-            # hold the task while exporting, so no other session edits or resets it meanwhile
-            self.refresh_identity()
-            try:
-                self.export_locks[(split, sequence)] = TaskLock.acquire(
-                    self.task_dir(split, sequence), self.labeler, activity='exporting')
-            except TaskLocked as exc:
-                self.log(f'{exc} Export it once they close it.')
-                self.refresh_task(split, sequence)
-                return
-        self.log(f'Exporting {split}/{sequence}...')
-        self.exports[(split, sequence)] = start_export(
-            export_command(self.task_set, split, sequence), self.log,
-            lambda ok: self.on_export_finished(split, sequence, ok, then_mark_done))
-        self.refresh_task(split, sequence)
-
-    def on_export_finished(self, split: str, sequence: str, ok: bool, then_mark_done: bool) -> None:
-        self.exports.pop((split, sequence), None)
-        if self.is_open(split, sequence):
-            self.controller.browser_exporting = False
-            self.controller.gui.refresh_reset_button_state()
-        service_export = self.service_exports.pop((split, sequence), None)
-        if service_export is not None:
-            # the coordinator accepts it only complete and of the content it started from
-            task_id, epoch, taken, export_id = service_export
-            result = self.service.call('finish_export', export_id=export_id, exit_ok=bool(ok))
-            if ok and result['status'] != 'complete':
-                self.log(f'The export of {split}/{sequence} is not accepted ({result["status"]}): '
-                         f'{result["detail"]}')
-                ok = False
-            self.log(f'Exported {split}/{sequence}.' if ok else
-                     f'Export of {split}/{sequence} failed.')
-            if ok and then_mark_done:
-                self.shared_mark_done(split, sequence, (task_id, epoch, False))
-            self.release_service_lease(task_id, epoch, taken)
-            self.refresh_task(split, sequence)
-            return
-        self.log(f'Exported {split}/{sequence}.' if ok else f'Export of {split}/{sequence} failed.')
-        if ok and then_mark_done:
-            self.finish_mark_done(split, sequence)  # still holding the task
-        export_lock = self.export_locks.pop((split, sequence), None)
-        if export_lock is not None:
-            export_lock.release()
-        self.refresh_task(split, sequence)
+            names = self.export_plan.names()
+            notes = []
+            if report.pregenerated:
+                notes.append(f'{report.pregenerated} mask frames are the pregenerated masks')
+            if report.empty:
+                notes.append(f'{report.empty} frames had no mask and are empty')
+            self.log(f'Exported {report.clips} clips ({names[0]} to {names[-1]}, {report.frames} '
+                     f'frames) into {export_root}.' + (f' {"; ".join(notes)}.' if notes else ''))
+        self.export_plan = None
+        self.refresh_locks()
 
     def closeEvent(self, event):
-        # quitting destroys the export processes, which kills them halfway through a tree
-        if self.exports:
-            running = ', '.join(f'{split}/{sequence}' for split, sequence in self.exports)
-            self.log(f'Wait for the export of {running} to finish before closing.')
+        if self.export_worker is not None:
+            self.log('Wait for the export to finish, or cancel it, before closing.')
             event.ignore()
             return
-        if self.controller is not None and not self.controller.gui.close():
-            self.log('The open task is exporting; close once the export finishes.')
-            event.ignore()
-            return
+        # the open task writes its pending saves as its window closes
+        if self.controller is not None:
+            self.controller.gui.close()
         event.accept()

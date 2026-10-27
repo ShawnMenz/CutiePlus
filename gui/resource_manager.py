@@ -8,7 +8,7 @@ from queue import Queue
 import threading
 from threading import Thread
 from omegaconf import DictConfig, open_dict
-from typing import Dict, Optional, Tuple, Literal, Union
+from typing import Optional, Tuple, Literal, Union
 import cv2
 from PIL import Image
 if not hasattr(Image, 'Resampling'):  # Pillow<9.0
@@ -16,19 +16,11 @@ if not hasattr(Image, 'Resampling'):  # Pillow<9.0
 import numpy as np
 
 from cutie.utils.palette import davis_palette
-from gui.task_state import TaskState
+from gui.task_input import frame_files
+from gui.task_state import MASKS_DIR, TaskState
 from tqdm import tqdm
 
 log = logging.getLogger()
-
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp')
-
-
-def _frame_files(directory: str) -> Dict[str, str]:
-    # frame name -> file name, in frame order
-    files = sorted(f for f in os.listdir(directory)
-                   if path.splitext(f)[1].lower() in IMAGE_EXTENSIONS)
-    return {path.splitext(f)[0]: f for f in files}
 
 
 # https://bugs.python.org/issue28178
@@ -121,7 +113,8 @@ class ResourceManager:
         with open_dict(cfg):
             cfg['workspace'] = self.workspace
 
-        # task mode reads the frames in place from the directories named in task.json
+        # task mode reads the frames in place from the input (named in the work folder's
+        # metadata.json)
         labeler = cfg['labeler'] if 'labeler' in cfg else None
         self.task = TaskState(self.workspace, labeler) if TaskState.is_task(self.workspace) else None
 
@@ -145,16 +138,19 @@ class ResourceManager:
             self.default_modality = 'default'
             os.makedirs(self.image_dirs['default'], exist_ok=True)
         self.image_dir = self.image_dirs[self.default_modality]
-        self.mask_dir = path.join(self.workspace, 'masks')
+        self.mask_dir = path.join(self.workspace, MASKS_DIR)
         self.visualization_dir = path.join(self.workspace, 'visualization')
         self.soft_mask_dir = path.join(self.workspace, 'soft_masks')
         os.makedirs(self.mask_dir, exist_ok=True)
-        os.makedirs(self.visualization_dir, exist_ok=True)
-        os.makedirs(self.soft_mask_dir, exist_ok=True)
+        # a task's work folder holds masks/ and metadata.json only: the visualizations and soft
+        # masks are a plain workspace's
+        if self.task is None:
+            os.makedirs(self.visualization_dir, exist_ok=True)
+            os.makedirs(self.soft_mask_dir, exist_ok=True)
 
-        # create all soft mask sub-directories
-        for i in range(1, cfg['num_objects'] + 1):
-            os.makedirs(path.join(self.soft_mask_dir, f'{i}'), exist_ok=True)
+            # create all soft mask sub-directories
+            for i in range(1, cfg['num_objects'] + 1):
+                os.makedirs(path.join(self.soft_mask_dir, f'{i}'), exist_ok=True)
 
         # convert read functions to be buffered
         self.get_image = LRU(self._get_image_unbuffered, maxsize=cfg['buffer_size'])
@@ -168,18 +164,9 @@ class ResourceManager:
         if need_resizing:
             self._copy_resize_frames(images)
 
-        # read all frame names; each modality maps a frame name to its file (a task lists them in
-        # task.json, sparing a slow scan of large directories on external drives)
-        if self.task is not None and self.task.frame_files:
-            self.frame_files = {
-                modality: {path.splitext(f)[0]: f for f in files}
-                for modality, files in self.task.frame_files.items()
-            }
-        else:
-            self.frame_files = {
-                modality: _frame_files(directory)
-                for modality, directory in self.image_dirs.items()
-            }
+        # read all frame names; each modality maps a frame name to its file
+        self.frame_files = {modality: frame_files(directory)
+                            for modality, directory in self.image_dirs.items()}
         self.names = list(self.frame_files[self.default_modality])
         self.name_to_ti = {name: ti for ti, name in enumerate(self.names)}
         self.length = len(self.names)
@@ -209,8 +196,6 @@ class ResourceManager:
             t.daemon = True
             t.start()
         self.closed = False
-        # shared mode: the service writes the task's masks; this window only reads them
-        self.read_only = False
 
     def close(self):
         # finish pending saves and stop the save threads; safe to call more than once
@@ -324,13 +309,8 @@ class ResourceManager:
                 'The save queue is full! You need more threads or faster IO. Program might pause.')
         self.save_queue.put(item)
 
-    def _check_writable(self) -> None:
-        if self.read_only:
-            raise RuntimeError('the masks of this task are written by the CutiePlus service')
-
     def save_mask(self, ti: int, mask: np.ndarray):
         # mask should be uint8 H*W without channels
-        self._check_writable()
         assert 0 <= ti < self.length
         assert isinstance(mask, np.ndarray)
 
@@ -367,7 +347,7 @@ class ResourceManager:
         return image
 
     def _get_mask_unbuffered(self, ti: int):
-        # returns H*W uint8 array; a task falls back to its prefill for untouched frames
+        # returns H*W uint8 array; a task falls back to its pregenerated mask for untouched frames
         assert 0 <= ti < self.length
 
         name = self.names[ti]
@@ -388,12 +368,11 @@ class ResourceManager:
         name = self.names[ti]
         anchor = self.task.anchor(name)
         if anchor is not None:
-            kind = 'empty anchor' if anchor['kind'] == 'empty' else 'anchor'
-            return f'{kind}: {anchor["origin"]}'
+            return 'empty anchor' if anchor['kind'] == 'empty' else 'anchor'
         if path.exists(path.join(self.mask_dir, name + '.png')):
             return 'propagated'
         if name in self.task.prefill:
-            return f'prefill: {self.task.prefill[name]["source"]}'
+            return self.task.prefill[name]['source']
         return 'no mask'
 
     def frame_parts(self, ti: int, modality: Optional[str] = None
@@ -409,7 +388,6 @@ class ResourceManager:
 
     def delete_mask(self, ti: int) -> None:
         # wait for pending saves so a queued write cannot recreate the file
-        self._check_writable()
         self.save_queue.join()
         mask_path = path.join(self.mask_dir, self.names[ti] + '.png')
         if path.exists(mask_path):
@@ -418,7 +396,6 @@ class ResourceManager:
 
     def clear_sequence_masks(self) -> int:
         """Remove only generated mask PNGs from this sequence's workspace."""
-        self._check_writable()
         self.save_queue.join()
         directories = (self.mask_dir, path.join(self.workspace, 'binary_masks'),
                        self.soft_mask_dir)

@@ -1,4 +1,4 @@
-"""Configuration helpers without torch (the coordinator uses them and never imports torch)."""
+"""Configuration helpers without torch."""
 from omegaconf import DictConfig, OmegaConf
 
 # inference settings that change a model's output; they belong to a job's model configuration

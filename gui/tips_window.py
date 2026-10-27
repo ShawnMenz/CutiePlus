@@ -33,7 +33,7 @@ class TipsWindow(QWidget):
 
         self.resize(*PREFERRED_SIZE)
         self.placed = False
-        # a VNC viewer resizes the remote screen whenever its own window changes
+        # the screen can change size (e.g. a new resolution)
         parent.screen().availableGeometryChanged.connect(self.on_screen_changed)
 
     def fit_on_screen(self) -> None:

@@ -8,20 +8,22 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
                                QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog,
                                QMessageBox, QFrame, QLineEdit, QScrollArea, QSplitter, QStyle,
-                               QGridLayout)
+                               QGridLayout, QToolButton)
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QPainter,
-                           QColor, QCursor)
+                           QColor, QCursor, QPen)
 from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
-from gui.style import ATTENTION, CARD_MARGINS, GAP, Card, restyle, set_pill, set_variant
-from gui.task_state import describe_attention, format_intervals, interval_index_from
+from gui.category_menu import CategoryMenu, CategoryPill
+from gui.style import (ATTENTION, CARD_MARGINS, GAP, Card, category_pill, restyle, set_pill,
+                       set_variant)
+from gui.task_state import (category_text, describe_attention, format_intervals,
+                            interval_index_from)
 from gui.theme import save_setting, setting
 from gui.tips_window import TipsWindow
-from gui.interactive_utils import (CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR,
-                                   POSITIVE_CLICK_COLOR, color_map_np)
+from gui.interactive_utils import CLICK_DOT_DIAMETER, NEGATIVE_CLICK_COLOR, POSITIVE_CLICK_COLOR
 
 # Need Attention: orange text, filled orange while the sequence is flagged
 ATTENTION_COLOR = ATTENTION  # Need Attention's orange (gui/style.py)
@@ -41,8 +43,8 @@ PAUSE_BACKWARD_LABEL = 'Pause propagation (B)'
 PLAY_LABEL = 'Play video (R)'
 STOP_LABEL = 'Stop video (R)'
 # the playback's speed (R and Shift+R), set in the box beside the button; every window starts at
-# PLAYBACK_FPS, or at the speed the Lock button beside the box keeps (per screen, as the theme is)
-# until it is unlocked
+# PLAYBACK_FPS, or at the speed the Lock button beside the box keeps (as the theme is) until it
+# is unlocked
 PLAYBACK_FPS = 24
 MAX_PLAYBACK_FPS = 60
 FPS_LOCK_SETTING = 'play_fps_lock'  # the locked speed; 0 when it is not locked
@@ -54,7 +56,7 @@ SHOW_LAYER_MODE = False
 
 
 def locked_play_fps() -> Optional[int]:
-    """The playback speed locked on this screen, None when it is not locked."""
+    """The locked playback speed, None when it is not locked."""
     try:
         fps = int(setting(FPS_LOCK_SETTING, 0))
     except (TypeError, ValueError):
@@ -102,7 +104,7 @@ class GUI(QWidget):
         self.play_fps_box.setSuffix(' fps')
         self.play_fps_box.setValue(locked_fps or PLAYBACK_FPS)
         self.play_fps_box.valueChanged.connect(self.on_play_fps_change)
-        # Lock: every window opened on this screen from then on starts at the box's speed
+        # Lock: every window opened from then on starts at the box's speed
         self.play_fps_lock_button = set_variant(QPushButton(LOCK_LABEL), 'toggle')
         self.play_fps_lock_button.setCheckable(True)
         self.fit_to_labels(self.play_fps_lock_button, (LOCK_LABEL, LOCKED_LABEL))
@@ -110,23 +112,18 @@ class GUI(QWidget):
         self.show_play_fps_lock(locked_fps is not None)
         self.commit_button = set_variant(QPushButton('Commit to permanent memory (C)'), 'tonal')
         self.commit_button.clicked.connect(controller.on_commit)
-        self.export_task_button = QPushButton('Export task masks')
-        self.export_task_button.clicked.connect(lambda: controller.on_export())
         self.export_video_button = QPushButton('Export as video (Ctrl+E)')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
         self.export_binary_button = set_variant(QPushButton('Export binary masks (Ctrl+S)'), 'primary')
-        self.export_binary_button.clicked.connect(controller.on_export_binary)
+        self.export_binary_button.clicked.connect(controller.on_save)
         if task is not None:
-            # these only write files into the task folder; the dataset comes from the task export
-            self.export_video_button.setText('Save overlay video (Ctrl+E)')
-            self.export_video_button.setToolTip(
-                'A video from the saved visualizations. Not the dataset: that comes from Export '
-                'task masks / Mark done.')
-            self.export_binary_button.setText('Save binary PNGs (Ctrl+S)')
+            # a task's masks and metadata.json are written as it is labeled; the dataset is
+            # exported from the task browser
+            self.export_binary_button.setText('Save (Ctrl+S)')
             self.export_binary_button.setToolTip(
-                'Writes binary PNGs of the task masks into binary_masks/ and submits the task '
-                'for review; the task browser\'s Mark done then accepts it. Not the dataset: that '
-                'comes from Export task masks / Mark done.')
+                'Masks are saved as you label; Save also saves the intervals and the description '
+                'and submits the sequence for review. The task browser\'s Mark done then accepts '
+                'it, and its Export writes the dataset.')
             # a toggle: the sequence needs further attention (orange; filled while on)
             self.attention_button = QPushButton('Need Attention')
             self.attention_button.setCheckable(True)
@@ -152,8 +149,6 @@ class GUI(QWidget):
 
         self.reset_frame_button = QPushButton('Reset frame')
         self.reset_frame_button.clicked.connect(controller.on_reset_mask)
-        self.reset_object_button = QPushButton('Reset object')
-        self.reset_object_button.clicked.connect(controller.on_reset_object)
         self.reset_all_masks_button = set_variant(QPushButton('Reset all frame masks'), 'danger')
         self.reset_all_masks_button.clicked.connect(controller.on_reset_all_frame_masks)
 
@@ -168,65 +163,77 @@ class GUI(QWidget):
         # 1-based frame numbers, like the frame names and the interval boxes
         self.lcd.setText('{: 5d} / {: 5d}'.format(1, controller.T))
 
-        # current object id
-        self.object_dial = QSpinBox()
-        self.object_dial.setReadOnly(False)
-        self.object_dial.setMinimumSize(50, 30)
-        self.object_dial.setMinimum(1)
-        self.object_dial.setMaximum(controller.num_objects)
-        self.object_dial.editingFinished.connect(controller.on_object_dial_change)
-
-        self.object_color = QLabel()
-        self.object_color.setMinimumSize(100, 30)
-        self.object_color.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         self.frame_name = QLabel()
         self.frame_name.setMinimumSize(100, 30)
         # centered vertically, like the boxes beside it in the top row
         self.frame_name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.frame_name.setTextFormat(Qt.TextFormat.RichText)
 
-        # the target of a task: its category, and the referring text as a box to tune it
-        self.task_label = QLabel()
+        # the target of a task: its category (a click chooses another), and the referring text
+        # as a box to tune it
+        self.task_label = CategoryPill()
+        self.category_menu: Optional[CategoryMenu] = None
         self.description_edit = TextBox()
         if task is not None:
-            self.task_label.setText(task.category)
-            set_pill(self.task_label, 'accent')
+            self.task_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.task_label.clicked.connect(self.open_category_menu)
             self.set_description(task.description)
             self.description_edit.editingFinished.connect(controller.on_description_change)
             self.commit_button.setText('Mark as anchor (C)')
 
-            # the dataset clips, 1-indexed and inclusive, each interval a clip of its own with its
-            # own description, in a grid so the boxes line up: the sequence's description and the
-            # first interval (the saved or curated one) on the top row, then one row per interval
-            # added with '+ Add interval', its description on the left
+            # the dataset clips, 1-indexed and inclusive, each a set of its own: a category, a
+            # description and an interval. Set 1 is the sequence's own (its category and
+            # description; its interval is the saved one, else the whole sequence); every interval
+            # added with '+ Add interval' is another set. One set is shown at a time, on the top
+            # row: every set's description box, interval boxes and remove button sit in the same
+            # cells, only the selected set's visible. The triangle opens the list of every set
+            # under it (row 1) to pick one.
             self.interval_pairs: List[IntervalPair] = []
+            self.selected_set = 0
+            self.sets_button = QToolButton()  # '▶ 1/3', '▼ 1/3' while the list is open
+            self.sets_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            self.sets_button.setAutoRaise(True)
+            self.sets_button.setToolTip('Show every interval of this sequence (its category, '
+                                        'description and frames) to pick the one to see and '
+                                        'edit.')
+            self.sets_button.clicked.connect(self.toggle_sets)
+            self.set_rows: List[IntervalSetRow] = []
+            self.set_list = QWidget()
+            self.set_list_layout = QVBoxLayout(self.set_list)
+            self.set_list_layout.setContentsMargins(0, 2, 0, 2)
+            self.set_list_layout.setSpacing(2)
+            self.set_list.hide()
             self.interval_grid = QGridLayout()
             self.interval_grid.setHorizontalSpacing(10)
             self.interval_grid.setVerticalSpacing(4)
-            self.interval_grid.setColumnStretch(1, 1)
-            self.interval_grid.addWidget(self.task_label, 0, 0)
-            self.interval_grid.addWidget(self.description_edit, 0, 1)
+            self.interval_grid.setColumnStretch(2, 1)
+            self.interval_grid.addWidget(self.sets_button, 0, 0)
+            self.interval_grid.addWidget(self.task_label, 0, 1)
+            self.interval_grid.addWidget(self.description_edit, 0, 2)
             self.add_interval_button = QPushButton('+ Add interval')
             self.add_interval_button.setToolTip(
                 'Keep another stretch of this sequence: each interval becomes a clip of its own, '
-                'with a description of its own (it starts as the sequence\'s). Intervals may touch '
-                'but not overlap.')
+                'with a category and a description of its own (they start as the sequence\'s). '
+                'Intervals may touch but not overlap.')
             self.add_interval_button.clicked.connect(self.on_add_interval)
-            # its column also holds the added rows' '- Remove interval' buttons, all as wide
-            self.interval_grid.addWidget(self.add_interval_button, 0, 3)
+            self.interval_grid.addWidget(self.add_interval_button, 0, 4)
             # the frame label carries the mask source; the bottom row is too narrow for it
             set_pill(self.frame_name, 'frame')
-            self.interval_grid.addWidget(self.frame_name, 0, 4)
+            self.interval_grid.addWidget(self.frame_name, 0, 6)
+            # the list of sets, under the selected one
+            self.interval_grid.addWidget(self.set_list, 1, 1, 1, 6)
             intervals, _ = task.intervals(controller.T)
             first = task.first_interval(controller.T)
             descriptions = task.interval_descriptions(controller.T)
+            categories = task.interval_categories(controller.T)
             self.add_interval_pair(*first)
             for interval in intervals:
                 if interval != first:
-                    self.add_interval_pair(*interval, description=descriptions[interval])
+                    self.add_interval_pair(*interval, description=descriptions[interval],
+                                           category=categories[interval])
             # the first pair, as the single interval always was
             self.interval_start, self.interval_end = self.interval_pairs[0].boxes()
+            self.show_selected_set()
 
         # timeline slider
         self.tl_slider = FrameSlider(Qt.Orientation.Horizontal)
@@ -242,6 +249,7 @@ class GUI(QWidget):
         self.preview_index = 0  # the interval Shift+R plays next
         if task is not None:
             self.tl_slider.set_intervals(task.intervals(controller.T)[0])
+            self.tl_slider.set_selected_interval(self.selected_pair().entry())
 
         # combobox
         self.combo = QComboBox(self)
@@ -379,20 +387,20 @@ class GUI(QWidget):
             label.setProperty('section', True)
             return label
 
-        object_label = QLabel('Current object ID:')
-        frame_line = row(object_label, self.object_dial, self.object_color,
-                         *([self.frame_name] if task is None else []))
+        # one object: Reset frame empties the frame; a plain workspace shows its frame label here
+        # (a task's sits in the top card)
         frame_card = Card(rows(row(self.lcd, self.play_button, self.play_fps_box,
                                    self.play_fps_lock_button),
-                               row(self.reset_frame_button, self.reset_object_button),
-                               frame_line), title='Frame')
+                               row(self.reset_frame_button,
+                                   *([self.frame_name] if task is None else []))),
+                          title='Frame')
 
         propagate_card = Card(rows(row(self.backward_run_button, self.forward_run_button),
                                    row(self.commit_button, self.progressbar, stretch=False)),
                               title='Propagate')
         self.progressbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        save_buttons = [self.export_binary_button] + ([self.export_task_button] if task else [])
+        save_buttons = [self.export_binary_button]
         mode_line = ([self.attention_button] if task is not None else []) + \
             [QLabel('Visualization mode'), self.combo]
         save_card = Card(rows(row(*save_buttons), row(*mode_line)), title='Save')
@@ -406,7 +414,7 @@ class GUI(QWidget):
 
         # the sidebar: the messages take its height; the controls of the original Cutie (memory,
         # imports, the overlay video, Reset all frame masks) wait in the Advanced card, open or
-        # closed as last left on this screen
+        # closed as last left
         self.tips_button.setText('Tips (F1)')
         messages_card = Card(self.console, title='Messages', trailing=(self.tips_button, ),
                              stretch=True)
@@ -427,13 +435,19 @@ class GUI(QWidget):
         advanced.addLayout(row(self.import_mask_button,
                                *([self.import_layer_button] if SHOW_LAYER_MODE else []),
                                stretch=False))
-        advanced.addWidget(section('Overlay video'))
-        advanced.addLayout(row(QLabel('Save visualization'), self.save_visualization_combo))
-        advanced.addLayout(row(QLabel('Save soft mask during propagation'),
-                               self.save_soft_mask_checkbox))
-        advanced.addLayout(row(QLabel('Output FPS'), self.fps_dial, QLabel('Bitrate (Mbps)'),
-                               self.bitrate_dial))
-        advanced.addLayout(row(self.export_video_button))
+        if task is None:
+            advanced.addWidget(section('Overlay video'))
+            advanced.addLayout(row(QLabel('Save visualization'), self.save_visualization_combo))
+            advanced.addLayout(row(QLabel('Save soft mask during propagation'),
+                                   self.save_soft_mask_checkbox))
+            advanced.addLayout(row(QLabel('Output FPS'), self.fps_dial, QLabel('Bitrate (Mbps)'),
+                                   self.bitrate_dial))
+            advanced.addLayout(row(self.export_video_button))
+        else:
+            # a task's work folder holds masks/ and metadata.json only: no overlay video, no
+            # visualizations or soft masks saved into it
+            self.save_visualization_combo.hide()
+            self.save_soft_mask_checkbox.hide()
         advanced.addWidget(section('Reset'))
         advanced.addLayout(row(self.reset_all_masks_button))
         open_advanced = setting('advanced_open', 'false') in (True, 'true')
@@ -513,13 +527,6 @@ class GUI(QWidget):
         self.gpu_timer.setInterval(2000)
         self.gpu_timer.start()
 
-        # Objects shortcuts
-        for i in range(1, controller.num_objects + 1):
-            QShortcut(QKeySequence(str(i)),
-                      self).activated.connect(functools.partial(controller.hit_number_key, i))
-            QShortcut(QKeySequence(f"Ctrl+{i}"),
-                      self).activated.connect(functools.partial(controller.hit_number_key, i))
-
         # next/prev frame shortcuts: A / D (the arrow keys do not move frames)
         QShortcut(QKeySequence('A'), self).activated.connect(controller.on_prev_frame)
         QShortcut(QKeySequence('D'), self).activated.connect(controller.on_next_frame)
@@ -584,9 +591,11 @@ class GUI(QWidget):
         # preview the intervals, one per press
         QShortcut(QKeySequence('Shift+R'), self).activated.connect(self.on_preview_interval)
 
-        # save binary PNGs / overlay video (the keys are on the buttons)
-        QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(controller.on_export_binary)
-        QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(controller.on_export_visualization)
+        # save (a task) or export binary masks / the overlay video (the keys are on the buttons)
+        QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(controller.on_save)
+        if task is None:
+            QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(
+                controller.on_export_visualization)
 
         # quit shortcuts: Q closes the window; Ctrl+Q also marks the task done (it asks first)
         QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
@@ -602,7 +611,6 @@ class GUI(QWidget):
             if not isinstance(box, IntervalBox):
                 box.editingFinished.connect(functools.partial(self.return_focus_from, box))
         self.tl_slider.setFocus()
-
 
     @staticmethod
     def fit_to_labels(button: QPushButton, labels) -> None:
@@ -638,22 +646,28 @@ class GUI(QWidget):
             self.set_frame_label(*self.frame_label_args)
 
     def show_fitted(self) -> None:
-        # a task fills the screen (the VNC desktop, which follows the viewer's window); otherwise
+        # a task fills the screen; otherwise
         # the controls in one row and at least the image plus 200 px, maximized instead when that
         # does not fit the screen
         fit_window(self, self.sizeHint().expandedTo(QSize(self.w + 200, self.h + 200)),
                    fill=self.controller.task is not None)
 
     def add_interval_pair(self, start: Optional[int] = None, end: Optional[int] = None,
-                          description: Optional[str] = None) -> IntervalPair:
-        """The first pair goes on the top row, described by the sequence's description; every
-        later one on a row of its own with its description (by default the text in the top box)
-        and a button that removes it. A pair without values starts blank."""
+                          description: Optional[str] = None,
+                          category: Optional[str] = None) -> IntervalPair:
+        """A set's interval boxes. The first pair is set 1's, the sequence's own (its category and
+        description are the sequence's); every later one has a description and a category of its
+        own (by default the sequence's) and a button that removes it. Every set's widgets sit in
+        the same cells of the top row, only the selected set's shown (show_selected_set). A pair
+        without values starts blank."""
         first = not self.interval_pairs
+        task = self.controller.task
         if not first and description is None:
-            description = self.description_edit.text().strip() or self.controller.task.description
+            description = self.description_edit.text().strip() or task.description
+        if not first and category is None:
+            category = task.category
         pair = IntervalPair(self.controller.T, start, end, removable=not first,
-                            description=description)
+                            description=description, category=None if first else category)
         for box in pair.boxes():
             which = box.which
             box.setToolTip(f'Interval {which} in frame numbers; type m for the '
@@ -668,47 +682,133 @@ class GUI(QWidget):
                 box.editingFinished.connect(
                     functools.partial(self.controller.on_interval_change, which, pair))
             box.editingFinished.connect(functools.partial(self.return_focus_from, box))
-        if not first:
+            box.valueChanged.connect(self.refresh_set_list)
+        if first:
+            self.description_edit.textChanged.connect(self.refresh_set_list)
+        else:
             set_variant(pair.remove_button, 'danger')
             pair.description_edit.editingFinished.connect(
                 functools.partial(self.controller.on_interval_description_change, pair))
             pair.description_edit.editingFinished.connect(
                 functools.partial(self.return_focus_from, pair.description_edit))
+            pair.description_edit.textChanged.connect(self.refresh_set_list)
+            self.interval_grid.addWidget(pair.description_edit, 0, 2)
+            self.interval_grid.addWidget(pair.remove_button, 0, 5)
         pair.removed.connect(self.controller.on_remove_interval)
         self.interval_pairs.append(pair)
-        if first:
-            self.interval_grid.addWidget(pair, 0, 2, Qt.AlignmentFlag.AlignLeft)
-        else:
-            self.place_interval_rows()
+        self.interval_grid.addWidget(pair, 0, 3, Qt.AlignmentFlag.AlignLeft)
+        self.show_selected_set()
         return pair
 
-    def place_interval_rows(self) -> None:
-        # the added intervals, a row each under the top row, in the order they were added: the
-        # description, the pair, its '- Remove interval' button (under '+ Add interval')
-        added = self.interval_pairs[1:]
-        for pair in added:
-            for widget in (pair.description_edit, pair, pair.remove_button):
-                self.interval_grid.removeWidget(widget)
-        for row, pair in enumerate(added, start=1):
-            self.interval_grid.addWidget(pair.description_edit, row, 1)
-            self.interval_grid.addWidget(pair, row, 2, Qt.AlignmentFlag.AlignLeft)
-            self.interval_grid.addWidget(pair.remove_button, row, 3)
+    def selected_pair(self) -> IntervalPair:
+        return self.interval_pairs[self.selected_set]
+
+    def selected_category(self) -> Optional[str]:
+        # the shown set's category: set 1's is the sequence's
+        if self.selected_set == 0:
+            return self.controller.task.category
+        return self.selected_pair().category
+
+    @staticmethod
+    def set_shown(widget: Optional[QWidget], shown: bool) -> None:
+        # a widget not placed in the window yet only hides: shown, it would be a window of its own
+        if widget is None:
+            return
+        if not shown:
+            widget.hide()
+        elif widget.parentWidget() is not None:
+            widget.show()
+
+    def show_selected_set(self) -> None:
+        # the selected set's category, description and interval on the top row, no other's; the
+        # triangle says which set of how many
+        for index, pair in enumerate(self.interval_pairs):
+            for widget in (pair, pair.description_edit, pair.remove_button):
+                self.set_shown(widget, index == self.selected_set)
+        self.set_shown(self.description_edit, self.selected_set == 0)
+        self.show_sets_button()
+        self.show_category()
+        self.refresh_set_list()
+
+    def select_set(self, index: int, jump: bool = True) -> None:
+        """Shows set index and folds the list: its band is the bold one, and the mask takes its
+        category's color. jump: go to the first frame of its interval."""
+        self.selected_set = index
+        self.show_selected_set()
+        self.fold_sets()
+        entry = self.selected_pair().entry()
+        self.tl_slider.set_selected_interval(entry)
+        self.controller.show_category_color()
+        self.controller.show_current_frame()
+        if jump and entry is not None:
+            self.tl_slider.setValue(entry[0] - 1)
+
+    def select_interval(self, interval) -> None:
+        # the set of a saved interval ({ / }, Shift+R), the frame left where they put it
+        for index, pair in enumerate(self.interval_pairs):
+            if pair.entry() == tuple(interval):
+                if index != self.selected_set:
+                    self.select_set(index, jump=False)
+                return
+
+    def show_sets_button(self) -> None:
+        # the triangle, down while the list is open, and which set of how many is shown
+        arrow = '▶' if self.set_list.isHidden() else '▼'
+        self.sets_button.setText(f'{arrow} {self.selected_set + 1}/{len(self.interval_pairs)}')
+
+    def toggle_sets(self) -> None:
+        # the triangle: opens the list of every set under the selected one, or folds it
+        if self.set_list.isHidden():
+            self.refresh_set_list()
+            self.set_list.show()
+            self.show_sets_button()
+        else:
+            self.fold_sets()
+
+    def fold_sets(self) -> None:
+        self.set_list.hide()
+        self.show_sets_button()
+
+    def refresh_set_list(self, *_) -> None:
+        # one row per set, as typed: number, category, description, frames; the selected tinted
+        task = self.controller.task
+        colors = {category.name: category.color for category in task.categories}
+        while len(self.set_rows) < len(self.interval_pairs):
+            row = IntervalSetRow()
+            row.clicked.connect(functools.partial(self.select_set, len(self.set_rows)))
+            self.set_list_layout.addWidget(row)
+            self.set_rows.append(row)
+        while len(self.set_rows) > len(self.interval_pairs):
+            row = self.set_rows.pop()
+            self.set_list_layout.removeWidget(row)
+            row.deleteLater()
+        for index, (row, pair) in enumerate(zip(self.set_rows, self.interval_pairs)):
+            if index == 0:
+                category = task.category
+                description = self.description_edit.text().strip() or task.description
+            else:
+                category = pair.category
+                description = pair.description() or pair.kept_description
+            row.show_set(index + 1, category_text(category), colors.get(category), description,
+                         pair.frames_text(), index == self.selected_set)
 
     def on_add_interval(self) -> None:
         pair = self.add_interval_pair()
+        self.select_set(len(self.interval_pairs) - 1, jump=False)
         pair.start_box.setFocus()
-        self.text('Added an interval on a new row: type its start and end (m = first / last '
-                  'frame). Its description starts as the sequence\'s: change it in the box on its '
-                  f'left. {REMOVE_INTERVAL_TEXT} cancels it.')
+        self.text(f'Added interval {len(self.interval_pairs)}: type its start and end (m = first '
+                  '/ last frame). Its category and description start as the sequence\'s: change '
+                  f'them here. {REMOVE_INTERVAL_TEXT} cancels it; the triangle on the left lists '
+                  'every interval.')
 
     def remove_interval_pair(self, pair: IntervalPair) -> None:
-        # the rows below move up
+        # back to set 1, the frame left where it is
         self.interval_pairs.remove(pair)
         for widget in (pair.description_edit, pair, pair.remove_button):
             self.interval_grid.removeWidget(widget)
             widget.hide()
             widget.deleteLater()
-        self.place_interval_rows()
+        self.select_set(0, jump=False)
         self.tl_slider.setFocus()
 
     def interval_description_text(self, interval) -> str:
@@ -724,6 +824,27 @@ class GUI(QWidget):
         if box.hasFocus():
             self.tl_slider.setFocus()
 
+    def show_category(self) -> None:
+        # the selected set's category, in its color; gray without one (or one missing from the
+        # list)
+        task = self.controller.task
+        category = self.selected_category()
+        colors = {item.name: item.color for item in task.categories}
+        self.task_label.setText(category_text(category))
+        category_pill(self.task_label, colors.get(category))
+        self.task_label.setToolTip('Click to choose the category of this interval; a change '
+                                   'needs a new review.')
+
+    def open_category_menu(self) -> None:
+        task = self.controller.task
+        self.category_menu = CategoryMenu(task.categories, self.selected_category(), self)
+        if self.selected_set == 0:  # the sequence's own
+            self.category_menu.chosen.connect(self.controller.on_category_chosen)
+        else:
+            self.category_menu.chosen.connect(functools.partial(
+                self.controller.on_interval_category_chosen, self.selected_pair()))
+        self.category_menu.popup_below(self.task_label)
+
     def set_description(self, text: str) -> None:
         self.description_edit.setText(text)
         self.description_edit.setCursorPosition(0)  # show the start of a long text
@@ -736,11 +857,6 @@ class GUI(QWidget):
             self.render_canvas()
 
     def closeEvent(self, event):
-        if self.controller.export_process is not None:
-            # closing destroys the export process, which kills it halfway through the tree
-            self.text('Wait for the task export to finish before closing.')
-            event.ignore()
-            return
         if self.tips_window is not None:
             self.tips_window.close()
         # the timers hold the controller; stop them so a closed task can be freed
@@ -756,7 +872,7 @@ class GUI(QWidget):
             reason or 'Delete this sequence\'s local frame masks and generated mask files.')
 
     def confirm_quit_done(self) -> bool:
-        # Ctrl+Q: the warning before the task is saved, exported and marked done in one go
+        # Ctrl+Q: the warning before the task is saved and marked done in one go
         task = self.controller.task
         intervals, _ = task.intervals(self.controller.T)
         dialog = QMessageBox(self)
@@ -766,11 +882,10 @@ class GUI(QWidget):
                        '\'done\'.')
         dialog.setInformativeText(
             f'Intervals: {format_intervals(intervals)}. They are saved with their descriptions and '
-            f'masks, exported to the dataset and marked done by {task.labeler}, with no separate '
-            'review in the task browser. Use this only when you label and review this sequence '
-            'at the same time, and check every interval, its description and its masks first.'
-            '\n\nThe window closes once the export finishes. An edit before that keeps it open, '
-            'and the task is not marked done.')
+            f'masks and marked done by {task.labeler}, with no separate review in the task '
+            'browser. Use this only when you label and review this sequence at the same time, and '
+            'check every interval, its description and its masks first.\n\nThe window then '
+            'closes. The task browser\'s Export puts it in the dataset.')
         quit_button = dialog.addButton('Quit and mark done', QMessageBox.ButtonRole.AcceptRole)
         cancel_button = dialog.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
         dialog.setDefaultButton(cancel_button)
@@ -786,9 +901,8 @@ class GUI(QWidget):
         dialog.setText(f'Delete all frame masks for {sequence}?')
         if task is not None:
             dialog.setInformativeText(
-                'This deletes local, binary, and soft masks, clears task anchors and prefills, '
-                'and deletes this sequence\'s Cutie exports. Original frames and external '
-                'Label Studio/SAM3 masks remain. This cannot be undone.')
+                'This deletes the task\'s masks and clears its anchors. The frames and the '
+                'pregenerated masks of the input remain, and show again. This cannot be undone.')
         else:
             dialog.setInformativeText(
                 'This deletes local, binary, and soft masks in this workspace. '
@@ -841,7 +955,8 @@ class GUI(QWidget):
     def draw_clicks(self, painter: QPainter, clicks, scale: float, offset_x: float,
                     offset_y: float) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
+        # a thin white ring: a dot stays visible on a mask of its own color (a green car)
+        painter.setPen(QPen(QColor(255, 255, 255), 1))
         radius = CLICK_DOT_DIAMETER / 2
         for x, y, is_negative in clicks:
             color = NEGATIVE_CLICK_COLOR if is_negative else POSITIVE_CLICK_COLOR
@@ -1038,7 +1153,7 @@ class GUI(QWidget):
             self.timer.setInterval(self.playback_interval_ms())
 
     def on_play_fps_lock(self, locked: bool) -> None:
-        # Lock keeps the box's speed for every window opened on this screen from now on; Unlock
+        # Lock keeps the box's speed for every window opened from now on; Unlock
         # goes back to PLAYBACK_FPS, here and in the next windows
         fps = self.play_fps_box.value()
         save_setting(FPS_LOCK_SETTING, fps if locked else 0)
@@ -1046,8 +1161,8 @@ class GUI(QWidget):
             self.play_fps_box.setValue(PLAYBACK_FPS)
         self.show_play_fps_lock(locked)
         if locked:
-            self.text(f'Playback speed locked at {fps} fps: every window you open on this screen '
-                      'starts at it, until you unlock it.')
+            self.text(f'Playback speed locked at {fps} fps: every window you open starts at it, '
+                      'until you unlock it.')
         else:
             self.text(f'Playback speed unlocked: back to {PLAYBACK_FPS} fps, here and in the '
                       'next windows.')
@@ -1060,14 +1175,13 @@ class GUI(QWidget):
         self.play_fps_box.setEnabled(not locked)
         fps = self.play_fps_box.value()
         if locked:
-            button.setToolTip(f'Locked at {fps} fps: every window opened on this screen starts at '
-                              f'it. Click to unlock: the speed goes back to {PLAYBACK_FPS} fps, '
+            button.setToolTip(f'Locked at {fps} fps: every window opened starts at it. Click to unlock: the speed goes back to {PLAYBACK_FPS} fps, '
                               'here and in the next windows.')
             self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R: locked at {fps} fps. '
                                          'Unlock (the button on the right) to change it.')
         else:
-            button.setToolTip('Lock the speed in the box: every window opened on this screen from '
-                              f'now on starts at it, instead of {PLAYBACK_FPS} fps, until you '
+            button.setToolTip('Lock the speed in the box: every window opened from now on starts '
+                              f'at it, instead of {PLAYBACK_FPS} fps, until you '
                               'unlock it.')
             self.play_fps_box.setToolTip(f'Playback speed of R and Shift+R, in frames per second; '
                                          f'the frames may load slower. Every window starts at '
@@ -1089,7 +1203,7 @@ class GUI(QWidget):
         self.timer.stop()
         self.tl_slider.setValue(start - 1)
         self.play_until = end - 1
-        self.tl_slider.set_active_interval((start, end))
+        self.select_interval((start, end))
         self.timer.start(self.playback_interval_ms())
         self.play_button.setText(STOP_LABEL)
         self.text(f'Previewing interval {number + 1} of {len(intervals)}: frames {start}-{end} '
@@ -1109,6 +1223,7 @@ class GUI(QWidget):
         start, end = intervals[number]
         self.stop_playback()
         self.tl_slider.setValue(start - 1)
+        self.select_interval((start, end))
         self.preview_index = number
         self.text(f'Interval {number + 1} of {len(intervals)}: frames {start}-{end} '
                   '(Shift+R plays it).' + self.interval_description_text((start, end)))
@@ -1126,7 +1241,6 @@ class GUI(QWidget):
     def stop_playback(self) -> None:
         self.timer.stop()
         self.play_button.setText(PLAY_LABEL)
-        self.tl_slider.set_active_interval(None)
 
     def open_file(self, prompt):
         options = QFileDialog.Options()
@@ -1136,15 +1250,6 @@ class GUI(QWidget):
                                                    "Image files (*)",
                                                    options=options)
         return file_name
-
-    def set_object_color(self, object_id: int):
-        r, g, b = color_map_np[object_id]  # the colour the mask is drawn in
-        rgb = f'rgb({r},{g},{b})'
-        # the number in black or white, whichever reads on the colour
-        text = 'black' if 0.299 * r + 0.587 * g + 0.114 * b > 140 else 'white'
-        self.object_color.setStyleSheet(f'QLabel {{ background: {rgb}; color: {text}; '
-                                        'border-radius: 8px; font-weight: 600; }')
-        self.object_color.setText(f'{object_id}')
 
     def progressbar_update(self, progress: float):
         self.progressbar.setValue(int(progress * 100))
