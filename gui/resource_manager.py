@@ -333,16 +333,19 @@ class ResourceManager:
 
         self.add_to_queue_with_warning(SaveItem('soft_mask', prob, self.names[ti]))
 
-    def _get_image_unbuffered(self, ti: int, modality: Optional[str] = None):
-        # returns H*W*3 uint8 array; modality selects a task's other frame directory
+    def image_path(self, ti: int, modality: Optional[str] = None) -> str:
+        """The frame's file; modality selects a task's other frame directory (the default one
+        when it lacks the frame)."""
         assert 0 <= ti < self.length
-
         name = self.names[ti]
         modality = modality or self.default_modality
         if name not in self.frame_files[modality]:
             modality = self.default_modality
-        image_path = path.join(self.image_dirs[modality], self.frame_files[modality][name])
-        image = Image.open(image_path).convert('RGB')
+        return path.join(self.image_dirs[modality], self.frame_files[modality][name])
+
+    def _get_image_unbuffered(self, ti: int, modality: Optional[str] = None):
+        # returns H*W*3 uint8 array; modality selects a task's other frame directory
+        image = Image.open(self.image_path(ti, modality)).convert('RGB')
         image = np.array(image)
         return image
 

@@ -76,7 +76,7 @@ def test_a_propagation_stages_its_frames_and_records_them(gpu):
         assert hashlib.sha256(data).hexdigest() == frame['sha256']
         mask = np.array(Image.open(io.BytesIO(data)))
         assert mask[6, 10] == 1 and mask[0, 0] == 0  # the start frame's mask, carried on
-    # the snapshot is the service's, read-only, and named by its content
+    # the snapshot is the service's, read-only, and checked against its digest
     row = gpu.db.query_one('SELECT * FROM gpu_jobs WHERE id = ?', (job['id'], ))
     assert os.stat(row['input_reference']).st_mode & 0o777 == 0o400
     assert hashlib.sha256(open(row['input_reference'], 'rb').read()).hexdigest() == \

@@ -146,6 +146,10 @@ class GUI(QWidget):
         self.progressbar.setMaximum(100)
         self.progressbar.setValue(0)
         self.progressbar.setMinimumWidth(200)
+        # the shared GPU's queue, while a propagation waits for it (cooperation service)
+        self.gpu_status_label = QLabel()
+        self.gpu_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.gpu_status_label.hide()
 
         self.reset_frame_button = QPushButton('Reset frame')
         self.reset_frame_button.clicked.connect(controller.on_reset_mask)
@@ -396,7 +400,8 @@ class GUI(QWidget):
                           title='Frame')
 
         propagate_card = Card(rows(row(self.backward_run_button, self.forward_run_button),
-                                   row(self.commit_button, self.progressbar, stretch=False)),
+                                   row(self.commit_button, self.progressbar, self.gpu_status_label,
+                                       stretch=False)),
                               title='Propagate')
         self.progressbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -891,6 +896,27 @@ class GUI(QWidget):
         dialog.setDefaultButton(cancel_button)
         dialog.exec()
         return dialog.clickedButton() is quit_button
+
+    def confirm_held_result(self, job: dict) -> bool:
+        """A propagation's result held because the task changed after it was submitted."""
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle('A propagation result is waiting')
+        dialog.setText('A propagation of this task ended, but the task changed after it was '
+                       'started.')
+        dialog.setInformativeText(
+            f'It started from frame {job.get("start") or "?"} at {job["submitted_at"][:16]} '
+            'UTC. Apply its masks anyway (anchors are kept), or discard them?')
+        apply_button = dialog.addButton('Apply', QMessageBox.ButtonRole.AcceptRole)
+        discard_button = dialog.addButton('Discard', QMessageBox.ButtonRole.DestructiveRole)
+        dialog.setDefaultButton(discard_button)
+        dialog.exec()
+        return dialog.clickedButton() is apply_button
+
+    def set_status_text(self, text: str) -> None:
+        """A line about the shared GPU's queue; empty hides it."""
+        self.gpu_status_label.setText(text)
+        self.gpu_status_label.setVisible(bool(text))
 
     def confirm_reset_all_masks(self) -> bool:
         task = self.controller.task

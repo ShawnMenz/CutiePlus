@@ -26,11 +26,13 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
                                QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from cutieplus.backends.base import BackendError
+from cutieplus.backends.service import OfflineTaskBackend, ServiceTaskBackend
 from gui.dataset_export import (ExportCancelled, ExportPlan, export_root_of, free_space_problem,
                                 lock_clips, plan_export, release_locks, write_export)
 from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
 from gui.import_dialog import ImportDialog
+from gui.gpu_queue import GpuQueueWindow
 from gui.manage_annotators import ManageAnnotators
 from gui.service_link import ServiceLink
 from gui.style import GAP, Card, set_variant
@@ -331,6 +333,13 @@ class TaskBrowser(QWidget):
                                       'remove them.')
         self.manage_button.clicked.connect(self.on_manage)
         self.manage_button.hide()
+        # everyone's view of the shared GPU: the worker, the queue, your jobs
+        self.queue_button = QPushButton('GPU queue')
+        self.queue_button.setToolTip('The shared GPU: what runs, what waits, and your '
+                                     'propagations (cancel, retry).')
+        self.queue_button.clicked.connect(self.on_gpu_queue)
+        self.queue_button.setVisible(link is not None)
+        self.queue_window = None
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(140)
@@ -344,7 +353,8 @@ class TaskBrowser(QWidget):
 
         # the input and the export on the left, the selected sequence's actions on the right
         buttons = QHBoxLayout()
-        for button in (import_button, export_button, refresh_button, self.manage_button):
+        for button in (import_button, export_button, refresh_button, self.manage_button,
+                       self.queue_button):
             set_variant(button, 'info')  # blue; a disabled one grey, as every disabled button
             buttons.addWidget(button)
         buttons.addStretch(1)
@@ -706,7 +716,8 @@ class TaskBrowser(QWidget):
                 return
             # writes pending saves; on_task_event clears the controller
             self.controller.gui.close()
-        if self.networks is None:
+        factory = self.backend_factory()
+        if factory is None and self.networks is None:
             self.log('Loading models...')
             QApplication.processEvents()
             self.networks = load_networks(self.cfg)
@@ -717,7 +728,8 @@ class TaskBrowser(QWidget):
         self.log(f'Opening {split}/{sequence}.')
         try:
             self.controller = MainController(cfg, networks=self.networks,
-                                             on_task_event=self.on_task_event)
+                                             on_task_event=self.on_task_event,
+                                             backend_factory=factory)
         except TaskLocked as exc:
             # another window took it after the check above
             self.log(str(exc))
@@ -927,6 +939,29 @@ class TaskBrowser(QWidget):
         self.export_plan = None
         self.refresh_locks()
 
+    def backend_factory(self):
+        """On a host with the cooperation service the window loads no model: its inference goes
+        to the shared GPU worker, or, while the service cannot be reached, it works without any.
+        None: this program on its own, with the models in the window (load_networks)."""
+        if self.link is not None and self.link.online:
+            client = self.link.client
+            return lambda cfg, res_man, task: ServiceTaskBackend(cfg, res_man, task, client)
+        if self.link is not None or self.offline:
+            return OfflineTaskBackend
+        return None
+
+    def on_gpu_queue(self) -> None:
+        if self.link is None:
+            return
+        if self.queue_window is None:
+            self.queue_window = GpuQueueWindow(self.link, self)
+            self.queue_window.finished.connect(self.on_queue_closed)
+        self.queue_window.show()
+        self.queue_window.raise_()
+
+    def on_queue_closed(self) -> None:
+        self.queue_window = None
+
     # the signed-in user (a host with the cooperation service)
     def show_account(self) -> None:
         if self.link is not None:
@@ -967,8 +1002,9 @@ class TaskBrowser(QWidget):
         self.revoked = reason
         if log_out and self.link is not None:
             self.link.logout()
-        if self.manage_window is not None:
-            self.manage_window.close()
+        for window in (self.manage_window, self.queue_window):
+            if window is not None:
+                window.close()
         if self.controller is not None:
             self.controller.gui.close()  # writes its pending saves
         if self.export_worker is not None:

@@ -766,30 +766,28 @@ def submit_propagation(service: Service, ctx: Context, idempotency_key, workspac
     snapshot = check_snapshot(service, snapshot)
     data = encode_message(snapshot)
     digest = hashlib.sha256(data).hexdigest()
-    snapshot_path = path.join(queue.snapshots_dir, f'{digest}.bin')
-    created = not path.exists(snapshot_path)
-    if created:
-        # named by content: two requests with the same inputs may write it at once
-        temporary = f'{snapshot_path}.{new_id()}.tmp'
-        with open(temporary, 'wb') as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(temporary, 0o400)  # immutable from now on
-        os.replace(temporary, snapshot_path)
+    # a file of this request's own (its retries share it): no other request touches it
+    snapshot_path = path.join(queue.snapshots_dir, f'{new_id()}.bin')
+    temporary = f'{snapshot_path}.tmp'
+    with open(temporary, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(temporary, 0o400)  # immutable from now on
+    os.replace(temporary, snapshot_path)
     try:
         queue.insert_job(ctx, 'propagate', key, workspace, snapshot_path, digest, revision,
                          {'frames': len(snapshot['frame_names']),
                           'start': snapshot['frame_names'][snapshot['start_ti']],
                           'direction': snapshot['direction']})
     except Refused:
-        if created and service.db.query_one('SELECT 1 AS x FROM gpu_jobs WHERE '
-                                            'input_reference = ?', (snapshot_path, )) is None:
-            os.remove(snapshot_path)
+        os.remove(snapshot_path)
         raise
     # this request's job, or the one a request with the same key made meanwhile
     row = service.db.query_one('SELECT * FROM gpu_jobs WHERE owner_user_id = ? AND '
                                'idempotency_key = ?', (ctx.actor.user_id, key))
+    if row['input_reference'] != snapshot_path:
+        os.remove(snapshot_path)  # that other request's snapshot is the job's
     queue.feeds.setdefault(row['id'], Feed()).update(status=row['status'])
     return public_job(service, ctx, row)
 

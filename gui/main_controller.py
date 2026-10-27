@@ -9,6 +9,7 @@ import cv2
 os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
 import torch
+from PySide6.QtCore import QTimer
 from torchvision.transforms.functional import to_tensor
 import numpy as np
 from omegaconf import DictConfig, open_dict
@@ -50,13 +51,19 @@ class ClickState:
     clicks: List[Tuple[int, int, bool]] = field(default_factory=list)  # drawn as dots
 
 
+QUEUE_POLL_MS = 500  # how often a queued propagation's place is checked
+
+
 class MainController():
 
     def __init__(self,
                  cfg: DictConfig,
                  networks: Optional[Tuple[torch.nn.Module, ClickController]] = None,
-                 on_task_event: Optional[Callable[['MainController', str], None]] = None) -> None:
+                 on_task_event: Optional[Callable[['MainController', str], None]] = None,
+                 backend_factory: Optional[Callable] = None) -> None:
         """networks: models loaded by load_networks, to reuse them across tasks.
+        backend_factory(cfg, res_man, task): the backend, when the models run elsewhere (the
+        shared GPU worker of the cooperation service) or nowhere (offline): no model is loaded.
         on_task_event: called with 'under review' once the task is submitted, 'attention' when Need Attention is toggled, 'done' once Ctrl+Q has marked it
         done, and 'closed' once the window has closed and every pending save is written.
         Raises TaskLocked when another window has the task open."""
@@ -99,7 +106,9 @@ class MainController():
         self.amp = cfg['amp']
 
         # initializing the network(s)
-        if networks is None:
+        if backend_factory is not None:
+            self.cutie = self.click_ctrl = None  # the backend's business
+        elif networks is None:
             self.initialize_networks()
         else:
             self.cutie, self.click_ctrl = networks
@@ -112,7 +121,10 @@ class MainController():
         if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
             return
         try:
-            self.backend = LocalTaskBackend(cfg, self.networks, self.res_man, self.task)
+            if backend_factory is not None:
+                self.backend = backend_factory(cfg, self.res_man, self.task)
+            else:
+                self.backend = LocalTaskBackend(cfg, self.networks, self.res_man, self.task)
         except BaseException:
             self.res_man.close()
             if self.task_lock is not None:
@@ -130,6 +142,11 @@ class MainController():
         self.curr_ti: int = 0
         self.curr_object: int = 1  # the one object a window labels (the target)
         self.propagating: bool = False
+        # a propagation queued for the shared GPU: the window stays editable meanwhile
+        self.waiting_for_gpu: bool = False
+        self.queue_timer = QTimer()
+        self.queue_timer.setInterval(QUEUE_POLL_MS)
+        self.queue_timer.timeout.connect(self.on_queue_timer)
         self.propagate_direction: Literal['forward', 'backward', 'none'] = 'none'
         self.last_ex = self.last_ey = 0
 
@@ -186,6 +203,34 @@ class MainController():
         self.update_config()
         if self.task is not None:
             self.configure_task_resolution()
+        if not getattr(self.backend, 'has_local_memory', True):
+            # the models' memory is the GPU worker's, made afresh for every run
+            self.gui.clear_all_mem_button.hide()
+            self.gui.clear_non_perm_mem_button.hide()
+        self.offer_pending_results()
+
+    def offer_pending_results(self) -> None:
+        """Results of this user's propagations of the task that finished while no window had it
+        open: applied when the task is as they started from it; otherwise the user decides."""
+        for job in self.backend.pending_results() if hasattr(self.backend,
+                                                             'pending_results') else ():
+            try:
+                outcome, count = ('held_for_review', 0)
+                if job['result_state'] == 'pending':
+                    outcome, count = self.backend.apply_result(job['id'])
+                if outcome == 'held_for_review':
+                    if self.gui.confirm_held_result(job):
+                        outcome, count = self.backend.apply_result(job['id'], force=True)
+                    else:
+                        self.backend.discard_result(job['id'])
+                        self.gui.text('A held propagation result was discarded.')
+                        continue
+                self.gui.text(f'A propagation that ended while the task was closed saved {count} '
+                              'masks.')
+            except BackendError as exc:
+                self.gui.text(f'A propagation result could not be applied: {exc}')
+        self.load_current_image_mask()
+        self.show_current_frame()
 
     def initialize_networks(self) -> None:
         self.cutie, self.click_ctrl = load_networks(self.cfg)
@@ -329,7 +374,9 @@ class MainController():
         self.show_current_frame()
 
     def on_forward_propagation(self):
-        if self.propagating:
+        if self.waiting_for_gpu:
+            self.on_pause()
+        elif self.propagating:
             # acts as a pause button
             self.propagating = False
             self.propagate_direction = 'none'
@@ -339,7 +386,9 @@ class MainController():
             self.on_propagate()
 
     def on_backward_propagation(self):
-        if self.propagating:
+        if self.waiting_for_gpu:
+            self.on_pause()
+        elif self.propagating:
             # acts as a pause button
             self.propagating = False
             self.propagate_direction = 'none'
@@ -349,6 +398,14 @@ class MainController():
             self.on_propagate()
 
     def on_pause(self):
+        if self.waiting_for_gpu:
+            # the queued propagation is cancelled before it ever ran
+            self.stop_waiting()
+            self.backend.cancel_propagation()
+            self.gui.text('The queued propagation is cancelled.')
+            self.gui.pause_propagation()
+            self.gui.refresh_reset_button_state()
+            return
         self.propagating = False
         self.gui.text(f'Propagation stopped at t={self.curr_ti}.')
         self.gui.pause_propagation()
@@ -378,6 +435,46 @@ class MainController():
         if self.task is not None and self.task.other_modality is not None:
             shown = 'RGB' if self.propagation_modality == 'visual' else self.propagation_modality
             self.gui.text(f'Propagating on the {shown} frames.')
+        state = self.backend.queue_state() if hasattr(self.backend, 'queue_state') else None
+        if state is not None and state['status'] == 'queued':
+            self.wait_for_gpu(state)
+            return
+        self.follow_propagation()
+
+    # a propagation queued for the shared GPU
+    def wait_for_gpu(self, state: dict) -> None:
+        self.waiting_for_gpu = True
+        self.gui.text(f'Waiting for the GPU: {state["position"]} ahead. You can keep working; the '
+                      'propagation starts here when its turn comes (an edit made before that '
+                      'holds its result for review). Pause cancels it.')
+        self.queue_timer.start()
+
+    def stop_waiting(self) -> None:
+        self.waiting_for_gpu = False
+        self.queue_timer.stop()
+
+    def on_queue_timer(self) -> None:
+        try:
+            state = self.backend.queue_state()
+        except BackendError as exc:
+            self.stop_waiting()
+            self.gui.text(f'The queued propagation is lost: {exc}')
+            self.gui.pause_propagation()
+            return
+        if state is None:
+            self.stop_waiting()
+            return
+        if state['status'] == 'queued':
+            self.gui.set_status_text(f'Waiting for the GPU: {state["position"]} ahead')
+            return
+        self.stop_waiting()
+        self.gui.set_status_text('')
+        self.gui.text('The GPU took the propagation.')
+        # running, or even done by now: the frames it made are shown and its result applied
+        self.follow_propagation()
+
+    def follow_propagation(self) -> None:
+        """Shows the run as it goes, until it ends or Pause."""
         # clear
         self.interacted_prob = None
         self.reset_this_interaction()
@@ -491,6 +588,8 @@ class MainController():
         if self.closed:
             return
         self.closed = True
+        # a queued propagation goes on: its result waits for the next window of the task
+        self.stop_waiting()
         self.res_man.close()
         self.report_save_errors()
         # the window's signal connections keep this controller alive, so release its GPU and
