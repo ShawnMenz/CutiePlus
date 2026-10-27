@@ -15,7 +15,10 @@ import socket
 import struct
 from typing import Any, List
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # the root helper runs on the standard library only; it sends no arrays
+    np = None
 
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 1 << 30
@@ -39,7 +42,7 @@ class ProtocolError(Exception):
 
 
 def _encode(value: Any, buffers: List[bytes]) -> Any:
-    if isinstance(value, np.ndarray):
+    if np is not None and isinstance(value, np.ndarray):
         array = np.ascontiguousarray(value)
         buffers.append(array.tobytes())
         return {'__nd__': len(buffers) - 1, 'dtype': array.dtype.str, 'shape': list(array.shape)}
@@ -50,7 +53,7 @@ def _encode(value: Any, buffers: List[bytes]) -> Any:
         return {str(key): _encode(item, buffers) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_encode(item, buffers) for item in value]
-    if isinstance(value, np.generic):
+    if np is not None and isinstance(value, np.generic):
         return value.item()
     return value
 
@@ -58,6 +61,8 @@ def _encode(value: Any, buffers: List[bytes]) -> Any:
 def _decode(value: Any, buffers: List[bytes]) -> Any:
     if isinstance(value, dict):
         if '__nd__' in value:
+            if np is None:
+                raise ProtocolError('arrays are not accepted here')
             dtype = np.dtype(value['dtype'])
             if dtype.kind not in _ARRAY_KINDS:
                 raise ProtocolError(f'arrays of {dtype} are not accepted')

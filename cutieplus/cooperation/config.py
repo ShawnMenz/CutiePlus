@@ -38,6 +38,12 @@ class ServiceConfig:
     # the only folder jobs may name; the GPU worker stages its results below it
     workspace_root: str = ''
     staging_dir: str = ''  # default: <workspace_root>/.cutie_jobs
+    tasks_dir: str = ''  # the input the remote desktops open; default: <workspace_root>/cutie_tasks
+    # written by the root helper only
+    authorized_keys: str = '/etc/cutieplus/ssh/authorized_keys'
+    desktops_dir: str = '/var/lib/cutieplus-desktops'  # <N>/vncpasswd, <N>/env
+    service_user: str = 'cutieplus'  # the only account the helper answers
+    desktop_user: str = 'zexuan'  # the account of the desktops, the worker and SSH logins
     # the remote desktops: display :N listens on 127.0.0.1:<vnc_port_base + N>
     first_display: int = 2
     last_display: int = 20
@@ -67,6 +73,28 @@ class ServiceConfig:
     @property
     def jobs_dir(self) -> str:
         return self.staging_dir or path.join(self.workspace_root, '.cutie_jobs')
+
+    @property
+    def default_tasks_dir(self) -> str:
+        return self.tasks_dir or path.join(self.workspace_root, 'cutie_tasks')
+
+    @property
+    def vnc_ports(self):
+        return self.vnc_port_of(self.first_display), self.vnc_port_of(self.last_display)
+
+    def displays(self) -> range:
+        return range(self.first_display, self.last_display + 1)
+
+    def vnc_password_file(self, display: int) -> str:
+        return path.join(self.desktops_dir, str(int(display)), 'vncpasswd')
+
+    def within_workspace(self, folder: str) -> bool:
+        """Whether an absolute path lies in workspace_root (by its text: '..' never escapes)."""
+        if not isinstance(folder, str) or not path.isabs(folder):
+            return False
+        normal = path.normpath(folder)
+        return normal == path.normpath(self.workspace_root) or normal.startswith(
+            path.normpath(self.workspace_root) + os.sep)
 
     def desktop_unit_of(self, display: int) -> str:
         return self.desktop_unit.format(display=int(display))

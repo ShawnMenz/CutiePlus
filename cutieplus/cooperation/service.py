@@ -63,9 +63,22 @@ class Service:
         self.user_hooks: List[UserHook] = []
         # what other parts add to get_user's reply: extend(user_row, details)
         self.user_details: List[Callable[[dict, dict], None]] = []
+        # a user suspended or removed: hook(cursor, user, actor_id, now) (their GPU jobs)
+        self.suspension_hooks: List[Callable[..., None]] = []
+        # VNC passwords to write, by desktop slot: in memory only, never in the database
+        self.pending_vnc_passwords = {}
+        self.reconciler = None
         self.lock = threading.Lock()
         pattern = re.escape(config.desktop_unit).replace(re.escape('{display}'), r'(\d+)')
         self.desktop_unit_pattern = re.compile(pattern)
+
+    def after_commit(self, callback: Callable[[], None]) -> None:
+        self.db.after_commit(callback)
+
+    def reconcile_soon(self) -> None:
+        """A change for the reconciler: its next pass starts now rather than in a few seconds."""
+        if self.reconciler is not None:
+            self.reconciler.wake.set()
 
     # time
     def now(self) -> str:

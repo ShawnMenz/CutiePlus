@@ -15,7 +15,7 @@ import re
 import threading
 from contextlib import contextmanager
 from os import path
-from typing import Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple
 
 import apsw
 
@@ -62,6 +62,7 @@ class Database:
         self.path = db_path
         self.clock = clock or Clock()
         self.lock = threading.RLock()
+        self.committed: List[Callable[[], None]] = []  # after_commit's, of the transaction
         if not path.exists(db_path):
             # private from the start; SQLite gives its -wal and -shm files the same mode
             os.close(os.open(db_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
@@ -83,12 +84,21 @@ class Database:
         with self.lock:
             cursor = self.conn.cursor()
             cursor.execute('BEGIN IMMEDIATE')
+            self.committed = []
             try:
                 yield cursor
             except BaseException:
                 cursor.execute('ROLLBACK')
+                self.committed = []
                 raise
             cursor.execute('COMMIT')
+            callbacks, self.committed = self.committed, []
+        for callback in callbacks:
+            callback()
+
+    def after_commit(self, callback: Callable[[], None]) -> None:
+        """Runs callback once the current transaction is committed; never if it rolls back."""
+        self.committed.append(callback)
 
     def query(self, sql: str, bindings=()) -> List[dict]:
         with self.lock:

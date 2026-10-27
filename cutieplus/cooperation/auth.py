@@ -95,8 +95,8 @@ def same_hash(left: Optional[str], right: Optional[str]) -> bool:
 class LoginLimiter:
     """
     Per login name at an origin: 5 failures in 15 minutes are free, then each attempt waits twice
-    as long as the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for 10 minutes.
-    Kept in memory: a restart of the service forgets them.
+    as long as the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for
+    10 minutes. Kept in memory: a restart of the service forgets them.
     """
     FREE_FAILURES = 5
     WINDOW_S = 15 * 60
