@@ -47,6 +47,21 @@ if __name__ in "__main__":
     # input arguments
     args = get_arguments()
 
+    # a host with the cooperation service: every window signs in, and its GPU work runs in the
+    # one shared GPU worker; this process never sees the GPU (set before torch is imported)
+    from cutieplus.cooperation.config import ConfigError, client_config
+    try:
+        cooperation = client_config()
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(2)
+    if cooperation is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        if args.tasks is None:
+            print('This computer runs the CutiePlus service: start the task browser (--tasks); '
+                  'a plain workspace would use the GPU on its own.', file=sys.stderr)
+            sys.exit(2)
+
     # perform slow imports after parsing args
     import torch
     from omegaconf import open_dict
@@ -63,7 +78,9 @@ if __name__ in "__main__":
 
     # general setup
     torch.set_grad_enabled(False)
-    if torch.cuda.is_available():
+    if cooperation is not None:
+        device = 'cpu'  # the window only draws; the GPU worker infers
+    elif torch.cuda.is_available():
         device = 'cuda'
     elif torch.backends.mps.is_available():
         device = 'mps'
@@ -88,6 +105,11 @@ if __name__ in "__main__":
     # the one last chosen with the browser's theme button, Auto at first
     from gui.theme import apply_theme, saved_theme
     apply_theme(saved_theme())
+    if cooperation is not None:
+        from gui.cooperation_app import CooperationApp
+        program = CooperationApp(cfg, cooperation)
+        program.start()
+        sys.exit(app.exec())
     if cfg['tasks'] is not None:
         from gui.task_browser import TaskBrowser
         browser = TaskBrowser(cfg, cfg['tasks'], cfg['task_split'])

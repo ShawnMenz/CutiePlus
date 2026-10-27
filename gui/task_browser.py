@@ -31,6 +31,8 @@ from gui.dataset_export import (ExportCancelled, ExportPlan, export_root_of, fre
 from gui.gui_utils import fit_window, is_dark
 from gui.main_controller import MainController, load_networks
 from gui.import_dialog import ImportDialog
+from gui.manage_annotators import ManageAnnotators
+from gui.service_link import ServiceLink
 from gui.style import GAP, Card, set_variant
 from gui.task_input import InputError, SequenceInput, find_tabs, read_tab, unorganized_parts
 from gui.task_state import (ATTENTION_STATUS, DISCARDED_STATUS, TaskLocked, attention_of,
@@ -225,18 +227,42 @@ class StatusDelegate(QStyledItemDelegate):
 
 
 class TaskBrowser(QWidget):
+    # on a host with the cooperation service: the user signed out, or must sign in again (why)
+    sign_in_again = Signal(str)
+    closed = Signal()
 
-    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None):
+    def __init__(self, cfg: DictConfig, task_root: str, initial_split: Optional[str] = None,
+                 link: Optional[ServiceLink] = None, offline: bool = False):
+        """link: the signed-in session on a host with the cooperation service; offline: that host
+        without its service (no GPU work). Neither: this program on its own, as before."""
         super().__init__()
         self.cfg = cfg
         self.task_root = path.abspath(task_root)  # the input root
+        self.link = link
+        self.offline = offline
+        self.signing_out = False
+        self.manage_window: Optional[ManageAnnotators] = None
         self.networks = None
         self.controller: Optional[MainController] = None
         # (tab, sequence) -> the input sequence, and the frames of its anchor modality
         self.sources: Dict[Tuple[str, str], SequenceInput] = {}
         self.frame_counts: Dict[Tuple[str, str], int] = {}
-        self.labeler = labeler_name(cfg['labeler'] if 'labeler' in cfg else None)
+        if link is not None:  # the signed-in user, whatever the account or --labeler say
+            self.labeler = link.login_name
+        elif offline:
+            self.labeler = f'{labeler_name(None)} (offline)'
+        else:
+            self.labeler = labeler_name(cfg['labeler'] if 'labeler' in cfg else None)
         self.setWindowTitle(f'Cutie tasks: {self.task_root} · {self.labeler}')
+        # the signed-in user and Log out, beside the theme button
+        self.account_label = QLabel()
+        self.account_label.setTextFormat(Qt.TextFormat.RichText)
+        self.logout_button = QPushButton('Log out')
+        self.logout_button.setToolTip('Sign out of CutiePlus; the open task saves and closes.')
+        self.logout_button.clicked.connect(self.on_logout)
+        self.logout_button.setVisible(link is not None)
+        self.account_label.setVisible(link is not None or offline)
+        self.show_account()
         self.search = QLineEdit()
         self.search.setPlaceholderText('Filter by sequence, annotator or target text')
         self.search.setClearButtonEnabled(True)
@@ -297,6 +323,12 @@ class TaskBrowser(QWidget):
         import_button.setToolTip('Add subsets of the input (each is a tab), or move the input '
                                  'found directly in the input folder into main/.')
         import_button.clicked.connect(self.on_import)
+        # supervisors and admins; shown once the service has said so (whoami)
+        self.manage_button = QPushButton('Manage Annotators')
+        self.manage_button.setToolTip('Add annotators, their SSH keys and desktops; suspend or '
+                                      'remove them.')
+        self.manage_button.clicked.connect(self.on_manage)
+        self.manage_button.hide()
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(140)
@@ -310,7 +342,7 @@ class TaskBrowser(QWidget):
 
         # the input and the export on the left, the selected sequence's actions on the right
         buttons = QHBoxLayout()
-        for button in (import_button, export_button, refresh_button):
+        for button in (import_button, export_button, refresh_button, self.manage_button):
             set_variant(button, 'info')  # blue; a disabled one grey, as every disabled button
             buttons.addWidget(button)
         buttons.addStretch(1)
@@ -324,6 +356,8 @@ class TaskBrowser(QWidget):
         filter_row.setSpacing(12)
         filter_row.addWidget(self.search, 1)
         filter_row.addWidget(self.hide_done)
+        filter_row.addWidget(self.account_label)
+        filter_row.addWidget(self.logout_button)
         filter_row.addWidget(self.theme_button)
         layout.addWidget(Card(filter_row))
         # the tabs, or, before any subset is imported, a message in their place
@@ -351,6 +385,11 @@ class TaskBrowser(QWidget):
         self.lock_timer = QTimer(self)
         self.lock_timer.timeout.connect(self.refresh_locks)
         self.lock_timer.start(LOCK_REFRESH_MS)
+        if link is not None:
+            link.identity.connect(self.on_identity)
+            link.signed_out.connect(self.on_signed_out)
+            if link.whoami is not None:
+                self.on_identity(link.whoami)
         fit_window(self, QSize(1100, 750))
 
     def log(self, text: str) -> None:
@@ -872,6 +911,50 @@ class TaskBrowser(QWidget):
         self.export_plan = None
         self.refresh_locks()
 
+    # the signed-in user (a host with the cooperation service)
+    def show_account(self) -> None:
+        if self.link is not None:
+            self.account_label.setText(f'<b>{html.escape(self.link.login_name)}</b> · '
+                                       f'{self.link.role_name}')
+        elif self.offline:
+            self.account_label.setText('offline: no clicks or propagation')
+
+    def on_identity(self, whoami: dict) -> None:
+        self.show_account()
+        self.manage_button.setVisible(self.link.permission('manage_annotators'))
+        self.manage_button.setEnabled(self.link.permission('manage_annotators'))
+
+    def on_manage(self) -> None:
+        if self.link is None or not self.link.permission('manage_annotators'):
+            return
+        if self.manage_window is None:
+            self.manage_window = ManageAnnotators(self.link, self)
+            self.manage_window.finished.connect(self.on_manage_closed)
+        self.manage_window.show()
+        self.manage_window.raise_()
+
+    def on_manage_closed(self) -> None:
+        self.manage_window = None
+
+    def on_logout(self) -> None:
+        self.end_session('You signed out.', log_out=True)
+
+    def on_signed_out(self, reason: str) -> None:
+        self.log(f'Signed out: {reason}')
+        self.end_session(reason)
+
+    def end_session(self, reason: str, log_out: bool = False) -> None:
+        """Closes the open task (it saves) and this window; the program asks for a sign-in."""
+        self.signing_out = True
+        if self.manage_window is not None:
+            self.manage_window.close()
+        if not self.close():
+            self.signing_out = False
+            return
+        if log_out and self.link is not None:
+            self.link.logout()
+        self.sign_in_again.emit(reason)
+
     def closeEvent(self, event):
         if self.export_worker is not None:
             self.log('Wait for the export to finish, or cancel it, before closing.')
@@ -881,3 +964,4 @@ class TaskBrowser(QWidget):
         if self.controller is not None:
             self.controller.gui.close()
         event.accept()
+        self.closed.emit()

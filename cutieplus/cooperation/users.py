@@ -8,11 +8,12 @@ Every change of role, status or credentials raises the user's authz_version and 
 sessions: they sign in again, with what they may do now. Removed users stay in the database, so
 their jobs and audit records keep naming them; their annotation files are never touched.
 """
+from datetime import timedelta
 from typing import Optional
 
 from cutieplus.cooperation import audit, authz, settings, validate
 from cutieplus.cooperation.api import Context, op
-from cutieplus.cooperation.clock import new_id
+from cutieplus.cooperation.clock import iso, new_id
 from cutieplus.cooperation.errors import (CONFLICT, FORBIDDEN, INVALID, NOT_FOUND,
                                           UNEXPECTED_FIELD, Refused)
 from cutieplus.cooperation.service import Service, public_user
@@ -61,18 +62,35 @@ def list_users(service: Service, ctx: Context, query='', include_archived=False)
     query = validate.text(query, 'query', 80, required=False) or ''
     where, bindings = ['1'], []
     if ctx.actor.role == authz.SUPERVISOR:
-        where.append("role = 'annotator'")
+        where.append("u.role = 'annotator'")
     if not include_archived:
-        where.append("status != 'archived'")
+        where.append("u.status != 'archived'")
     if query:
-        where.append("(login_name LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\' OR "
-                     "coalesce(contact, '') LIKE ? ESCAPE '\\')")
+        where.append("(u.login_name LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\' OR "
+                     "coalesce(u.contact, '') LIKE ? ESCAPE '\\')")
         pattern = '%' + query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
         bindings += [pattern] * 3
-    rows = service.db.query(f'SELECT * FROM users WHERE {" AND ".join(where)} '
-                            'ORDER BY role, login_name', bindings)
+    now = service.clock.now()
+    idle_cutoff = iso(now - timedelta(minutes=service.setting('session_idle_minutes')))
+    rows = service.db.query(
+        'SELECT u.*, s.display_number AS desktop_display, s.observed_state AS desktop_state, '
+        's.desired_state AS desktop_desired, s.last_error AS desktop_error, '
+        "(SELECT count(*) FROM ssh_connections c WHERE c.user_id = u.id AND c.status IN "
+        "('active', 'disconnecting')) AS ssh_connections, "
+        '(SELECT count(*) FROM app_sessions a WHERE a.user_id = u.id AND a.revoked_at IS NULL '
+        'AND a.expires_at > ? AND a.last_seen_at > ?) AS app_sessions, '
+        "(SELECT count(*) FROM management_operations m WHERE m.target_user_id = u.id AND "
+        "m.status IN ('pending', 'running')) AS operations_running, "
+        "(SELECT count(*) FROM management_operations m WHERE m.target_user_id = u.id AND "
+        "m.status = 'failed') AS operations_failed "
+        f'FROM users u LEFT JOIN desktop_slots s ON s.user_id = u.id '
+        f'WHERE {" AND ".join(where)} ORDER BY u.role, u.login_name',
+        [iso(now), idle_cutoff] + bindings)
     owner = service.owner_id()
-    return [dict(public_user(row), is_owner=row['id'] == owner) for row in rows]
+    summary = ('desktop_display', 'desktop_state', 'desktop_desired', 'desktop_error',
+               'ssh_connections', 'app_sessions', 'operations_running', 'operations_failed')
+    return [dict(public_user(row), is_owner=row['id'] == owner,
+                 **{key: row[key] for key in summary}) for row in rows]
 
 
 @op()
