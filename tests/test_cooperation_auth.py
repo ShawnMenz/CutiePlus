@@ -81,10 +81,13 @@ def test_nobody_guesses_or_locks_out_a_password_from_their_own_desktop(harness):
     harness.add_slot(alice['id'], 2)
     harness.add_slot(bob['id'], 3)
     bobs_desktop = harness.peer(display=3)
-    # at bob's desktop alice's right password reads as a wrong one: it is never even checked
+    # at bob's desktop alice's right password reads as a wrong one, and as a name nobody has: it
+    # is never even checked
     wrong = harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
     right = harness.raw('login', peer=bobs_desktop, login_name='alice', password=PASSWORD)
-    assert right['error'] == wrong['error'] and right['error']['code'] == 'invalid_credentials'
+    nobody = harness.raw('login', peer=bobs_desktop, login_name='nobody', password='a guess')
+    assert right['error'] == wrong['error'] == nobody['error']
+    assert right['error']['code'] == 'invalid_credentials'
     for _ in range(8):
         harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
     # alice is not slowed down at her own desktop or the console
@@ -92,7 +95,7 @@ def test_nobody_guesses_or_locks_out_a_password_from_their_own_desktop(harness):
                         password=PASSWORD) == 'ok'
     assert harness.code('login', login_name='alice', password=PASSWORD) == 'ok'
     # bob's desktop is, after 30 failures in all
-    for _ in range(25):
+    for _ in range(24):
         harness.raw('login', peer=bobs_desktop, login_name='alice', password='a guess')
     assert harness.code('login', peer=bobs_desktop, login_name='bob',
                         password=PASSWORD) == 'rate_limited'
@@ -206,3 +209,14 @@ def test_the_maintenance_commands_recover_and_transfer_the_owner(harness):
     with pytest.raises(ClientError) as refused:
         harness.call('set_role', alice_token, user_id=alice['id'], role='annotator')
     assert refused.value.code == 'owner_protected'
+
+
+def test_failures_at_the_console_do_not_slow_a_user_at_their_own_desktop(harness):
+    owner = harness.owner()
+    alice = harness.add(owner, 'alice')
+    harness.add_slot(alice['id'], 2)
+    for _ in range(6):
+        harness.raw('login', login_name='alice', password='a guess')
+    assert harness.code('login', login_name='alice', password=PASSWORD) == 'rate_limited'
+    assert harness.code('login', peer=harness.peer(display=2), login_name='alice',
+                        password=PASSWORD) == 'ok'

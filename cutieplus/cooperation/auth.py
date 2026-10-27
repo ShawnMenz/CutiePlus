@@ -3,12 +3,13 @@ Credentials of the application users: Argon2id password hashes, session tokens a
 tokens. The database keeps hashes only; a token is shown once (a session token to its window, a
 setup token to whoever hands it to the user) and never written anywhere else.
 
-Failed sign-ins slow down per login name and per origin (a remote desktop, or the host's
-console): every window of the shared account connects from the same host, so "localhost" would be
-everybody. A user signs in only at the console or at their own desktop; an attempt anywhere else is
-refused before its password is looked at and counts against its origin only, so nobody can guess
-another user's password from their own desktop, or lock that user out from there. The counts live
-in memory: restarting the service clears them.
+Failed sign-ins slow down per login name at an origin (a remote desktop, or the host's console),
+and per origin: every window of the shared account connects from the same host, so "localhost"
+would be everybody. At a desktop only its own user's name gets as far as a password; any other
+name, known or not, is refused before anything is checked and counts against the desktop only. So
+a user's password can be tried at two origins only, the console and their own desktop, each with
+its own count: failures at one never slow the user down at the other. The counts live in memory:
+restarting the service clears them.
 """
 import hashlib
 import hmac
@@ -93,8 +94,8 @@ def same_hash(left: Optional[str], right: Optional[str]) -> bool:
 
 class LoginLimiter:
     """
-    Per login name: 5 failures in 15 minutes are free, then each attempt waits twice as long as
-    the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for 10 minutes.
+    Per login name at an origin: 5 failures in 15 minutes are free, then each attempt waits twice
+    as long as the last (30 s up to 15 min). Per origin: 30 failures in 10 minutes close it for 10 minutes.
     Kept in memory: a restart of the service forgets them.
     """
     FREE_FAILURES = 5
@@ -130,7 +131,7 @@ class LoginLimiter:
         self.check_origin(origin)
         with self.lock:
             now = self.clock()
-            times = self._recent(f'login:{login_name}', self.WINDOW_S)
+            times = self._recent(self._login_key(login_name, origin), self.WINDOW_S)
             excess = len(times) - self.FREE_FAILURES
             if excess >= 0:
                 wait = min(self.FIRST_WAIT_S * 2**excess, self.MAX_WAIT_S)
@@ -145,14 +146,18 @@ class LoginLimiter:
             for key in keys:
                 self.failures[key].append(now)
 
+    @staticmethod
+    def _login_key(login_name: str, origin: str) -> str:
+        return f'login:{login_name}@{origin}'
+
     def failed_sign_in(self, login_name: str, origin: str, counts_for_name: bool = True) -> None:
-        """counts_for_name=False: an attempt from an origin where the user cannot sign in, which
-        never got as far as the password."""
+        """counts_for_name=False: an attempt that never got as far as a password (a name that
+        does not sign in at this origin)."""
         keys = [f'origin:{origin}']
         if counts_for_name:
-            keys.append(f'login:{login_name}')
+            keys.append(self._login_key(login_name, origin))
         self.failed(keys)
 
-    def succeeded(self, login_name: str) -> None:
+    def succeeded(self, login_name: str, origin: str) -> None:
         with self.lock:
-            self.failures.pop(f'login:{login_name}', None)
+            self.failures.pop(self._login_key(login_name, origin), None)

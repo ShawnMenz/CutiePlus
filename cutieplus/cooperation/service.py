@@ -176,10 +176,11 @@ class Service:
 
     @staticmethod
     def signs_in_here(user: Optional[dict], origin: Origin) -> bool:
-        """A remote desktop is its user's: nobody else signs in there. The console takes anyone."""
-        if user is None or not origin.is_desktop:
+        """A remote desktop is its user's: nobody else signs in there, and a name nobody has is
+        nobody's. The console takes any name (an unknown one fails at its password)."""
+        if not origin.is_desktop:
             return True
-        return origin.slot is not None and origin.slot['user_id'] == user['id']
+        return user is not None and origin.slot is not None and origin.slot['user_id'] == user['id']
 
     def user_row(self, user_id: str) -> dict:
         row = self.db.query_one('SELECT * FROM users WHERE id = ?', (user_id, ))
@@ -214,9 +215,9 @@ def hello(service: Service, ctx: Context) -> dict:
 def _sign_in_user(service: Service, ctx: Context, action: str, login_name,
                   refusal: str) -> Tuple[str, Optional[dict]]:
     """(the normalized name, its user or None); a malformed name is nobody, as an unknown one.
-    At a desktop that is not the user's, the attempt is refused here, before any password or
-    token is looked at, with the same words as a wrong one: it tells nothing, and counts against
-    the desktop only."""
+    At a desktop, any name but its own user's (known or not) is refused here, before any password
+    or token is looked at, with the same words as a wrong one: it tells nothing, and counts
+    against the desktop only."""
     try:
         name = validate.login_name(login_name)
         user = service.db.query_one('SELECT * FROM users WHERE login_name = ?', (name, ))
@@ -251,7 +252,7 @@ def login(service: Service, ctx: Context, login_name, password) -> dict:
     if not service.passwords.verify(user['password_hash'] if usable else None, password):
         _failed_sign_in(service, ctx, 'login', name, user)
         raise Refused(INVALID_CREDENTIALS, WRONG_PASSWORD)
-    service.limiter.succeeded(name)
+    service.limiter.succeeded(name, ctx.origin.key)
     with service.db.transaction() as cursor:
         issued = service.issue_session(cursor, user, ctx.origin)
         audit.record(cursor, service.now(), 'login', audit.SUCCEEDED, user['id'],
@@ -293,7 +294,7 @@ def setup_credential(service: Service, ctx: Context, login_name, setup_token,
                      target_type='user', target_id=user['id'], request_id=ctx.request_id,
                      before={'status': user['status']}, after={'status': after['status']})
         issued = service.issue_session(cursor, after, ctx.origin)
-    service.limiter.succeeded(name)
+    service.limiter.succeeded(name, ctx.origin.key)
     return dict(issued, user=public_user(service.user_row(user['id'])))
 
 
@@ -328,7 +329,7 @@ def reauthenticate(service: Service, ctx: Context, password) -> dict:
     if not service.passwords.verify(user['password_hash'], password):
         _failed_sign_in(service, ctx, 'reauthenticate', user['login_name'], user)
         raise Refused(INVALID_CREDENTIALS, 'wrong password')
-    service.limiter.succeeded(user['login_name'])
+    service.limiter.succeeded(user['login_name'], ctx.origin.key)
     with service.db.transaction() as cursor:
         cursor.execute('UPDATE app_sessions SET last_reauthenticated_at = ? WHERE id = ?',
                        (service.now(), ctx.session['id']))
