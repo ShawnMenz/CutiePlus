@@ -74,6 +74,8 @@ torchvision = { index = "pytorch-cu130" }
 
 [dependency-groups]
 dev = [
+    "apsw==3.53.4.0",
+    "argon2-cffi==25.1.0",
     "pytest>=9.1.1",
 ]
 
