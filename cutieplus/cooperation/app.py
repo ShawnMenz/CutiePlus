@@ -28,6 +28,9 @@ def build_service(config: ServiceConfig, db: Optional[Database] = None,
     service.user_details.append(functools.partial(desktops.desktop_details, service))
     if helper is not None:
         service.reconciler = Reconciler(service, helper)
+    # a restored database is reconciled before anything else uses it
+    from cutieplus.cooperation.restore import reconcile_after_restore
+    service.restored = reconcile_after_restore(service)
     if gpu:
         service.gpu = gpu_module.GpuQueue(service)
         if helper is not None:

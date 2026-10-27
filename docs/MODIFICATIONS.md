@@ -104,13 +104,30 @@ Files: `cutieplus/` (new), `gui/main_controller.py`, `gui/click_controller.py`,
 
 Dead or unused code was deleted: `cutie/inference/utils/frame_utils.py` (its import was broken), `scripting_demo_add_del_objects.py`, `scripting_demo.py`, `scripts/process_video.py` with `cutie/config/video_config.yaml`, `cutie/utils/get_default_model.py`, `examples/`, `docs/INTERACTIVE.md` and `docs/sources.txt` (the original demos), the RITM modules that nothing imports (`gui/ritm/inference/evaluation.py`, `gui/ritm/model/is_deeplab_model.py`, `gui/ritm/model/modeling/{basic_blocks,deeplab_v3,resnet}.py`, `gui/ritm/utils/{distributed,exp,vis}.py`, `gui/ritm/utils/exp_imports/default.py`).
 
-## Collaboration (removed, October 2026)
+## Cooperation (October 2026)
 
-CutiePlus once let several annotators share the desktop: each had a TigerVNC screen of their own,
-reached through an SSH tunnel, and an optional shared GPU service (a coordinator and one GPU
-worker) held the only copy of the models for every window.
-All of it was removed: CutiePlus runs for one person at the desktop, with the models in the window's
-own process. Collaboration is to be designed again.
+An earlier collaboration design (a VNC screen per annotator, identified by its screen, and an
+optional shared GPU service) was removed in October 2026 and designed again
+([COOPERATION.md](COOPERATION.md)):
+
+- `cutieplus/cooperation/`: a service run as its own protected account from a root-owned copy of
+  the code, with SQLite (through apsw, for a SQLite with the WAL-reset fix), application users
+  with Argon2id passwords and one-time setup tokens, three roles checked on every request against
+  the target's current role, sessions bound to the desktop they were opened from, an audit log,
+  backups and a restore that reconciles on the safe side; a root helper with a fixed set of
+  operations (the SSH policy file, VNC passwords, desktop units, cutting SSH connections); a
+  reconciler that applies management changes to the system and reports them as they complete.
+- `cutieplus/gpu_worker/`: the only process using the GPU, behind an flock, serving a persistent
+  FIFO queue of propagations from immutable snapshots, with clicks between their steps.
+- `cutieplus/backends/service.py`: the window's backend on such a host (no model in the window;
+  results applied only to the task revision they started from, else held for review);
+  `cutieplus/backends/task_data.py`: the task's files apart from the models.
+- The GUI: a sign-in, *Manage Annotators* and *GPU queue* in the task browser, the account area,
+  a queued propagation that leaves the window editable.
+- `deploy/`: the installer, systemd units (the annotation sshd on port 2222, remote desktops
+  without a PAM session), the desktop session script.
+- Task locks moved to `~/.cache/cutieplus/task-locks`, shared by every window of the account; task
+  metadata gained a `revision`.
 
 ## New files
 

@@ -14,6 +14,8 @@ import argparse
 import json
 import os
 import pwd
+import shutil
+import subprocess
 import sys
 from typing import Optional
 
@@ -121,6 +123,36 @@ def status(service: Service) -> dict:
     }
 
 
+def restore_file(config: ServiceConfig, backup: str, now: str) -> list:
+    """Puts a backup in place of the database (the service is stopped) and marks it restored,
+    so the next service reconciles it (restore.py). Returns the users, for review."""
+    import apsw
+    from cutieplus.cooperation.db import Database
+    from cutieplus.cooperation.restore import mark_restored
+    source = apsw.Connection(f'file:{backup}?immutable=1',
+                             flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI)
+    try:
+        check = source.execute('PRAGMA integrity_check').fetchall()[0][0]
+    finally:
+        source.close()
+    if check != 'ok':
+        raise AdminError(f'{backup} fails its integrity check: {check}')
+    temporary = config.db_path + '.restoring'
+    shutil.copyfile(backup, temporary)
+    os.chmod(temporary, 0o600)
+    for suffix in ('-wal', '-shm'):
+        if os.path.exists(config.db_path + suffix):
+            os.remove(config.db_path + suffix)
+    os.replace(temporary, config.db_path)
+    db = Database(config.db_path, require_patched_sqlite=config.require_patched_sqlite)
+    try:
+        mark_restored(db, backup, now)
+        return db.query('SELECT login_name, role, status, updated_at FROM users ORDER BY '
+                        'login_name')
+    finally:
+        db.close()
+
+
 def drop_root(account: str = SERVICE_ACCOUNT) -> None:
     """Root becomes the service account (its group only), for good."""
     if os.geteuid() != 0:
@@ -143,10 +175,14 @@ def main(argv: Optional[list] = None) -> int:
     transfer = commands.add_parser('owner-transfer', help='hand the ownership to another user')
     transfer.add_argument('--login', required=True)
     commands.add_parser('backup', help='back the database up now')
+    restore = commands.add_parser('restore', help='put a backup in place of the database')
+    restore.add_argument('backup')
     commands.add_parser('status', help='users, policy, GPU and jobs at a glance')
     args = parser.parse_args(argv)
     try:
         config = ServiceConfig.load(args.config)
+        if args.command == 'restore':
+            return restore_command(config, args.backup)
         drop_root()
         from cutieplus.cooperation.app import build_service
         service = build_service(config)
@@ -169,6 +205,34 @@ def main(argv: Optional[list] = None) -> int:
         print(f'cutieplus-admin: {exc}', file=sys.stderr)
         return 1
     return 0
+
+
+def restore_command(config: ServiceConfig, backup: str) -> int:
+    """As root: stops the service, restores as the service account (a child process that drops
+    root), and starts the service again, which reconciles the restored database."""
+    if os.geteuid() != 0:
+        raise AdminError('run it as root: sudo cutieplus-admin restore <backup>')
+    backup = os.path.abspath(backup)
+    subprocess.run(['/usr/bin/systemctl', 'stop', 'cutieplus-service.service'], check=True)
+    child = os.fork()
+    if child == 0:
+        code = 0
+        try:
+            drop_root()
+            from cutieplus.cooperation.clock import Clock
+            users = restore_file(config, backup, Clock().iso_now())
+            print(f'Restored {backup}. Review these users: changes made after the backup are '
+                  'not in it.')
+            for user in users:
+                print(f'  {user["login_name"]:<20} {user["role"]:<11} {user["status"]:<10} '
+                      f'changed {user["updated_at"][:16]}')
+        except Exception as exc:  # the parent says it failed
+            print(f'cutieplus-admin: {exc}', file=sys.stderr)
+            code = 1
+        os._exit(code)
+    _, status = os.waitpid(child, 0)
+    subprocess.run(['/usr/bin/systemctl', 'start', 'cutieplus-service.service'], check=True)
+    return 0 if os.waitstatus_to_exitcode(status) == 0 else 1
 
 
 if __name__ == '__main__':

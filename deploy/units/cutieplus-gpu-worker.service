@@ -1,0 +1,20 @@
+# The CutiePlus GPU worker (deploy/install.sh): the only process that loads the models onto the
+# GPU. It takes the GPU lock before CUDA and serves the cooperation service. A stop or restart ends
+# its whole process group before a new worker starts.
+[Unit]
+Description=CutiePlus GPU worker
+After=cutieplus-service.service
+Wants=cutieplus-service.service
+
+[Service]
+User=@USER@
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/python -m cutieplus.gpu_worker --config /etc/cutieplus/service.toml
+Environment=PYTHONUNBUFFERED=1
+KillMode=control-group
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

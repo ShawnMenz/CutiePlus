@@ -191,11 +191,10 @@ def checksum(text: str) -> str:
 def render_sshd_config(port: int, authorized_keys: str, ports: Tuple[int, int],
                        pid_file: str = '/run/cutieplus-sshd.pid', host_keys: Iterable[str] = (
                            '/etc/ssh/ssh_host_ed25519_key', '/etc/ssh/ssh_host_ecdsa_key',
-                           '/etc/ssh/ssh_host_rsa_key'), user: str = 'zexuan',
-                       privileged: bool = True) -> str:
+                           '/etc/ssh/ssh_host_rsa_key'), user: str = 'zexuan') -> str:
     """The annotation entrypoint's own sshd configuration: keys of the managed policy only,
-    local forwarding to the managed VNC ports only, no shell, no SFTP. privileged=False is the
-    unprivileged sshd of the tests (no PAM, no privilege separation)."""
+    local forwarding to the managed VNC ports only, no shell, no SFTP, and no PAM (no session is
+    opened for the account: a forwarding needs none)."""
     permit = ' '.join(f'localhost:{number} 127.0.0.1:{number}'
                       for number in range(ports[0], ports[1] + 1))
     lines = [
@@ -237,6 +236,6 @@ def render_sshd_config(port: int, authorized_keys: str, ports: Tuple[int, int],
         '# no Subsystem line: no SFTP',
         'PrintMotd no',
         'LogLevel VERBOSE',
-        f'UsePAM {"yes" if privileged else "no"}',
+        'UsePAM no',
     ]
     return '\n'.join(lines) + '\n'

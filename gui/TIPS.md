@@ -118,8 +118,16 @@ The Theme button (top right) cycles Auto, Light, Dark and Eye care, a light them
 
 - Open by: which window has the sequence open, by name and process id. It updates every 10 seconds.
 - A sequence open in another window cannot be opened, discarded or marked done until it is closed there. A window that crashes releases its sequence at once.
-- Your name (in the window title) is recorded on your anchors and review steps: `--labeler`, else `CUTIE_LABELER`, else the account name.
+- Your name (in the window title) is recorded on your anchors and review steps: the user you signed in as when this computer runs the CutiePlus service; otherwise `--labeler`, else `CUTIE_LABELER`, else the account name.
 - Annotators: everyone who changed the sequence (any change; Save and Mark done do not count). The Statistics card (bottom right, beside the messages) counts the sequences each annotator worked on in this tab, whatever their status now; a sequence with two annotators counts for both. Type a name in the filter to list that person's sequences.
 - Total Intervals (the last line of the Statistics card): the intervals of every sequence marked done, in all tabs, whatever tab is shown. Each interval is a clip of the dataset (Export); a sequence with no interval of its own counts as one (the whole sequence). A done sequence later flagged Need Attention still counts; a discarded one does not.
 
 Outside task mode (a plain Cutie workspace), C commits the frame to permanent memory, Ctrl+S exports binary masks, and the Advanced card keeps the original Cutie's overlay video (Save visualization, Save soft mask, Export as video, Ctrl+E).
+
+**With several people (sign-in)**
+
+When this computer runs the CutiePlus service, every window starts with a sign-in; the first time, use the setup token you were given. Your name and role show beside the theme button, with Log out.
+- The GPU is shared. A propagation may wait for others' first: the window says how many are ahead, stays editable meanwhile, and follows the run once it starts; Pause cancels it. GPU queue (task browser) shows the queue and your propagations, with Cancel and Retry.
+- A propagation's masks are saved when it ends. If you edited the sequence after asking for it, its result is held: the window asks whether to apply it (anchors are kept) or discard it, now or the next time the sequence opens.
+- Supervisors and admins: Manage Annotators (task browser) adds collaborators, their SSH keys and desktops. See docs/COOPERATION.md.
+- If the service cannot be reached, you can work offline: browse, edit and save, but no clicks or propagation.

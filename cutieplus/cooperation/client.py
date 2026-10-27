@@ -33,16 +33,18 @@ class ServiceUnavailable(ClientError):
 
 class ServiceClient:
 
-    def __init__(self, socket_path: str, timeout: float = 30.0):
+    def __init__(self, socket_path: str, timeout: float = 30.0,
+                 name: str = 'the CutiePlus service'):
         self.socket_path = socket_path
         self.timeout = timeout
+        self.name = name  # what answers there, for the messages
         self.token: Optional[str] = None
         self.sock: Optional[socket.socket] = None
         self.lock = threading.Lock()
 
     def copy(self) -> 'ServiceClient':
         """Another connection with the same session, e.g. for a thread that polls."""
-        other = ServiceClient(self.socket_path, self.timeout)
+        other = ServiceClient(self.socket_path, self.timeout, self.name)
         other.token = self.token
         return other
 
@@ -53,8 +55,8 @@ class ServiceClient:
             sock.connect(self.socket_path)
         except OSError as exc:
             sock.close()
-            raise ServiceUnavailable(f'the CutiePlus service is not reachable at '
-                                     f'{self.socket_path} ({exc.strerror or exc})') from None
+            raise ServiceUnavailable(f'{self.name} is not reachable at {self.socket_path} '
+                                     f'({exc.strerror or exc})') from None
         return sock
 
     def call(self, op: str, timeout: Optional[float] = None, **args) -> Any:
@@ -80,7 +82,7 @@ class ServiceClient:
                     self._drop()
                     # a connection the service closed while idle: sent nothing, so try once more
                     if sent or attempt == 1:
-                        raise ServiceUnavailable(f'lost the CutiePlus service during {op} '
+                        raise ServiceUnavailable(f'lost {self.name} during {op} '
                                                  f'({exc})') from None
         if not reply.get('ok'):
             details = dict(reply.get('error') or {})

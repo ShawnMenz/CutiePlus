@@ -9,6 +9,11 @@ through `cutieplus/backends/local.py`; the masks are the same, which `tests/test
 
 ## Processes
 
+On a host that runs the cooperation service ([COOPERATION.md](COOPERATION.md)), several people
+label at once and no window loads a model: the inference runs in the one GPU worker
+(`cutieplus/gpu_worker/`), queued by the service (`cutieplus/cooperation/gpu.py`), and the window
+uses `cutieplus/backends/service.py`. What follows describes a window on its own.
+
 One person labels at the desktop. `interactive_demo.py --tasks <task root>` is one PySide6 process
 with a task browser (`gui/task_browser.py`). The browser loads Cutie and RITM on the first *Open*
 and keeps them for the life of the process (about 450-660 MB of GPU memory when idle, measured with

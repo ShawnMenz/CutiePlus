@@ -1,0 +1,19 @@
+# One collaborator's remote desktop, display :%i (deploy/install.sh; started and stopped by the
+# cooperation service). Xtigervnc listens on 127.0.0.1 only, reached through the annotation SSH
+# entrypoint. No PAM session is opened (no PAMName): the desktop account's own login at the
+# monitor is never refused because of it.
+[Unit]
+Description=CutiePlus remote desktop :%i
+After=cutieplus-service.service
+
+[Service]
+User=@USER@
+Environment=HOME=@HOME@ CUTIEPLUS_REPO=@REPO@ LANG=C.UTF-8
+EnvironmentFile=/var/lib/cutieplus-desktops/%i/env
+LoadCredential=vncpasswd:/var/lib/cutieplus-desktops/%i/vncpasswd
+ExecStart=/opt/cutieplus/current/deploy/desktop-session %i
+KillMode=control-group
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes

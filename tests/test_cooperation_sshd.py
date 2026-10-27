@@ -6,8 +6,8 @@ gets no shell and no SFTP, and stops working once its revocation is published; t
 has open ends when its sshd process is cut. sshd's own log line is the one the helper reads from
 the journal.
 
-The real entrypoint runs as root with PAM and privilege separation, and keeps StrictModes; the test
-turns StrictModes off only because its files lie below /tmp.
+The real entrypoint runs as root with privilege separation and keeps StrictModes; the test turns
+StrictModes off only because its files lie below /tmp.
 """
 import getpass
 import os
@@ -122,7 +122,7 @@ def entrypoint(tmp_path):
     config = sshpolicy.render_sshd_config(ssh_port, str(policy_file), ports,
                                           pid_file=str(tmp_path / 'sshd.pid'),
                                           host_keys=[str(tmp_path / 'host')],
-                                          user=getpass.getuser(), privileged=False)
+                                          user=getpass.getuser())
     config = config.replace('StrictModes yes', 'StrictModes no')
     (tmp_path / 'sshd_config').write_text(config)
     log = open(tmp_path / 'sshd.log', 'w')

@@ -1,0 +1,23 @@
+# The CutiePlus root helper (deploy/install.sh): a few fixed operations for the cooperation
+# service only (the SSH policy file, VNC password files, starting and stopping the remote desktop
+# units, the annotation sshd's connections). Standard library only, from the root-owned release.
+[Unit]
+Description=CutiePlus root helper
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/cutieplus/current/cutieplus/cooperation/helper.py --config /etc/cutieplus/service.toml
+RuntimeDirectory=cutieplus-helper
+RuntimeDirectoryMode=0755
+UMask=0022
+Restart=on-failure
+RestartSec=3
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/cutieplus/ssh /var/lib/cutieplus-desktops
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+
+[Install]
+WantedBy=multi-user.target
