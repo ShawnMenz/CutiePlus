@@ -114,7 +114,8 @@ during a run cannot redirect the saves.
 
 - `TaskLock` (`gui/task_state.py`): an exclusive `flock` on the task's lock file, released on close
   or by the kernel when the process dies; the file describes the holder (labeler, host, pid). It
-  lives outside the output, in `$XDG_RUNTIME_DIR/cutie-locks/` (`lock_path`).
+  lives outside the output, in `~/.cache/cutieplus/task-locks/` (`lock_path`), one folder for
+  every window of the account, local or on a remote desktop.
 - The labeler is `--labeler`, else `$CUTIE_LABELER`, else the account name.
 
 ## Official annotation data and the functions that change it

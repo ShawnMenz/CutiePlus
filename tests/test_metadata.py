@@ -1,7 +1,7 @@
 """
 A sequence's work folder holds masks/ and metadata.json only (gui/task_state.py): every record of
 the task is a section of metadata.json, written as it is labeled, and the lock that keeps a task
-in one window lives in the user's runtime folder, outside the output.
+in one window lives in a folder every window of the account shares, outside the output.
 """
 import os
 from os import path
@@ -38,12 +38,13 @@ def test_a_discard_from_the_browser_survives_the_windows_next_save(tmp_path):
     assert '000003' in metadata['anchors'] and metadata[PROGRESS]['last_edited_by'] == 'alice'
 
 
-def test_the_lock_lives_outside_the_output(tmp_path, runtime_folder):
+def test_the_lock_lives_outside_the_output(tmp_path, lock_folder):
     task = make_task(str(tmp_path))
     lock = TaskLock.acquire(task.workspace, 'alice')
     try:
         held = lock_path(task.workspace)
-        assert path.dirname(held) == str(runtime_folder / 'cutie-locks')
+        assert path.dirname(held) == str(lock_folder)
+        assert os.stat(held).st_mode & 0o777 == 0o600
         assert path.basename(held).startswith('0001-') and path.getsize(held) > 0
         assert sorted(os.listdir(task.workspace)) == ['masks', METADATA_FILE]
     finally:
@@ -77,3 +78,14 @@ def test_labeling_and_saving_leave_masks_and_metadata_only(tmp_path, qapp, cpu_n
     assert list(metadata) == ['source', 'intervals', 'progress', 'anchors']
     assert metadata['anchors']['000006']['kind'] == 'empty'
     assert metadata[PROGRESS]['review_by'] == 'tester'
+
+
+def test_every_window_of_the_account_shares_the_lock_folder(monkeypatch):
+    # not $HOME or $XDG_RUNTIME_DIR: a remote desktop's service has other values for them
+    import pwd
+    from gui.task_state import lock_folder
+    monkeypatch.delenv('CUTIEPLUS_LOCK_DIR')
+    monkeypatch.setenv('HOME', '/nowhere')
+    monkeypatch.setenv('XDG_RUNTIME_DIR', '/nowhere/run')
+    assert lock_folder() == path.join(pwd.getpwuid(os.getuid()).pw_dir, '.cache', 'cutieplus',
+                                      'task-locks')

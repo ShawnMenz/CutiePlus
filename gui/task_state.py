@@ -33,7 +33,8 @@ metadata.json  everything else, one section each (a section is absent until it i
                are removed, and Mark done refuses it
   anchors      frame name -> human decision {kind: mask|empty, updated_at, by}
 
-Who has the task open is not output: the lock lives in the user's runtime folder (lock_path).
+Who has the task open is not output: the lock lives in a folder every window of the account shares
+(lock_path), whichever desktop it runs on.
 "by" fields name the labeler: --labeler, else $CUTIE_LABELER, else the OS user.
 
 Every human edit makes its frame an anchor. Anchors are never overwritten by
@@ -46,7 +47,6 @@ import hashlib
 import json
 import os
 import socket
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -70,7 +70,9 @@ SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS 
 SECTIONS = (SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS)
 ATTENTION_STATUS = 'Attention'  # the status the task browser shows for a flagged sequence
 DISCARDED_STATUS = 'discarded'  # before any other status
-LOCK_DIR = 'cutie-locks'  # in the user's runtime folder (lock_path)
+# the task locks of every window of the account, on this desktop or a remote one (lock_path)
+LOCK_DIR = path.join('.cache', 'cutieplus', 'task-locks')  # in the account's home folder
+LOCK_DIR_VARIABLE = 'CUTIEPLUS_LOCK_DIR'  # another folder, for the tests
 DONE_FIELDS = ('done_at', 'done_by', 'quit_at')  # the done mark in progress
 OUTPUT_DIR = 'cutie_output'  # the work folders, beside the input root
 PREGENERATED = 'pregenerated'  # the source of a frame's pregenerated mask
@@ -317,12 +319,27 @@ class TaskLocked(Exception):
                          f'{describe_holder(holder)}.')
 
 
+def lock_folder() -> str:
+    """The same folder for every process of the account: the home folder comes from the account,
+    not from $HOME or $XDG_RUNTIME_DIR, which differ between your login and a VNC desktop's
+    service (two windows would then both get the same task)."""
+    folder = os.environ.get(LOCK_DIR_VARIABLE)
+    if folder:
+        return folder
+    try:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError):  # not on Linux, or an account without an entry
+        home = path.expanduser('~')
+    return path.join(home, LOCK_DIR)
+
+
 def lock_path(workspace: str, create_folder: bool = True) -> str:
-    """The task's lock file, outside the output: in the user's runtime folder ($XDG_RUNTIME_DIR,
-    else the temporary folder), named after the sequence and its work folder's path."""
-    folder = path.join(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir(), LOCK_DIR)
+    """The task's lock file, outside the output (lock_folder), named after the sequence and its
+    work folder's path."""
+    folder = lock_folder()
     if create_folder:
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(folder, mode=0o700, exist_ok=True)  # private to the account
     workspace = path.realpath(workspace)
     digest = hashlib.sha1(workspace.encode('utf-8')).hexdigest()[:16]
     return path.join(folder, f'{path.basename(workspace)}-{digest}.json')
@@ -345,7 +362,10 @@ class TaskLock:
         besides labeling, e.g. 'exporting'."""
         if fcntl is None:
             return cls()
-        stream = open(lock_path(workspace), 'a+', encoding='utf-8')
+        # never through a symbolic link planted in its place
+        descriptor = os.open(lock_path(workspace),
+                             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        stream = os.fdopen(descriptor, 'r+', encoding='utf-8')
         for attempt in range(3):
             try:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)

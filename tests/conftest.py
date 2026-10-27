@@ -65,12 +65,12 @@ def compose_gui_config(workspace=None, device: str = 'cpu', **overrides) -> Dict
 
 
 @pytest.fixture(autouse=True)
-def runtime_folder(tmp_path_factory, monkeypatch):
-    # the task locks live in the user's runtime folder (gui/task_state.py: lock_path): the tests
+def lock_folder(tmp_path_factory, monkeypatch):
+    # the task locks live in the account's home folder (gui/task_state.py: lock_folder): the tests
     # keep theirs in a temporary one
-    folder = tmp_path_factory.getbasetemp() / 'runtime'
+    folder = tmp_path_factory.getbasetemp() / 'task-locks'
     folder.mkdir(exist_ok=True)
-    monkeypatch.setenv('XDG_RUNTIME_DIR', str(folder))
+    monkeypatch.setenv('CUTIEPLUS_LOCK_DIR', str(folder))
     return folder
 
 
