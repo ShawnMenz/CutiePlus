@@ -54,9 +54,6 @@ def add_key(service: Service, ctx: Context, user_id, public_key, device_label,
             expires_at=None) -> dict:
     """Registers a user's public key (the .pub file's line). Supervisors for annotators, admins
     for annotators, supervisors and themselves."""
-    repeated = repeated_operation(service, ctx.request_id)
-    if repeated is not None:
-        return {'operation': public_operation(repeated), 'repeated': True}
     try:
         key = parse_public_key(public_key)
     except KeyError_ as exc:
@@ -66,6 +63,9 @@ def add_key(service: Service, ctx: Context, user_id, public_key, device_label,
     now = service.now()
     with service.db.transaction() as cursor:
         target = user_target(service, ctx, cursor, user_id, authz.MANAGE_KEYS)
+        repeated = repeated_operation(cursor, ctx.actor.user_id, ctx.request_id, 'add_key')
+        if repeated is not None:
+            return {'operation': public_operation(repeated), 'repeated': True}
         if target['status'] == 'archived':
             raise Refused(INVALID, 'a removed user gets no keys')
         holder = cursor.execute('SELECT user_id, status FROM ssh_keys WHERE '
@@ -103,14 +103,14 @@ def load_key(cursor, key_id) -> dict:
 def revoke_key(service: Service, ctx: Context, key_id) -> dict:
     """Blocks the key at the next policy publication and cuts its tracked connections; the user's
     other keys keep working. Checked against the role of the key's owner as it is now."""
-    repeated = repeated_operation(service, ctx.request_id)
-    if repeated is not None:
-        return {'operation': public_operation(repeated), 'repeated': True}
     now = service.now()
     with service.db.transaction() as cursor:
         key = load_key(cursor, key_id)
         owner = load_user(cursor, key['user_id'])
         authz.check_user_action(ctx.actor, owner, authz.MANAGE_KEYS, service.owner_id())
+        repeated = repeated_operation(cursor, ctx.actor.user_id, ctx.request_id, 'revoke_key')
+        if repeated is not None:
+            return {'operation': public_operation(repeated), 'repeated': True}
         if key['status'] == 'revoked':
             raise Refused(INVALID, 'the key is revoked already')
         cursor.execute("UPDATE ssh_keys SET status = 'revoked', revoked_by = ?, revoked_at = ? "

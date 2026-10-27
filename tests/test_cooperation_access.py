@@ -337,3 +337,40 @@ def test_journal_entries_count_only_from_the_annotation_sshd_as_root(access):
     assert tracker.alive() == []
     tracker.entry(dict(base, _SYSTEMD_UNIT=access.config.sshd_unit, _UID='0'))
     assert [connection.address for connection in tracker.alive()] == ['198.51.100.4']
+
+
+def test_a_removed_users_desktop_is_kept_while_the_policy_may_still_admit_them(access):
+    owner = access.owner()
+    alice = onboard(access, owner)
+    access.system.failing['write'] = 'disk full'
+    access.call('remove_user', owner, user_id=alice['id'])
+    access.reconcile()
+    # her key may still be in the live file, forwarding to port 5902: :2 is not given again
+    assert not access.unit_running(2)
+    assert access.db.query_one('SELECT * FROM desktop_slots WHERE user_id = ?', (alice['id'], ))
+    assert access.call('create_user', owner, login_name='bob',
+                       display_name='Bob')['desktop']['display'] == 3
+    del access.system.failing['write']
+    access.reconcile()
+    assert access.db.query_one('SELECT * FROM desktop_slots WHERE user_id = ?',
+                               (alice['id'], )) is None
+
+
+def test_a_request_id_is_its_callers_own(access):
+    owner = access.owner()
+    supervisor = access.add(owner, 'sam', 'supervisor')
+    alice = access.add(owner, 'alice')
+    first = access.raw('add_key', owner, request_id='r1', user_id=alice['id'],
+                       public_key=ed25519_key(1), device_label='Laptop')
+    again = access.raw('add_key', owner, request_id='r1', user_id=alice['id'],
+                       public_key=ed25519_key(1), device_label='Laptop')
+    assert first['ok'] and again['result']['repeated']  # applied once
+    # another caller with the same id gets their own request, not the first one's operation
+    theirs = access.raw('add_key', supervisor['token'], request_id='r1', user_id=alice['id'],
+                        public_key=ed25519_key(2), device_label='Desktop')
+    assert theirs['ok'] and 'repeated' not in theirs['result']
+    # nor does an unauthorized caller learn anything from it
+    bob = access.add(owner, 'bob')
+    refused = access.raw('add_key', bob['token'], request_id='r1', user_id=alice['id'],
+                         public_key=ed25519_key(3), device_label='x')
+    assert refused['error']['code'] == 'forbidden'

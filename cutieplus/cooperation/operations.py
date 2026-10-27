@@ -76,19 +76,32 @@ def start_operation(service, cursor, operation_type: str, actor_id: Optional[str
         'INSERT INTO management_operations (id, operation_type, actor_user_id, target_user_id, '
         'target_resource_id, request_id, desired_revision, validated_parameters_json, status, '
         'current_step, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (operation_id, operation_type, actor_id, target_user_id, target_resource_id, request_id,
+        (operation_id, operation_type, actor_id, target_user_id, target_resource_id,
+         scoped_request_id(actor_id, request_id),
          desired_revision, json.dumps(parameters or {}, sort_keys=True), PENDING, 'waiting', now,
          now))
     service.reconcile_soon()
     return operation_id
 
 
-def repeated_operation(service, request_id: Optional[str]) -> Optional[dict]:
-    """The operation a request with this id already made (a retried request is applied once)."""
+def scoped_request_id(actor_id: Optional[str], request_id: Optional[str]) -> Optional[str]:
+    """A request id is the caller's own: two users choosing the same one never meet."""
     if request_id is None:
         return None
-    return service.db.query_one('SELECT * FROM management_operations WHERE request_id = ?',
-                                (request_id, ))
+    return f'{actor_id or "system"}/{request_id}'
+
+
+def repeated_operation(cursor, actor_id: str, request_id: Optional[str],
+                       operation_type: str) -> Optional[dict]:
+    """The operation this caller's request with this id already made (a retried request is
+    applied once). Only asked once the request itself is authorized."""
+    if request_id is None:
+        return None
+    rows = cursor.execute('SELECT * FROM management_operations WHERE request_id = ? AND '
+                          'actor_user_id = ? AND operation_type = ?',
+                          (scoped_request_id(actor_id, request_id), actor_id,
+                           operation_type)).fetchall()
+    return rows[0] if rows else None
 
 
 def public_operation(row: dict) -> dict:
@@ -407,6 +420,10 @@ class Reconciler:
 
     # 5. releasing desktops of removed users
     def release_desktops(self) -> None:
+        """Only once the published policy is current: until then the file may still let a key
+        of the removed user reach this display's port, which its next user would get."""
+        if not self.policy_current():
+            return
         rows = self.db.query(
             "SELECT s.* FROM desktop_slots s JOIN users u ON u.id = s.user_id "
             "WHERE u.status = 'archived' AND s.observed_state IN ('stopped', 'error') AND NOT "
