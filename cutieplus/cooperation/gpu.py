@@ -55,7 +55,7 @@ EVENT_BUFFER = 256  # frames kept with their masks for the window to fetch
 HEARTBEAT_S = 5.0
 MAX_FRAMES = 200_000
 MAX_MASK_BYTES = 16 << 20
-MAX_SEED_BYTES = 256 << 20
+MAX_SEED_BYTES = 64 << 20
 DIRECTIONS = ('forward', 'backward')
 # a frame name becomes a file name (the staged mask): no separators, never . or ..
 FRAME_NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}')
@@ -503,14 +503,7 @@ class GpuQueue:
                                                       idempotency_key)).fetchall():
                 return None
             if operation_type == 'propagate':
-                pending = cursor.execute(
-                    "SELECT count(*) AS n FROM gpu_jobs WHERE owner_user_id = ? AND "
-                    "operation_type = 'propagate' AND status IN ('queued', 'running', "
-                    "'cancel_requested')", (ctx.actor.user_id, )).fetchall()[0]['n']
-                limit = self.service.setting('pending_jobs_per_user')
-                if pending >= limit:
-                    raise Refused(LIMIT, f'you have {pending} propagations waiting or running '
-                                  f'(at most {limit}); wait for one or cancel it')
+                check_pending(self.service, ctx.actor.user_id, cursor)
             sequence = cursor.execute('SELECT coalesce(max(queue_sequence), 0) + 1 AS n FROM '
                                       'gpu_jobs').fetchall()[0]['n']
             job_id = new_id()
@@ -628,6 +621,18 @@ def check_snapshot(service: Service, snapshot) -> dict:
                                resolution.get('upscale_to_internal_size'))},
             'memory': {key: validate.integer(memory.get(key), key, 1, 1 << 20)
                        for key in MEMORY_KEYS}}
+
+
+def check_pending(service: Service, user_id: str, cursor=None) -> None:
+    """Refuses a propagation beyond the user's limit of pending ones."""
+    sql = ("SELECT count(*) AS n FROM gpu_jobs WHERE owner_user_id = ? AND operation_type = "
+           "'propagate' AND status IN ('queued', 'running', 'cancel_requested')")
+    pending = (cursor.execute(sql, (user_id, )).fetchall()[0] if cursor is not None else
+               service.db.query_one(sql, (user_id, )))['n']
+    limit = service.setting('pending_jobs_per_user')
+    if pending >= limit:
+        raise Refused(LIMIT, f'you have {pending} propagations waiting or running (at most '
+                      f'{limit}); wait for one or cancel it')
 
 
 def key_of(idempotency_key) -> str:
@@ -755,11 +760,15 @@ def submit_propagation(service: Service, ctx: Context, idempotency_key, workspac
                                     'idempotency_key = ?', (ctx.actor.user_id, key))
     if existing is not None:
         return public_job(service, ctx, existing)
+    # before anything is written: a caller at their limit stores nothing (checked again,
+    # atomically, as the job is inserted)
+    check_pending(service, ctx.actor.user_id)
     snapshot = check_snapshot(service, snapshot)
     data = encode_message(snapshot)
     digest = hashlib.sha256(data).hexdigest()
     snapshot_path = path.join(queue.snapshots_dir, f'{digest}.bin')
-    if not path.exists(snapshot_path):
+    created = not path.exists(snapshot_path)
+    if created:
         # named by content: two requests with the same inputs may write it at once
         temporary = f'{snapshot_path}.{new_id()}.tmp'
         with open(temporary, 'wb') as f:
@@ -768,10 +777,16 @@ def submit_propagation(service: Service, ctx: Context, idempotency_key, workspac
             os.fsync(f.fileno())
         os.chmod(temporary, 0o400)  # immutable from now on
         os.replace(temporary, snapshot_path)
-    queue.insert_job(ctx, 'propagate', key, workspace, snapshot_path, digest, revision,
-                     {'frames': len(snapshot['frame_names']),
-                      'start': snapshot['frame_names'][snapshot['start_ti']],
-                      'direction': snapshot['direction']})
+    try:
+        queue.insert_job(ctx, 'propagate', key, workspace, snapshot_path, digest, revision,
+                         {'frames': len(snapshot['frame_names']),
+                          'start': snapshot['frame_names'][snapshot['start_ti']],
+                          'direction': snapshot['direction']})
+    except Refused:
+        if created and service.db.query_one('SELECT 1 AS x FROM gpu_jobs WHERE '
+                                            'input_reference = ?', (snapshot_path, )) is None:
+            os.remove(snapshot_path)
+        raise
     # this request's job, or the one a request with the same key made meanwhile
     row = service.db.query_one('SELECT * FROM gpu_jobs WHERE owner_user_id = ? AND '
                                'idempotency_key = ?', (ctx.actor.user_id, key))

@@ -326,3 +326,16 @@ def test_frame_names_cannot_leave_the_staging_folder_and_retries_count(gpu):
         gpu.submit(alice['token'], f'retry-limit-{index + 1}')
     assert gpu.code('retry_job', alice['token'], job_id=first['id'],
                     idempotency_key='retry-limit-x') == 'limit'
+
+
+def test_a_caller_at_their_limit_stores_no_snapshot(gpu):
+    _, alice, _ = users(gpu)
+    limit = gpu.service.setting('pending_jobs_per_user')
+    for index in range(limit):
+        gpu.submit(alice['token'], f'store-limit-{index}', start=index)
+    stored = sorted(os.listdir(gpu.config.snapshots_dir))
+    for index in range(3):
+        assert gpu.code('submit_propagation', alice['token'],
+                        idempotency_key=f'store-over-{index}', workspace=gpu.task, revision=1,
+                        snapshot=gpu.snapshot(start=limit + index)) == 'limit'
+    assert sorted(os.listdir(gpu.config.snapshots_dir)) == stored

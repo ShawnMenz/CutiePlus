@@ -38,8 +38,10 @@ def bind_socket(socket_path: str, mode: int) -> socket.socket:
 
 class Server:
 
-    def __init__(self, handler: Handler, socket_path: str, mode: int = 0o600, name: str = 'server'):
+    def __init__(self, handler: Handler, socket_path: str, mode: int = 0o600, name: str = 'server',
+                 max_message_bytes: int = 256 << 20):
         self.handler = handler
+        self.max_message_bytes = max_message_bytes  # what one request may hold
         self.socket_path = socket_path
         self.mode = mode
         self.name = name
@@ -71,7 +73,7 @@ class Server:
             peer = peer_of(connection)
             while self.running:
                 try:
-                    request = receive_message(connection)
+                    request = receive_message(connection, self.max_message_bytes)
                 except (ConnectionError, OSError):
                     break
                 except ProtocolError as exc:
