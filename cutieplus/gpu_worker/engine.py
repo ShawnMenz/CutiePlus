@@ -59,12 +59,14 @@ def mask_from_png(data: Optional[bytes], shape) -> np.ndarray:
 def stage_mask(folder: str, name: str, mask: np.ndarray, palette) -> str:
     """Writes the mask as <folder>/<name>.png (whole or not at all); returns its SHA-256."""
     os.makedirs(folder, exist_ok=True)
+    final = path.join(folder, f'{name}.png')
+    if path.dirname(path.realpath(final)) != path.realpath(folder):
+        raise CommandError('invalid', f'frame name {name!r} leaves the staging folder')
     image = Image.fromarray(mask.astype(np.uint8))
     image.putpalette(palette)
     buffer = io.BytesIO()
     image.save(buffer, format='PNG')
     data = buffer.getvalue()
-    final = path.join(folder, f'{name}.png')
     temporary = final + '.tmp'
     with open(temporary, 'wb') as f:
         f.write(data)

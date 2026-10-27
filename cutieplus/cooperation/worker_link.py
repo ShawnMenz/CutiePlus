@@ -26,6 +26,7 @@ from cutieplus.cooperation.server import bind_socket
 
 log = logging.getLogger(__name__)
 GPU_ID = 'gpu0'
+HELLO_BYTES = 1 << 20  # a worker's hello is small
 
 
 class WorkerLost(Exception):
@@ -55,6 +56,7 @@ class WorkerLink:
         self.listener: Optional[socket.socket] = None
         self.running = False
         self.restart_worker: Optional[Callable[[], None]] = None  # the helper's, when installed
+        self.accepting = threading.Lock()  # one new worker at a time
         with service.db.transaction() as cursor:
             cursor.execute("INSERT OR IGNORE INTO gpu_state (gpu_id, state, updated_at) "
                            "VALUES (?, 'offline', ?)", (GPU_ID, service.now()))
@@ -98,18 +100,30 @@ class WorkerLink:
                 connection, _ = self.listener.accept()
             except OSError:
                 break
-            try:
-                self._accept(connection)
-            except (OSError, ConnectionError, ProtocolError) as exc:
-                log.warning('a worker connection failed: %s', exc)
-                connection.close()
+            # who connected is checked before anything is read from them, and each connection
+            # on its own: a slow or hostile client holds up nobody
+            threading.Thread(target=self._accept_one, args=(connection, ), name='worker-hello',
+                             daemon=True).start()
 
-    def _accept(self, connection: socket.socket) -> None:
-        peer = peer_of(connection)
-        connection.settimeout(30)
-        hello = receive_message(connection)
-        refusal = self.check_peer(peer.pid)
-        if refusal is None and self.sock is not None and same_process_alive(self.identity):
+    def _accept_one(self, connection: socket.socket) -> None:
+        try:
+            peer = peer_of(connection)
+            refusal = self.check_peer(peer.pid)
+            if refusal is not None:
+                log.warning('refused a GPU worker (pid %d): %s', peer.pid, refusal)
+                connection.close()
+                return
+            with self.accepting:
+                self._accept(connection, peer)
+        except (OSError, ConnectionError, ProtocolError) as exc:
+            log.warning('a worker connection failed: %s', exc)
+            connection.close()
+
+    def _accept(self, connection: socket.socket, peer) -> None:
+        connection.settimeout(10)
+        hello = receive_message(connection, max_bytes=HELLO_BYTES)
+        refusal = None
+        if self.sock is not None and same_process_alive(self.identity):
             refusal = 'another worker is connected'
         if refusal is not None:
             log.warning('refused a GPU worker (pid %d): %s', peer.pid, refusal)

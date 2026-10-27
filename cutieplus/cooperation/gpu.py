@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict, deque
@@ -56,6 +57,8 @@ MAX_FRAMES = 200_000
 MAX_MASK_BYTES = 16 << 20
 MAX_SEED_BYTES = 256 << 20
 DIRECTIONS = ('forward', 'backward')
+# a frame name becomes a file name (the staged mask): no separators, never . or ..
+FRAME_NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}')
 MEMORY_KEYS = ('mem_every', 'top_k', 'min_mem_frames', 'max_mem_frames', 'max_num_tokens')
 FINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 RESULT_OUTCOMES = ('applied', 'held_for_review', 'discarded')
@@ -490,7 +493,8 @@ class GpuQueue:
     def insert_job(self, ctx: Context, operation_type: str, idempotency_key: str, workspace: str,
                    input_reference: str, input_revision: str, revision: int, parameters: dict,
                    queue: bool = True, retry_of: Optional[str] = None) -> Optional[str]:
-        """A new job of the caller (None when that idempotency key was used already)."""
+        """A new job of the caller (None when that idempotency key was used already). A
+        propagation counts against the caller's pending limit, in the same transaction."""
         now = self.service.now()
         model = self.link.hello.get('model') or {}
         with self.db.transaction() as cursor:
@@ -498,6 +502,15 @@ class GpuQueue:
                               'idempotency_key = ?', (ctx.actor.user_id,
                                                       idempotency_key)).fetchall():
                 return None
+            if operation_type == 'propagate':
+                pending = cursor.execute(
+                    "SELECT count(*) AS n FROM gpu_jobs WHERE owner_user_id = ? AND "
+                    "operation_type = 'propagate' AND status IN ('queued', 'running', "
+                    "'cancel_requested')", (ctx.actor.user_id, )).fetchall()[0]['n']
+                limit = self.service.setting('pending_jobs_per_user')
+                if pending >= limit:
+                    raise Refused(LIMIT, f'you have {pending} propagations waiting or running '
+                                  f'(at most {limit}); wait for one or cancel it')
             sequence = cursor.execute('SELECT coalesce(max(queue_sequence), 0) + 1 AS n FROM '
                                       'gpu_jobs').fetchall()[0]['n']
             job_id = new_id()
@@ -565,9 +578,11 @@ def check_snapshot(service: Service, snapshot) -> dict:
     if not isinstance(names, list) or not isinstance(paths, list) or not names or \
             len(names) != len(paths) or len(names) > MAX_FRAMES:
         raise Refused(INVALID, 'frame_names and frame_paths are lists of one entry per frame')
-    if not all(isinstance(name, str) and len(name) <= 128 for name in names) or \
-            not all(isinstance(item, str) and service.config.within_workspace(item)
-                    for item in paths):
+    if not all(isinstance(name, str) and FRAME_NAME.fullmatch(name) for name in names) or \
+            len(set(names)) != len(names):
+        raise Refused(INVALID, 'frame names are distinct file names (letters, digits, . _ -)')
+    if not all(isinstance(item, str) and service.config.within_workspace(item)
+               for item in paths):
         raise Refused(INVALID, 'every frame lies in the workspace')
     length = len(names)
     start = validate.integer(snapshot.get('start_ti'), 'start_ti', 0, length - 1)
@@ -575,7 +590,8 @@ def check_snapshot(service: Service, snapshot) -> dict:
         raise Refused(INVALID, f'direction is one of {", ".join(DIRECTIONS)}')
     anchors = snapshot.get('anchors')
     if not isinstance(anchors, dict) or not all(
-            isinstance(name, str) and kind in ('mask', 'empty') for name, kind in anchors.items()):
+            isinstance(name, str) and FRAME_NAME.fullmatch(name) and kind in ('mask', 'empty')
+            for name, kind in anchors.items()):
         raise Refused(INVALID, 'anchors maps frame names to mask or empty')
     anchor_masks = snapshot.get('anchor_masks')
     if not isinstance(anchor_masks, dict) or not all(
@@ -740,14 +756,6 @@ def submit_propagation(service: Service, ctx: Context, idempotency_key, workspac
     if existing is not None:
         return public_job(service, ctx, existing)
     snapshot = check_snapshot(service, snapshot)
-    pending = service.db.query_one(
-        "SELECT count(*) AS n FROM gpu_jobs WHERE owner_user_id = ? AND operation_type = "
-        "'propagate' AND status IN ('queued', 'running', 'cancel_requested')",
-        (ctx.actor.user_id, ))['n']
-    limit = service.setting('pending_jobs_per_user')
-    if pending >= limit:
-        raise Refused(LIMIT, f'you have {pending} propagations waiting or running (at most '
-                      f'{limit}); wait for one or cancel it')
     data = encode_message(snapshot)
     digest = hashlib.sha256(data).hexdigest()
     snapshot_path = path.join(queue.snapshots_dir, f'{digest}.bin')

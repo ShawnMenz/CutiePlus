@@ -305,3 +305,24 @@ def test_a_snapshot_is_checked_before_it_is_queued(gpu):
                         workspace=gpu.task, revision=1, snapshot=snapshot) == 'invalid', change
     assert gpu.code('submit_propagation', alice['token'], idempotency_key='bad-workspace',
                     workspace='/tmp/elsewhere', revision=1, snapshot=gpu.snapshot()) == 'invalid'
+
+
+def test_frame_names_cannot_leave_the_staging_folder_and_retries_count(gpu):
+    _, alice, _ = users(gpu)
+    for names in (['../../escape'] + gpu.frame_names[1:], ['000001'] * len(gpu.frame_names),
+                  ['.'] + gpu.frame_names[1:], ['a/b'] + gpu.frame_names[1:]):
+        snapshot = dict(gpu.snapshot(), frame_names=names)
+        assert gpu.code('submit_propagation', alice['token'], idempotency_key='bad-names-1',
+                        workspace=gpu.task, revision=1, snapshot=snapshot) == 'invalid'
+    from cutieplus.gpu_worker.engine import CommandError, stage_mask
+    with pytest.raises(CommandError):
+        stage_mask(str(gpu.tmp_path / 'staging'), '../outside', np.zeros((2, 2), np.uint8),
+                   [0] * 768)
+    # a retry is a new pending job like any other
+    limit = gpu.service.setting('pending_jobs_per_user')
+    first = gpu.submit(alice['token'], 'retry-limit-0')
+    gpu.call('cancel_job', alice['token'], job_id=first['id'])
+    for index in range(limit):
+        gpu.submit(alice['token'], f'retry-limit-{index + 1}')
+    assert gpu.code('retry_job', alice['token'], job_id=first['id'],
+                    idempotency_key='retry-limit-x') == 'limit'

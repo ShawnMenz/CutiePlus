@@ -122,9 +122,10 @@ def _receive_exactly(sock: socket.socket, size: int) -> bytes:
     return bytes(data)
 
 
-def receive_message(sock: socket.socket) -> Any:
+def receive_message(sock: socket.socket, max_bytes: int = MAX_MESSAGE_BYTES) -> Any:
+    """One message; max_bytes: at most that much, header and buffers together."""
     header_length = _LENGTH.unpack(_receive_exactly(sock, _LENGTH.size))[0]
-    if header_length > MAX_HEADER_BYTES:
+    if header_length > min(MAX_HEADER_BYTES, max_bytes):
         raise ProtocolError(f'a header of {header_length} bytes is too large')
     try:
         header = json.loads(_receive_exactly(sock, header_length).decode('utf-8'))
@@ -138,7 +139,7 @@ def receive_message(sock: socket.socket) -> Any:
     for _ in range(count):
         size = _LENGTH.unpack(_receive_exactly(sock, _LENGTH.size))[0]
         total += size
-        if total > MAX_MESSAGE_BYTES:
+        if total + header_length > max_bytes:
             raise ProtocolError('the message is too large')
         buffers.append(_receive_exactly(sock, size))
     try:
