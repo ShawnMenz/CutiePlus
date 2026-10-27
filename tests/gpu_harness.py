@@ -55,7 +55,8 @@ class GpuHarness(Harness):
             self.frame_paths.append(str(file_path))
         self.workers: List[subprocess.Popen] = []
 
-    def start_worker(self, wait: bool = True, **fake) -> subprocess.Popen:
+    def start_worker(self, wait: bool = True, engine: str = 'fake', timeout: float = 30,
+                     **fake) -> subprocess.Popen:
         env = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
         env.update(CUTIEPLUS_FAKE_LOG=self.log_path,
                    CUTIEPLUS_FAKE_STEP_S=str(self.step_seconds))
@@ -63,12 +64,12 @@ class GpuHarness(Harness):
             env[f'CUTIEPLUS_FAKE_{key.upper()}'] = str(value)
         generation = self.service.gpu.link.generation
         process = subprocess.Popen([sys.executable, '-m', 'cutieplus.gpu_worker', '--engine',
-                                    'fake', '--config', str(self.config_file)], cwd=REPO,
+                                    engine, '--config', str(self.config_file)], cwd=REPO,
                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.workers.append(process)
         if wait:
             self.wait_for(lambda: self.service.gpu.link.generation > generation
-                          and self.service.gpu.link.ready, 30)
+                          and self.service.gpu.link.ready, timeout)
         return process
 
     @staticmethod
