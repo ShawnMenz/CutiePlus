@@ -68,6 +68,7 @@ class Service:
         # VNC passwords to write, by desktop slot: in memory only, never in the database
         self.pending_vnc_passwords = {}
         self.reconciler = None
+        self.gpu = None  # the GPU queue (gpu.py), when this service runs one
         self.lock = threading.Lock()
         pattern = re.escape(config.desktop_unit).replace(re.escape('{display}'), r'(\d+)')
         self.desktop_unit_pattern = re.compile(pattern)

@@ -213,6 +213,31 @@ class PropagationRuntime:
         return result
 
 
+def permanent_anchor_limit_of(processor: InferenceCore, height: int, width: int) -> int:
+    """How many mask anchors the permanent memory takes at this processing size (the original
+    budget)."""
+    tokens = policies.memory_tokens_per_frame(height, width, processor.max_internal_size,
+                                              processor.upscale_to_internal_size)
+    memory = processor.memory
+    other = policies.other_memory_tokens(tokens, memory.max_mem_frames, memory.use_long_term,
+                                         getattr(memory, 'max_long_tokens', 0))
+    return policies.permanent_anchor_limit(tokens, other)
+
+
+def task_plan(processor: InferenceCore, frame_names: Tuple[str, ...], height: int, width: int,
+              start_ti: int, direction: Direction, anchors: Mapping[str, str],
+              bounds: Optional[Tuple[int, int]], num_objects: int) -> PropagationPlan:
+    """A task's run: its permanent memory holds the mask anchors nearest to the start frame, as
+    many as the processor's budget allows; bounds keep it in the start frame's interval."""
+    name_to_ti = {name: ti for ti, name in enumerate(frame_names)}
+    anchor_tis = sorted(name_to_ti[name] for name, kind in anchors.items()
+                        if kind == 'mask' and name in name_to_ti)
+    permanent = policies.select_permanent_anchors(
+        anchor_tis, start_ti, permanent_anchor_limit_of(processor, height, width))
+    return PropagationPlan(tuple(frame_names), start_ti, direction, dict(anchors),
+                           tuple(permanent), True, len(anchor_tis), num_objects, bounds)
+
+
 def new_inference_core(network, cfg: DictConfig, max_internal_size: int,
                        upscale_to_internal_size: bool) -> InferenceCore:
     """A fresh InferenceCore at the given processing size."""

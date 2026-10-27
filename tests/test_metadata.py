@@ -75,7 +75,8 @@ def test_labeling_and_saving_leave_masks_and_metadata_only(tmp_path, qapp, cpu_n
     assert sorted(os.listdir(task.workspace)) == ['masks', METADATA_FILE]
     assert len(os.listdir(task.masks_dir)) > 2  # the anchors and the propagated frames
     metadata = read_metadata(task.workspace)
-    assert list(metadata) == ['source', 'intervals', 'progress', 'anchors']
+    assert list(metadata) == ['source', 'intervals', 'progress', 'anchors', 'revision']
+    assert metadata['revision'] >= 2  # the empty anchor and the propagated masks
     assert metadata['anchors']['000006']['kind'] == 'empty'
     assert metadata[PROGRESS]['review_by'] == 'tester'
 

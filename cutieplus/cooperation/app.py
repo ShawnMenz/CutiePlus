@@ -13,11 +13,12 @@ from cutieplus.cooperation.service import Service
 def build_service(config: ServiceConfig, db: Optional[Database] = None,
                   clock: Optional[Clock] = None, passwords: Optional[auth.Passwords] = None,
                   unit_resolver: Callable[[int], Optional[str]] = system_unit_of,
-                  helper=None) -> Service:
+                  helper=None, gpu: bool = False) -> Service:
     """helper: the root helper's client (call(op, **args)); with one, the service reconciles the
-    system (SSH policy, connections, desktops) with its database."""
+    system (SSH policy, connections, desktops) with its database. gpu: run the GPU queue (its
+    worker socket; started with service.gpu.start())."""
     # registering their operations
-    from cutieplus.cooperation import desktops, keys, users  # noqa: F401
+    from cutieplus.cooperation import desktops, gpu as gpu_module, keys, users  # noqa: F401
     from cutieplus.cooperation.operations import Reconciler, on_user_change
     if db is None:
         db = Database(config.db_path, clock, config.require_patched_sqlite)
@@ -27,4 +28,8 @@ def build_service(config: ServiceConfig, db: Optional[Database] = None,
     service.user_details.append(functools.partial(desktops.desktop_details, service))
     if helper is not None:
         service.reconciler = Reconciler(service, helper)
+    if gpu:
+        service.gpu = gpu_module.GpuQueue(service)
+        if helper is not None:
+            service.gpu.link.restart_worker = lambda: helper.call('restart_gpu_worker')
     return service

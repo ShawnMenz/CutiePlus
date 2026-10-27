@@ -32,6 +32,9 @@ metadata.json  everything else, one section each (a section is absent until it i
                which Restore undoes); its status is discarded, its done mark and Need Attention
                are removed, and Mark done refuses it
   anchors      frame name -> human decision {kind: mask|empty, updated_at, by}
+  revision     a number raised with every change of the masks or anchors (an edit, a propagation
+               saved, Reset): a GPU job remembers the one it started from, and its result is
+               applied only to that same revision (cutieplus/backends/service.py)
 
 Who has the task open is not output: the lock lives in a folder every window of the account shares
 (lock_path), whichever desktop it runs on.
@@ -64,10 +67,11 @@ except ImportError:  # not on Windows: tasks are not locked there
 METADATA_FILE = 'metadata.json'
 MASKS_DIR = 'masks'
 # the sections of metadata.json, in the file's order
-SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS = (
+SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS, REVISION = (
     'source', 'category', 'description', 'intervals', 'progress', 'attention', 'discard',
-    'anchors')
-SECTIONS = (SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS)
+    'anchors', 'revision')
+SECTIONS = (SOURCE, CATEGORY, DESCRIPTION, INTERVALS, PROGRESS, ATTENTION, DISCARD, ANCHORS,
+            REVISION)
 ATTENTION_STATUS = 'Attention'  # the status the task browser shows for a flagged sequence
 DISCARDED_STATUS = 'discarded'  # before any other status
 # the task locks of every window of the account, on this desktop or a remote one (lock_path)
@@ -712,13 +716,20 @@ class TaskState:
 
     def save(self) -> None:
         # the anchors, and the change they are (touch), in one write
-        self.touch(anchors=dict(sorted(self.anchors.items())))
+        self.touch(changes_masks=True, anchors=dict(sorted(self.anchors.items())))
 
-    def touch(self, **sections) -> None:
+    def touch(self, changes_masks: bool = False, **sections) -> None:
         # a change: back to in progress, dropping any review or done mark; edited_by keeps
-        # everyone who has changed the task. sections: written with it
+        # everyone who has changed the task. changes_masks: of the masks or anchors (the
+        # revision goes up). sections: written with it
         with _metadata_lock:
-            progress = read_section(self.workspace, PROGRESS, {})
+            metadata = read_metadata(self.workspace)
+            if changes_masks:
+                sections[REVISION] = int(metadata.get(REVISION) or 0) + 1
             _write_unlocked(self.workspace, **sections,
-                            progress=touched_progress(progress, self.anchors, self.labeler,
-                                                      utc_now()))
+                            progress=touched_progress(metadata.get(PROGRESS) or {}, self.anchors,
+                                                      self.labeler, utc_now()))
+
+    def revision(self) -> int:
+        """The revision of the masks and anchors, as the file has it now."""
+        return int(read_section(self.workspace, REVISION, 0) or 0)

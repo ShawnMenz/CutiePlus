@@ -10,6 +10,7 @@ credentials) and nobody else, with a fixed set of operations, each with checked 
     remove_desktop       a desktop's files, once it is stopped and released
     desktop_start/stop   systemctl start/stop cutieplus-desktop@<N>.service, N in the managed range
     desktop_status       the state and main process of those units
+    restart_gpu_worker   systemctl restart of the GPU worker's unit (when it stops answering)
     ssh_connections      the live connections the annotation sshd accepted, from its journal
     disconnect           end one of those connections: that sshd process only, by its identity
 
@@ -212,7 +213,7 @@ class Helper:
             'configure_desktop': self.configure_desktop, 'remove_desktop': self.remove_desktop,
             'desktop_start': self.desktop_start, 'desktop_stop': self.desktop_stop,
             'desktop_status': self.desktop_status, 'ssh_connections': self.ssh_connections,
-            'disconnect': self.disconnect,
+            'disconnect': self.disconnect, 'restart_gpu_worker': self.restart_gpu_worker,
         }
 
     def handle(self, request: dict, peer: Peer) -> dict:
@@ -324,6 +325,14 @@ class Helper:
                 'state': UNIT_STATES.get(values.get('ActiveState', ''), 'error'),
                 'identity': identity.as_dict() if identity else None}
         return states
+
+    def restart_gpu_worker(self) -> dict:
+        """The GPU worker stopped answering: systemd stops its whole process group, then starts
+        it again (the new one takes the GPU lock only once the old processes are gone)."""
+        result = self.system.run([SYSTEMCTL, 'restart', '--no-block', self.config.worker_unit])
+        if result.returncode != 0:
+            raise Refusal('failed', result.stderr.decode('utf-8', 'replace').strip())
+        return {'unit': self.config.worker_unit}
 
     def ssh_connections(self) -> list:
         return [connection.as_dict() for connection in self.tracker.alive()]

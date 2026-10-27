@@ -76,14 +76,36 @@ def _decode(value: Any, buffers: List[bytes]) -> Any:
     return value
 
 
-def send_message(sock: socket.socket, message: Any) -> None:
+def encode_message(message: Any) -> bytes:
     buffers: List[bytes] = []
     header = json.dumps(_encode(message, buffers), ensure_ascii=False).encode('utf-8')
     parts = [_LENGTH.pack(len(header)), header, _LENGTH.pack(len(buffers))]
     for buffer in buffers:
         parts.append(_LENGTH.pack(len(buffer)))
         parts.append(buffer)
-    sock.sendall(b''.join(parts))
+    return b''.join(parts)
+
+
+def send_message(sock: socket.socket, message: Any) -> None:
+    sock.sendall(encode_message(message))
+
+
+class _BytesReader:
+    """recv_into over bytes, so a stored message decodes as a received one."""
+
+    def __init__(self, data: bytes):
+        self.data = memoryview(data)
+        self.offset = 0
+
+    def recv_into(self, view, size: int) -> int:
+        count = min(size, len(self.data) - self.offset)
+        view[:count] = self.data[self.offset:self.offset + count]
+        self.offset += count
+        return count
+
+
+def decode_message(data: bytes) -> Any:
+    return receive_message(_BytesReader(data))
 
 
 def _receive_exactly(sock: socket.socket, size: int) -> bytes:
