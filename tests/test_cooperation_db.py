@@ -20,6 +20,8 @@ def add_user(cursor, user_id='u1', login='alice', role='annotator'):
 def test_the_runtime_has_the_wal_fix_and_every_table(tmp_path):
     assert sqlite_version() >= MIN_SQLITE
     db = Database(str(tmp_path / 'c.sqlite3'))
+    assert (tmp_path / 'c.sqlite3').stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / 'c.sqlite3-wal').stat().st_mode & 0o777 == 0o600
     assert db.query_one('PRAGMA journal_mode')['journal_mode'] == 'wal'
     assert db.query_one('PRAGMA foreign_keys')['foreign_keys'] == 1
     assert db.query_one('PRAGMA synchronous')['synchronous'] == 2  # FULL

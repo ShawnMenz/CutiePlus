@@ -62,6 +62,9 @@ class Database:
         self.path = db_path
         self.clock = clock or Clock()
         self.lock = threading.RLock()
+        if not path.exists(db_path):
+            # private from the start; SQLite gives its -wal and -shm files the same mode
+            os.close(os.open(db_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
         self.conn = apsw.Connection(db_path)
         self.conn.set_busy_timeout(BUSY_TIMEOUT_MS)
         self.conn.row_trace = _dict_rows
