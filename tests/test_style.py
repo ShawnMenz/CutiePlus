@@ -172,5 +172,17 @@ def test_the_browser_input_buttons_are_blue_and_a_disabled_one_grey(tmp_path, qa
             sheet = style_sheet(dark)
             assert 'QPushButton[variant="info"] { background: transparent; color: #00A9E0;' in sheet
             assert 'QPushButton[variant="info"]:disabled {' in sheet  # grey, as every disabled one
+            assert 'QPushButton[variant="neutral"] { background: #53565A;' in sheet
+        # Manage Annotators and GPU queue: filled #53565A, in the middle of the row
+        middle = (browser.manage_button, browser.queue_button)
+        assert all(button.property('variant') == 'neutral' for button in middle)
+        for button in middle:
+            button.show()  # shown when signed in to the service
+        browser.resize(1400, 800)
+        qapp.processEvents()
+        row = browser.manage_button.parentWidget()
+        centre = (browser.manage_button.geometry().left() +
+                  browser.queue_button.geometry().right()) / 2
+        assert abs(centre - row.width() / 2) < 24, (centre, row.width())
     finally:
         browser.close()

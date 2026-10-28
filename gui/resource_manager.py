@@ -88,6 +88,15 @@ def imwrite_checked(file_path: str, image: np.ndarray) -> None:
     write_atomically(file_path, write)
 
 
+def read_mask(mask_path: Optional[str], pregenerated: bool = False) -> Optional[np.ndarray]:
+    """An H*W uint8 mask from its file (ResourceManager.saved_mask_source); a pregenerated one is
+    binarized: the target, 1, where it is not 0. None without a file."""
+    if mask_path is None:
+        return None
+    mask = np.array(Image.open(mask_path))
+    return (mask > 0).astype(np.uint8) if pregenerated else mask
+
+
 class ResourceManager:
 
     def __init__(self, cfg: DictConfig):
@@ -349,20 +358,27 @@ class ResourceManager:
         image = np.array(image)
         return image
 
-    def _get_mask_unbuffered(self, ti: int):
-        # returns H*W uint8 array; a task falls back to its pregenerated mask for untouched frames
-        assert 0 <= ti < self.length
+    def modality_path(self, ti: int, modality: str) -> Optional[str]:
+        """The frame's own file in that modality, None when the modality lacks it (image_path
+        shows the default modality's instead)."""
+        file_name = self.frame_files.get(modality, {}).get(self.names[ti])
+        return None if file_name is None else path.join(self.image_dirs[modality], file_name)
 
+    def saved_mask_source(self, ti: int) -> Tuple[Optional[str], bool]:
+        """(the file of the frame's mask, whether it is a pregenerated one to binarize): the saved
+        mask, else a task's pregenerated mask, else (None, False). What get_mask shows."""
+        assert 0 <= ti < self.length
         name = self.names[ti]
         mask_path = path.join(self.mask_dir, name + '.png')
         if path.exists(mask_path):
-            mask = Image.open(mask_path)
-            mask = np.array(mask)
-            return mask
+            return mask_path, False
         if self.task is not None and name in self.task.prefill:
-            prefill = np.array(Image.open(self.task.prefill[name]['path']))
-            return (prefill > 0).astype(np.uint8)
-        return None
+            return self.task.prefill[name]['path'], True
+        return None, False
+
+    def _get_mask_unbuffered(self, ti: int):
+        # returns H*W uint8 array; a task falls back to its pregenerated mask for untouched frames
+        return read_mask(*self.saved_mask_source(ti))
 
     def mask_source(self, ti: int) -> Optional[str]:
         # where the shown mask of a task frame comes from; None outside task mode

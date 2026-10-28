@@ -8,7 +8,8 @@ checksum of what was written. A database change alone changes no one's SSH acces
 """
 from typing import List, Tuple
 
-from cutieplus.cooperation.sshpolicy import PolicyEntry, checksum, render_policy
+from cutieplus.cooperation.sshpolicy import (PolicyEntry, policies_checksum, render_jump_policy,
+                                             render_policy)
 
 
 def bump(cursor) -> int:
@@ -32,5 +33,8 @@ def snapshot(db, now: str) -> Tuple[int, List[PolicyEntry]]:
                                   row['expires_at']) for row in rows]
 
 
-def expected_checksum(revision: int, entries: List[PolicyEntry], ports) -> str:
-    return checksum(render_policy(revision, entries, ports))
+def expected_checksum(revision: int, entries: List[PolicyEntry], ports,
+                      annotation_port: int) -> str:
+    """What the helper reports once it wrote the policy and the jump file."""
+    return policies_checksum(render_policy(revision, entries, ports),
+                             render_jump_policy(revision, entries, ports, annotation_port))

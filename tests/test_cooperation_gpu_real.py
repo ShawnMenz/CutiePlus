@@ -3,14 +3,11 @@ The shared GPU worker with the real models on the GPU (CUTIEPLUS_TEST_GPU=1 pyte
 propagation through the worker gives the masks the window gave when it ran the models itself, and
 another user's clicks are answered between its steps rather than after it.
 """
-import os
-import shutil
 import time
 from os import path
 
 import numpy as np
 import pytest
-import torch
 
 from cutieplus.backends.service import ServiceTaskBackend
 from cutieplus.cooperation.client import ServiceClient

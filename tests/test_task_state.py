@@ -12,8 +12,8 @@ from gui.task_state import (ATTENTION, INTERVALS, PROGRESS, SOURCE, TaskLock, Ta
                             TaskState, attention_of, read_metadata, read_section,
                             check_intervals, discard_of, discard_task, intervals_from_payload,
                             intervals_payload, labeler_name, lock_holder, mark_done,
-                            submit_for_review, summarize_task, task_status, utc_now,
-                            work_folder)
+                            submit_for_review, summarize_task, task_annotators, task_status,
+                            utc_now, work_folder)
 from tests.helpers import make_task, summary_of
 
 
@@ -54,10 +54,22 @@ def test_review_workflow(tmp_path):
     assert task_status(workspace) == 'under review'
     mark_done(workspace, 'bob')
     assert task_status(workspace) == 'done'
+    assert read_section(workspace, PROGRESS)['edited_by'] == ['alice', 'bob']  # bob marked it
     # any change reopens the task, and edited_by keeps everyone in order
     TaskState(workspace, 'carol').touch()
     assert task_status(workspace) == 'in progress'
-    assert read_section(workspace, PROGRESS)['edited_by'] == ['alice', 'carol']
+    assert read_section(workspace, PROGRESS)['edited_by'] == ['alice', 'bob', 'carol']
+    # a Save that takes the done mark away keeps who marked it, too
+    submit_for_review(workspace, 'carol')
+    mark_done(workspace, 'dave')
+    submit_for_review(workspace, 'alice')
+    assert read_section(workspace, PROGRESS)['edited_by'] == ['alice', 'bob', 'carol', 'dave']
+
+
+def test_a_task_marked_done_before_mark_done_counted_lists_who_marked_it():
+    legacy = {'last_edited_by': 'alice', 'edited_by': ['alice'], 'done_by': 'bob'}
+    assert task_annotators(legacy, {}) == ['alice', 'bob']
+    assert task_annotators({'done_by': 'bob'}, {'000001': {'by': 'alice'}}) == ['alice', 'bob']
 
 
 def test_the_quit_time_of_ctrl_q_goes_with_the_done_mark(tmp_path):

@@ -20,7 +20,7 @@ metadata.json  everything else, one section each (a section is absent until it i
                sequence's describe it)
   progress     the review workflow: {last_edited, last_edited_by, edited_by} is rewritten on
                every change (so a change always needs a new review); edited_by lists everyone who
-               has changed the task, in order of their first change; Save (Ctrl+S) adds
+               has changed the task or marked it done, in order of their first; Save (Ctrl+S) adds
                {review_at, review_by} (under review); the task browser's Mark done adds
                {done_at, done_by} to a task under review; the labeling window's Ctrl+Q (quit and
                mark done) saves and marks it done in one go, and also adds {quit_at}, when it was
@@ -441,11 +441,16 @@ def ensure_work_folder(input_root: str, source: SequenceInput) -> str:
     return folder
 
 
+def input_root_of(workspace: str) -> str:
+    # the input root of a work folder, from its source section
+    relative = read_section(workspace, SOURCE)['input']
+    return path.normpath(path.join(path.abspath(workspace), relative))
+
+
 def source_of(workspace: str) -> SequenceInput:
     # the input sequence of a work folder, read again from the input
     source = read_metadata(workspace)[SOURCE]
-    input_root = path.normpath(path.join(path.abspath(workspace), source['input']))
-    return read_sequence(input_root, source['tab'], source['sequence'])
+    return read_sequence(input_root_of(workspace), source['tab'], source['sequence'])
 
 
 def category_text(category: Optional[str]) -> str:
@@ -453,9 +458,9 @@ def category_text(category: Optional[str]) -> str:
 
 
 def task_annotators(progress: dict, anchors: Dict[str, dict]) -> List[str]:
-    """Everyone who has changed a task (put it in progress), in order of their first change.
-    Tasks last changed before edited_by existed fall back to their anchors' authors and the
-    last editor."""
+    """Everyone who has changed a task (put it in progress) or marked it done, in order of
+    their first. Tasks last changed before edited_by existed fall back to their anchors' authors
+    and the last editor; tasks marked done before Mark done counted add who marked them."""
     if 'edited_by' in progress:
         recorded = list(progress['edited_by'])
     else:
@@ -464,6 +469,8 @@ def task_annotators(progress: dict, anchors: Dict[str, dict]) -> List[str]:
                     if anchor.get('by')]
         if progress.get('last_edited_by'):
             recorded.append(progress['last_edited_by'])
+    if progress.get('done_by'):
+        recorded.append(progress['done_by'])
     return list(dict.fromkeys(recorded))
 
 
@@ -569,8 +576,11 @@ def submitted_progress(progress: dict, labeler: str, now: str) -> dict:
 
 def done_progress(progress: dict, labeler: str, now: str, quit_at: Optional[str] = None) -> dict:
     """The progress once the task is marked done; quit_at: when the labeling window's Ctrl+Q
-    (quit and mark done) was pressed, else none is kept."""
+    (quit and mark done) was pressed, else none is kept. Who marked it done joins edited_by, so
+    they stay among its annotators after a later change or Save."""
     progress = dict(without_done_mark(progress), done_at=now, done_by=labeler)
+    if 'edited_by' in progress and labeler not in progress['edited_by']:
+        progress['edited_by'] = [*progress['edited_by'], labeler]
     if quit_at:
         progress['quit_at'] = quit_at
     return progress

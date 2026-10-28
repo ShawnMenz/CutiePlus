@@ -34,7 +34,7 @@ from cutieplus.cooperation.protocol import PROTOCOL_VERSION, error, ok
 
 log = logging.getLogger(__name__)
 
-SERVICE_VERSION = '1'
+SERVICE_VERSION = '2'  # 2: delete_user
 LAST_SEEN_EVERY_S = 60  # a session's last_seen_at is written at most this often
 # a user's change the other parts of the service follow (desktops, keys, jobs), in the change's
 # transaction: hook(cursor, before, after, actor_id, now, result); before is None for a new user;
@@ -336,13 +336,20 @@ def logout(service: Service, ctx: Context) -> None:
                      target_type='session', target_id=ctx.session['id'])
 
 
-@op()
-def reauthenticate(service: Service, ctx: Context, password) -> dict:
+def confirm_password(service: Service, ctx: Context, password, action: str) -> dict:
+    """The caller's own password, checked and, when wrong, counted against them as a failed
+    sign-in; returns their users row."""
     user = service.user_row(ctx.actor.user_id)
     service.limiter.check(user['login_name'], ctx.origin.key)
     if not service.passwords.verify(user['password_hash'], password):
-        _failed_sign_in(service, ctx, 'reauthenticate', user['login_name'], user)
+        _failed_sign_in(service, ctx, action, user['login_name'], user)
         raise Refused(INVALID_CREDENTIALS, 'wrong password')
+    return user
+
+
+@op()
+def reauthenticate(service: Service, ctx: Context, password) -> dict:
+    user = confirm_password(service, ctx, password, 'reauthenticate')
     service.limiter.succeeded(user['login_name'], ctx.origin.key)
     with service.db.transaction() as cursor:
         cursor.execute('UPDATE app_sessions SET last_reauthenticated_at = ? WHERE id = ?',
@@ -353,11 +360,7 @@ def reauthenticate(service: Service, ctx: Context, password) -> dict:
 @op()
 def change_password(service: Service, ctx: Context, current_password, new_password) -> None:
     """Your own password; your other sessions end, this one stays."""
-    user = service.user_row(ctx.actor.user_id)
-    service.limiter.check(user['login_name'], ctx.origin.key)
-    if not service.passwords.verify(user['password_hash'], current_password):
-        _failed_sign_in(service, ctx, 'change_password', user['login_name'], user)
-        raise Refused(INVALID_CREDENTIALS, 'wrong password')
+    user = confirm_password(service, ctx, current_password, 'change_password')
     if new_password == current_password:
         raise Refused(INVALID, 'the new password is the old one')
     password_hash = service.passwords.hash(

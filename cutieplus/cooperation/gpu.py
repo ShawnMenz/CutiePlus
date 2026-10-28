@@ -160,7 +160,7 @@ class GpuQueue:
         self.queued_hint = True
         self.stopping = threading.Event()
         self.last_heartbeat = 0.0
-        self.results_dir = path.join(self.config.state_dir, 'results')
+        self.results_dir = self.config.results_dir
         self.snapshots_dir = self.config.snapshots_dir
         for folder in (self.results_dir, self.snapshots_dir):
             os.makedirs(folder, mode=0o700, exist_ok=True)

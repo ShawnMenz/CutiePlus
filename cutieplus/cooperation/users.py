@@ -6,7 +6,8 @@ the same state: a Supervisor acting on someone who has just become a Supervisor 
 Status:  pending (no password yet: setup token) -> active <-> suspended;  any -> archived (Remove).
 Every change of role, status or credentials raises the user's authz_version and ends their
 sessions: they sign in again, with what they may do now. Removed users stay in the database, so
-their jobs and audit records keep naming them; their annotation files are never touched.
+their jobs and audit records keep naming them, until an admin deletes them for good; their
+annotation files are never touched.
 """
 from datetime import timedelta
 from typing import Optional
@@ -16,7 +17,8 @@ from cutieplus.cooperation.api import Context, op
 from cutieplus.cooperation.clock import iso, new_id
 from cutieplus.cooperation.errors import (CONFLICT, FORBIDDEN, INVALID, NOT_FOUND,
                                           UNEXPECTED_FIELD, Refused)
-from cutieplus.cooperation.service import Service, public_user
+from cutieplus.cooperation.operations import start_operation
+from cutieplus.cooperation.service import Service, confirm_password, public_user
 
 MAX_DISPLAY_NAME = 80
 MAX_CONTACT = 200
@@ -211,6 +213,38 @@ def remove_user(service: Service, ctx: Context, user_id) -> dict:
                             archived_at=service.now(), setup_token_hash=None,
                             setup_token_expires_at=None)
     return public_user(after)
+
+
+@op()
+def delete_user(service: Service, ctx: Context, user_id, password) -> dict:
+    """Deletes a user for good: an admin, never on themselves or the owner, with their password
+    every time. Their access ends at once, as with Remove; once their desktop is released, the
+    reconciler deletes their account, keys, sessions and GPU job records (operations.purge_user)
+    and their login name is free again. The audit log and their annotation files are kept."""
+    with service.db.lock:  # refused before the password is looked at
+        user_target(service, ctx, service.db.conn.cursor(), user_id, authz.DELETE)
+    confirm_password(service, ctx, password, 'delete_user')
+    with service.db.transaction() as cursor:
+        before = user_target(service, ctx, cursor, user_id, authz.DELETE)
+        if cursor.execute("SELECT 1 FROM management_operations WHERE operation_type = "
+                          "'delete_user' AND target_user_id = ? AND status IN "
+                          "('pending', 'running', 'failed')", (before['id'], )).fetchall():
+            raise Refused(INVALID, 'the user is being deleted already')
+        after = before
+        if before['status'] != 'archived':
+            after = change_user(service, ctx, cursor, before, 'remove_user', status='archived',
+                                archived_at=service.now(), setup_token_hash=None,
+                                setup_token_expires_at=None)
+        revision = cursor.execute('SELECT desired_revision FROM policy_state WHERE id = 1'
+                                  ).fetchall()[0]['desired_revision']
+        operation_id = start_operation(service, cursor, 'delete_user', ctx.actor.user_id,
+                                       before['id'], request_id=ctx.request_id,
+                                       desired_revision=revision,
+                                       parameters={'login_name': before['login_name']})
+        audit.record(cursor, service.now(), 'delete_user', audit.SUCCEEDED, ctx.actor.user_id,
+                     target_type='user', target_id=before['id'], request_id=ctx.request_id,
+                     operation_id=operation_id, before=public_user(before))
+    return {'user': public_user(after), 'operation_id': operation_id}
 
 
 @op()

@@ -9,6 +9,7 @@ database, so the files it writes stay the service's.
     sudo cutieplus-admin owner-transfer --login <name>
     sudo cutieplus-admin backup
     sudo cutieplus-admin status
+    sudo cutieplus-admin reset           # every record goes, the owner too (asks first)
 """
 import argparse
 import json
@@ -153,6 +154,52 @@ def restore_file(config: ServiceConfig, backup: str, now: str) -> list:
         db.close()
 
 
+def reset_database(config: ServiceConfig, stamp: str) -> Optional[str]:
+    """As the service account, with the service stopped: a last, checked copy of the database
+    goes into the backups folder, then the database goes, with the GPU jobs' snapshots and
+    results. Returns the copy (None without a database)."""
+    import apsw
+    kept = None
+    if os.path.exists(config.db_path):
+        os.makedirs(config.backups_dir, mode=0o700, exist_ok=True)
+        kept = os.path.join(config.backups_dir, f'cooperation-before-reset-{stamp}.sqlite3')
+        source = apsw.Connection(config.db_path)
+        try:
+            target = apsw.Connection(kept)
+            with target.backup('main', source, 'main') as copy:
+                copy.step()  # all of it, the write-ahead log's pages included
+            check = target.execute('PRAGMA integrity_check').fetchall()[0][0]
+            target.close()
+        finally:
+            source.close()
+        if check != 'ok':
+            raise AdminError(f'the copy {kept} fails its integrity check ({check}): nothing '
+                             'is cleared')
+        os.chmod(kept, 0o600)
+        for suffix in ('', '-wal', '-shm'):
+            if os.path.exists(config.db_path + suffix):
+                os.remove(config.db_path + suffix)
+    for folder in (config.snapshots_dir, config.results_dir):
+        shutil.rmtree(folder, ignore_errors=True)
+    return kept
+
+
+def reset_system_files(config: ServiceConfig) -> None:
+    """As root: what the records had made on the system goes too: the desktops' files (their
+    VNC passwords), the SSH policy and jump files (emptied: no key opens anything), and the GPU
+    jobs' staging folder. Annotation files are never touched."""
+    if os.path.isdir(config.desktops_dir):
+        for name in os.listdir(config.desktops_dir):
+            shutil.rmtree(os.path.join(config.desktops_dir, name), ignore_errors=True)
+    for policy in (config.authorized_keys, config.jump_keys):
+        if os.path.exists(policy):
+            with open(policy, 'w', encoding='utf-8') as f:
+                f.write('# Emptied by cutieplus-admin reset.\n')
+    if os.path.isdir(config.jobs_dir):
+        for name in os.listdir(config.jobs_dir):
+            shutil.rmtree(os.path.join(config.jobs_dir, name), ignore_errors=True)
+
+
 def drop_root(account: str = SERVICE_ACCOUNT) -> None:
     """Root becomes the service account (its group only), for good."""
     if os.geteuid() != 0:
@@ -178,11 +225,15 @@ def main(argv: Optional[list] = None) -> int:
     restore = commands.add_parser('restore', help='put a backup in place of the database')
     restore.add_argument('backup')
     commands.add_parser('status', help='users, policy, GPU and jobs at a glance')
+    reset = commands.add_parser('reset', help='clear every record, the owner too (a copy is kept)')
+    reset.add_argument('--yes', action='store_true', help='do not ask first')
     args = parser.parse_args(argv)
     try:
         config = ServiceConfig.load(args.config)
         if args.command == 'restore':
             return restore_command(config, args.backup)
+        if args.command == 'reset':
+            return reset_command(config, args.yes)
         drop_root()
         from cutieplus.cooperation.app import build_service
         service = build_service(config)
@@ -233,6 +284,52 @@ def restore_command(config: ServiceConfig, backup: str) -> int:
     _, status = os.waitpid(child, 0)
     subprocess.run(['/usr/bin/systemctl', 'start', 'cutieplus-service.service'], check=True)
     return 0 if os.waitstatus_to_exitcode(status) == 0 else 1
+
+
+RESET_UNITS = ('cutieplus-service.service', 'cutieplus-gpu-worker.service',
+               'cutieplus-sshd.service')
+
+
+def reset_command(config: ServiceConfig, confirmed: bool = False) -> int:
+    """As root: every record goes, the owner too. The desktops, the service, the GPU worker and
+    the annotation sshd stop (every collaborator's connection ends); a checked copy of the
+    database is kept in the backups folder; then they start again on an empty database."""
+    if os.geteuid() != 0:
+        raise AdminError('run it as root: sudo cutieplus-admin reset')
+    if not confirmed:
+        print('This deletes every CutiePlus account (yours too), SSH key, desktop, session, GPU '
+              'job and audit record, and ends every collaborator\'s connection. Annotation files '
+              'stay. A copy of the database is kept in ' + config.backups_dir + '.')
+        if input('Type RESET to go on: ').strip() != 'RESET':
+            print('Nothing changed.')
+            return 1
+    systemctl = '/usr/bin/systemctl'
+    subprocess.run([systemctl, 'stop', 'cutieplus-desktop@*.service'], check=False)
+    subprocess.run([systemctl, 'stop', *RESET_UNITS], check=True)
+    child = os.fork()
+    if child == 0:
+        code = 0
+        try:
+            drop_root()
+            from cutieplus.cooperation.clock import Clock
+            kept = reset_database(config, Clock().iso_now().replace(':', '').replace('-', ''))
+            print(f'The old records are kept in {kept}.' if kept else 'There was no database.')
+        except Exception as exc:  # the parent says it failed
+            print(f'cutieplus-admin: {exc}', file=sys.stderr)
+            code = 1
+        os._exit(code)
+    _, status = os.waitpid(child, 0)
+    if os.waitstatus_to_exitcode(status) != 0:
+        subprocess.run([systemctl, 'start', *RESET_UNITS], check=False)
+        print('cutieplus-admin: nothing was cleared; the services run as before.', file=sys.stderr)
+        return 1
+    reset_system_files(config)
+    subprocess.run([systemctl, 'restart', 'cutieplus-helper.service'], check=True)
+    subprocess.run([systemctl, 'start', *RESET_UNITS], check=True)
+    print('Every record is cleared and the services run on an empty database. To delete the old '
+          f'records for good, delete the copies in {config.backups_dir} too. Next:\n\n'
+          '    sudo cutieplus-admin bootstrap-owner --login <your login> --name "<your name>"\n')
+    return 0
 
 
 if __name__ == '__main__':

@@ -40,6 +40,10 @@ class GpuQueueWindow(QDialog):
         super().__init__(parent)
         self.link = link
         self.setWindowTitle('GPU queue')
+        # closed, it is deleted, and a reply that comes back later changes nothing (as
+        # ManageAnnotators)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.closed = False
         self.loading = False
         self.worker_label = QLabel('Loading…')
         self.worker_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -61,13 +65,15 @@ class GpuQueueWindow(QDialog):
         fit_window(self, QSize(900, 620))
 
     def refresh(self) -> None:
-        if self.loading:
+        if self.closed or self.loading:
             return
         self.loading = True
         self.link.request('gpu_status', self.on_status)
 
     def on_status(self, status, error) -> None:
         self.loading = False
+        if self.closed:
+            return
         if error is not None:
             self.worker_label.setText(f'The service cannot say: {error}')
             return
@@ -125,11 +131,21 @@ class GpuQueueWindow(QDialog):
 
     def run(self, what: str, op: str, **args) -> None:
         def done(result, error) -> None:
+            if self.closed:
+                return
             self.status.setText(f'{what}: {error}' if error is not None else f'{what}: sent.')
             self.refresh()
 
         self.link.request(op, done, **args)
 
     def closeEvent(self, event) -> None:
-        self.timer.stop()
+        self.closing()
         super().closeEvent(event)
+
+    def done(self, result: int) -> None:  # Esc, and a close by hand
+        self.closing()
+        super().done(result)
+
+    def closing(self) -> None:
+        self.closed = True
+        self.timer.stop()

@@ -351,15 +351,23 @@ class TaskBrowser(QWidget):
         self.tabs.currentChanged.connect(self.update_stats)
         self.tabs.currentChanged.connect(self.show_discard_action)
 
-        # the input and the export on the left, the selected sequence's actions on the right
-        buttons = QHBoxLayout()
-        for button in (import_button, export_button, refresh_button, self.manage_button,
-                       self.queue_button):
+        # the input and the export on the left, the cooperation in the middle, the selected
+        # sequence's actions on the right: the sides stretch alike, so the middle is centred
+        left, middle, right = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
+        for button in (import_button, export_button, refresh_button):
             set_variant(button, 'info')  # blue; a disabled one grey, as every disabled button
-            buttons.addWidget(button)
-        buttons.addStretch(1)
+            left.addWidget(button)
+        left.addStretch(1)
+        for button in (self.manage_button, self.queue_button):
+            set_variant(button, 'neutral')  # filled #53565A
+            middle.addWidget(button)
+        right.addStretch(1)
         for button in (open_button, done_button, self.discard_button):
-            buttons.addWidget(button)
+            right.addWidget(button)
+        buttons = QHBoxLayout()
+        buttons.addLayout(left, 1)
+        buttons.addLayout(middle)
+        buttons.addLayout(right, 1)
         # rounded cards (gui/style.py): the filter, the tasks with their actions, the messages
         layout = QVBoxLayout()
         layout.setContentsMargins(12, 12, 12, 12)
@@ -409,7 +417,7 @@ class TaskBrowser(QWidget):
 
     @staticmethod
     def annotators_tip(names: List[str]) -> str:
-        return 'changed by ' + ', '.join(names) if names else ''
+        return 'changed or marked done by ' + ', '.join(names) if names else ''
 
     def status_color(self, status: str) -> QColor:
         if status == DISCARDED_STATUS:

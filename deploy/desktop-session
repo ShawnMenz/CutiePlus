@@ -1,12 +1,14 @@
 #!/bin/bash
 # One remote desktop (cutieplus-desktop@N.service, as the desktop account): Xtigervnc on
-# 127.0.0.1:5900+N with the desktop's VNC password, openbox, and the CutiePlus task browser,
-# opened again if it is closed. Its own D-Bus session: nothing is shared with a login at the
-# monitor.
+# 127.0.0.1:5900+N with the desktop's VNC password, openbox with the release's own configuration
+# (openbox/rc.xml: no menu, no key binding, nothing that runs a program), and the CutiePlus task
+# browser, opened again if it is closed. Its own D-Bus session: nothing is shared with a login at
+# the monitor.
 set -u
 N="$1"
 PORT=$((5900 + N))
 export DISPLAY=":$N"
+export OPENBOX_RC="$(dirname "$0")/openbox/rc.xml"
 /usr/bin/Xtigervnc ":$N" -localhost -rfbport "$PORT" -SecurityTypes VncAuth \
     -PasswordFile "$CREDENTIALS_DIRECTORY/vncpasswd" -geometry 1600x900 -depth 24 \
     -nolisten tcp -AcceptSetDesktopSize &
@@ -15,7 +17,7 @@ for _ in $(seq 100); do
     sleep 0.1
 done
 exec /usr/bin/dbus-run-session -- /bin/bash -c '
-    /usr/bin/openbox &
+    /usr/bin/openbox --config-file "$OPENBOX_RC" &
     cd "$CUTIEPLUS_REPO"
     while true; do
         "$CUTIEPLUS_REPO/.venv/bin/python" interactive_demo.py --tasks "$CUTIEPLUS_TASKS"

@@ -85,7 +85,8 @@ def test_flock_holders_come_from_proc_locks(tmp_path):
 
 def test_the_service_config_reads_sections_and_refuses_unknown_settings():
     config = ServiceConfig.from_mapping({'paths': {'workspace_root': '/data/workspace'},
-                                         'desktops': {'first_display': 3, 'last_display': 5}})
+                                         'desktops': {'first_display': 3, 'last_display': 5},
+                                         'ssh': {'desktop_user': 'labeler'}})
     assert config.jobs_dir == '/data/workspace/.cutie_jobs'
     assert config.vnc_port_of(3) == 5903 and config.desktop_unit_of(4) == \
         'cutieplus-desktop@4.service'
@@ -93,6 +94,8 @@ def test_the_service_config_reads_sections_and_refuses_unknown_settings():
         ServiceConfig.from_mapping({'paths': {'workspace_root': '/w', 'shell': '/bin/sh'}})
     with pytest.raises(ConfigError):
         ServiceConfig.from_mapping({'workspace_root': 'relative'})
+    with pytest.raises(ConfigError):  # the desktops' account is this computer's, never a default
+        ServiceConfig.from_mapping({'paths': {'workspace_root': '/data/workspace'}})
 
 
 def test_a_host_without_client_config_runs_the_windows_as_before(tmp_path, monkeypatch):

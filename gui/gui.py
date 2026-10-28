@@ -5,9 +5,9 @@ import numpy as np
 from omegaconf import DictConfig
 
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
-                               QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
-                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog,
-                               QMessageBox, QFrame, QLineEdit, QScrollArea, QSplitter, QStyle,
+                               QTextEdit, QSpinBox, QVBoxLayout, QSizePolicy,
+                               QSlider, QApplication, QFileDialog,
+                               QMessageBox, QFrame, QScrollArea, QSplitter, QStyle,
                                QGridLayout, QToolButton)
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QPainter,
@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QEvent, QTimer, QPointF, QRectF, QSize
 from gui.flow_layout import FlowLayout
 from gui.gui_utils import *
 from gui.category_menu import CategoryMenu, CategoryPill
-from gui.style import (ATTENTION, CARD_MARGINS, GAP, Card, category_pill, restyle, set_pill,
+from gui.style import (ATTENTION, CARD_MARGINS, GAP, Card, category_pill, set_pill,
                        set_variant)
 from gui.task_state import (category_text, describe_attention, format_intervals,
                             interval_index_from)
@@ -48,6 +48,8 @@ STOP_LABEL = 'Stop video (R)'
 PLAYBACK_FPS = 24
 MAX_PLAYBACK_FPS = 60
 FPS_LOCK_SETTING = 'play_fps_lock'  # the locked speed; 0 when it is not locked
+OUTPUT_FPS_SETTING = 'output_fps'  # the demo videos' frames per second
+OUTPUT_VIDEO_LABEL = 'Output video (Ctrl+E)'
 LOCK_LABEL = 'Lock'
 LOCKED_LABEL = 'Locked'
 # the "layer" view, which puts an image (Import layer; the original Cutie's UIUC logo) between the
@@ -114,6 +116,15 @@ class GUI(QWidget):
         self.commit_button.clicked.connect(controller.on_commit)
         self.export_video_button = QPushButton('Export as video (Ctrl+E)')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
+        # a task's demo videos (gui/demo_video.py); Cancel output while they are written
+        self.output_video_button = set_variant(QPushButton(OUTPUT_VIDEO_LABEL), 'tonal')
+        self.output_video_button.clicked.connect(controller.on_output_demo)
+        self.fit_to_labels(self.output_video_button, (OUTPUT_VIDEO_LABEL, 'Cancel output'))
+        self.output_video_button.setToolTip(
+            'Ctrl+E: saves the sequence, writes one video per interval to cutie_demo/ beside the '
+            'input (the RGB frame left, the thermal one right, the mask in the visualization mode '
+            'and the category\'s color, the frame number at the top left and "category: '
+            'description" below), then marks the sequence done.')
         self.export_binary_button = set_variant(QPushButton('Export binary masks (Ctrl+S)'), 'primary')
         self.export_binary_button.clicked.connect(controller.on_save)
         if task is not None:
@@ -286,8 +297,11 @@ class GUI(QWidget):
         self.fps_dial.setMinimumSize(40, 30)
         self.fps_dial.setMinimum(1)
         self.fps_dial.setMaximum(60)
-        self.fps_dial.setValue(cfg['output_fps'])
-        self.fps_dial.editingFinished.connect(controller.on_fps_dial_change)
+        self.fps_dial.setValue(int(setting(OUTPUT_FPS_SETTING, cfg['output_fps'])))
+        self.fps_dial.valueChanged.connect(controller.on_fps_dial_change)
+        if task is not None:
+            self.fps_dial.setSuffix(' fps')
+            self.fps_dial.setToolTip('Output FPS: the frames per second of the demo videos')
 
         self.bitrate_dial = QSpinBox()
         self.bitrate_dial.setReadOnly(False)
@@ -405,7 +419,8 @@ class GUI(QWidget):
                               title='Propagate')
         self.progressbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        save_buttons = [self.export_binary_button]
+        save_buttons = [self.export_binary_button] + (
+            [self.output_video_button, self.fps_dial] if task is not None else [])
         mode_line = ([self.attention_button] if task is not None else []) + \
             [QLabel('Visualization mode'), self.combo]
         save_card = Card(rows(row(*save_buttons), row(*mode_line)), title='Save')
@@ -598,9 +613,8 @@ class GUI(QWidget):
 
         # save (a task) or export binary masks / the overlay video (the keys are on the buttons)
         QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(controller.on_save)
-        if task is None:
-            QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(
-                controller.on_export_visualization)
+        QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(
+            controller.on_export_visualization if task is None else controller.on_output_demo)
 
         # quit shortcuts: Q closes the window; Ctrl+Q also marks the task done (it asks first)
         QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
@@ -1280,3 +1294,9 @@ class GUI(QWidget):
     def progressbar_update(self, progress: float):
         self.progressbar.setValue(int(progress * 100))
         self.process_events()
+
+    def show_demo_output(self, running: bool, written: int = 0, total: int = 1) -> None:
+        # while the demo videos are written: Cancel output, and the frames written so far
+        self.output_video_button.setText('Cancel output' if running else OUTPUT_VIDEO_LABEL)
+        self.fps_dial.setEnabled(not running)
+        self.progressbar.setValue(int(100 * written / total) if running else 0)

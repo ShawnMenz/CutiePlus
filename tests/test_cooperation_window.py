@@ -6,6 +6,7 @@ while the window stays editable, and its result is held for review when the task
 without the service the window still edits and saves, but infers nothing.
 """
 import os
+import time
 from os import path
 
 import numpy as np
@@ -69,6 +70,16 @@ def masks(world):
     return sorted(name[:-4] for name in os.listdir(folder))
 
 
+def settled(qapp, controller, timeout: float = 10.0) -> None:
+    """Until the window's propagation has run and its result is written: under load it may
+    wait in the queue for a moment first."""
+    deadline = time.monotonic() + timeout
+    while controller.propagating or controller.waiting_for_gpu:
+        assert time.monotonic() < deadline, 'the propagation never finished'
+        qapp.processEvents()
+        time.sleep(0.01)
+
+
 def test_clicks_and_propagation_run_in_the_shared_worker(world, qapp):
     world.start_worker()
     controller = open_window(world)
@@ -80,6 +91,7 @@ def test_clicks_and_propagation_run_in_the_shared_worker(world, qapp):
         assert controller.curr_mask[10, 12] == 1
         assert controller.task.anchors['000001']['kind'] == 'mask'
         controller.on_forward_propagation()  # runs to the end: the worker is free
+        settled(qapp, controller)
         assert masks(world) == [f'{index:06d}' for index in range(1, 9)]
         assert read_metadata(world.task_files.workspace)['revision'] > revision
         jobs = world.db.query("SELECT operation_type, status, result_state FROM gpu_jobs "

@@ -56,6 +56,14 @@ def set_target_color(color: Optional[Tuple[int, int, int]]) -> None:
     _device_tables.clear()  # copied again to the image's device on next use
 
 
+def colors_with_target(color: Optional[Tuple[int, int, int]]) -> np.ndarray:
+    """A copy of the color table with the target in the given color (TARGET_MASK_COLOR without
+    one), for get_visualization's colors: the window's own table stays as it is."""
+    colors = color_map_np.copy()
+    colors[1] = color or TARGET_MASK_COLOR
+    return colors
+
+
 def _tables_on(device: torch.device) -> tuple:
     """(color map, grayscale weights) on the given device."""
     if device not in _device_tables:
@@ -65,23 +73,25 @@ def _tables_on(device: torch.device) -> tuple:
 
 def get_visualization(mode: Literal['image', 'mask', 'fade', 'davis', 'light', 'popup', 'layer',
                                     'rgba'], image: np.ndarray, mask: np.ndarray, layer: np.ndarray,
-                      target_objects: List[int]) -> np.ndarray:
+                      target_objects: List[int], colors: Optional[np.ndarray] = None) -> np.ndarray:
+    """colors: the color of each object index (N*3 uint8), else the window's (color_map_np)."""
+    colors = color_map_np if colors is None else colors
     if mode == 'image':
         return image
     elif mode == 'mask':
-        return color_map_np[mask]
+        return colors[mask]
     elif mode == 'fade':
-        return overlay_davis(image, mask, fade=True)
+        return overlay_davis(image, mask, fade=True, colors=colors)
     elif mode == 'davis':
-        return overlay_davis(image, mask)
+        return overlay_davis(image, mask, colors=colors)
     elif mode == 'light':
-        return overlay_davis(image, mask, 0.9)
+        return overlay_davis(image, mask, 0.9, colors=colors)
     elif mode == 'popup':
         return overlay_popup(image, mask, target_objects)
     elif mode == 'layer':
         if layer is None:
             print('Layer file not given. Defaulting to DAVIS.')
-            return overlay_davis(image, mask)
+            return overlay_davis(image, mask, colors=colors)
         else:
             return overlay_layer(image, mask, layer, target_objects)
     elif mode == 'rgba':
@@ -119,11 +129,12 @@ def get_visualization_torch(mode: Literal['image', 'mask', 'fade', 'davis', 'lig
         raise NotImplementedError
 
 
-def overlay_davis(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, fade: bool = False):
+def overlay_davis(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, fade: bool = False,
+                  colors: Optional[np.ndarray] = None):
     """ Overlay segmentation on top of RGB image. from davis official"""
     im_overlay = image.copy()
 
-    colored_mask = color_map_np[mask]
+    colored_mask = (color_map_np if colors is None else colors)[mask]
     foreground = image * alpha + (1 - alpha) * colored_mask
     binary_mask = (mask > 0)
     # Compose image

@@ -12,9 +12,9 @@ import subprocess
 
 import pytest
 
-from cutieplus.cooperation import sshpolicy
+from cutieplus.cooperation import audit, sshpolicy
 from cutieplus.cooperation.procinfo import Peer, ProcessIdentity
-from tests.cooperation_harness import AccessHarness, ed25519_key
+from tests.cooperation_harness import PASSWORD, AccessHarness, ed25519_key
 
 
 @pytest.fixture
@@ -70,6 +70,25 @@ def test_a_policy_line_forwards_to_its_own_port_only():
         'restrict,port-forwarding,permitopen="localhost:5902",permitopen="127.0.0.1:5902",'
         'command="/usr/sbin/nologin",expiry-time="202706302359Z" '
         f'{key.canonical} cutieplus:0b9c2a4e-8f1d-4c3b-9a7e-5d6f7a8b9c0d')
+    assert sshpolicy.render_jump_line(entry, (5902, 5920), 2222) == (
+        'restrict,port-forwarding,permitopen="localhost:2222",permitopen="127.0.0.1:2222",'
+        'command="/usr/sbin/nologin",expiry-time="202706302359Z" '
+        f'{key.canonical} cutieplus:0b9c2a4e-8f1d-4c3b-9a7e-5d6f7a8b9c0d')
+    for bad_port in (0, 70000, True, '2222'):
+        with pytest.raises(sshpolicy.KeyError_):
+            sshpolicy.render_jump_line(entry, (5902, 5920), bad_port)
+    # port 22's drop-in: the jump account only, and only a TCP channel to the annotation sshd
+    dropin = sshpolicy.render_jump_dropin('cutieplus-jump', '/etc/cutieplus/ssh/jump_keys', 2222)
+    settings = [line.strip() for line in dropin.splitlines() if line and not line.startswith('#')]
+    assert settings[:2] == ['Match User cutieplus-jump',
+                            'AuthorizedKeysFile /etc/cutieplus/ssh/jump_keys']
+    for setting in ('AllowTcpForwarding local', 'PermitOpen localhost:2222 127.0.0.1:2222',
+                    'PermitListen none', 'AllowStreamLocalForwarding no', 'PermitTTY no',
+                    'ForceCommand /usr/sbin/nologin', 'AuthenticationMethods publickey'):
+        assert setting in settings
+    for bad in (('labeler\nPermitRootLogin yes', 2222), ('cutieplus-jump', 0)):
+        with pytest.raises(sshpolicy.KeyError_):
+            sshpolicy.render_jump_dropin(bad[0], '/etc/cutieplus/ssh/jump_keys', bad[1])
     for bad in (entry.__class__(entry.key_id, key.canonical, 22, None),  # not a VNC port
                 entry.__class__('../etc', key.canonical, 5902, None),
                 entry.__class__(entry.key_id, key.canonical + ' evil', 5902, None),
@@ -107,9 +126,16 @@ def test_onboarding_gives_a_desktop_and_publishes_the_key(access):
     assert 'permitopen="localhost:5902"' in text and 'expiry-time="202706302359Z"' in text
     assert 'someone@laptop' not in text  # the key's own comment is dropped
     assert access.operations('add_key')[0]['status'] == 'succeeded'
+    # port 22's jump file: the same key, to the annotation sshd only, expiring alike
+    with open(access.config.jump_keys, encoding='utf-8') as f:
+        jump = f.read()
+    line = next(line for line in jump.splitlines() if not line.startswith('#'))
+    assert line.startswith('restrict,port-forwarding,permitopen="localhost:2222",'
+                           'permitopen="127.0.0.1:2222",command="/usr/sbin/nologin",'
+                           'expiry-time="202706302359Z" ssh-ed25519 ')
     state = access.db.query_one('SELECT * FROM policy_state')
     assert state['applied_revision'] == state['desired_revision'] > 0
-    assert state['applied_snapshot_checksum'] == sshpolicy.checksum(text)
+    assert state['applied_snapshot_checksum'] == sshpolicy.policies_checksum(text, jump)
     details = access.call('get_user', owner, user_id=user_id)
     assert details['desktop']['observed_state'] == 'running'
     assert [key['device_label'] for key in details['keys']] == ['Laptop']
@@ -235,6 +261,62 @@ def test_removing_revokes_access_keeps_the_records_and_frees_the_desktop_last(ac
                        display_name='Carol')['desktop']['display'] == 2
 
 
+def finished_job(access, user_id: str) -> str:
+    """A propagation of the user that ended, with its snapshot file; returns the file."""
+    os.makedirs(access.config.snapshots_dir, exist_ok=True)
+    snapshot = os.path.join(access.config.snapshots_dir, 'job.bin')
+    with open(snapshot, 'wb') as f:
+        f.write(b'inputs')
+    session = access.db.query_one('SELECT id FROM app_sessions WHERE user_id = ?', (user_id, ))
+    with access.db.transaction() as cursor:
+        cursor.execute(
+            'INSERT INTO gpu_jobs (id, owner_user_id, submitted_by_app_session_id, operation_type, '
+            'workspace_id, input_reference, input_revision, annotation_or_anchor_revision, '
+            'model_identifier, model_version, parameters_json, status, queue_sequence, '
+            "idempotency_key, submitted_at) VALUES (?, ?, ?, 'propagate', 'task', ?, 'sha', 0, "
+            "'cutie', '1', '{}', 'succeeded', 1, 'key', ?)",
+            ('7a1e0c4e-0000-4000-8000-000000000001', user_id, session['id'], snapshot,
+             access.service.now()))
+    return snapshot
+
+
+def test_deleting_a_user_for_good_asks_the_password_and_keeps_the_audit_log(access):
+    owner = access.owner()
+    sam = onboard(access, owner, 'sam', 'supervisor')
+    eve = access.add(sam['token'], 'eve')  # sam's annotator
+    connection = access.connect(sam['key'])
+    snapshot = finished_job(access, sam['id'])
+    access.reconcile()
+    access.clock.advance(minutes=30)  # the password counts, not how recent the sign-in was
+    access.call('whoami', owner)
+    assert access.code('delete_user', owner, user_id=sam['id'], password='wrong') == \
+        'invalid_credentials'
+    assert access.service.user_row(sam['id'])['status'] == 'active'
+    access.call('delete_user', owner, user_id=sam['id'], password=PASSWORD)
+    assert access.service.user_row(sam['id'])['status'] == 'archived'  # access ends at once
+    assert access.code('delete_user', owner, user_id=sam['id'], password=PASSWORD) == 'invalid'
+    access.reconcile(passes=3)
+    assert connection.pid in access.system.killed and not access.unit_running(2)
+    for table, column in (('users', 'id'), ('ssh_keys', 'user_id'), ('app_sessions', 'user_id'),
+                          ('ssh_connections', 'user_id'), ('desktop_slots', 'user_id'),
+                          ('gpu_jobs', 'owner_user_id'),
+                          ('management_operations', 'target_user_id')):
+        assert access.db.query(f'SELECT 1 FROM {table} WHERE {column} = ?', (sam['id'], )) == []
+    assert not os.path.exists(snapshot)
+    assert access.operations('delete_user')[0]['status'] == 'succeeded'
+    # whom sam created stays; the audit log still says sam did it
+    assert access.service.user_row(eve['id'])['created_by'] is None
+    created = audit.events(access.db, "e.action = 'create_user' AND e.target_id = ?",
+                           (eve['id'], ))
+    assert created[0]['actor_login'] == 'sam (deleted)'
+    actions = [event['action'] for event in audit.events(access.db, 'e.target_id = ?',
+                                                          (sam['id'], ))]
+    assert actions[0] == 'purge_user' and 'delete_user' in actions and 'create_user' in actions
+    # the name is free again
+    assert access.call('create_user', owner, login_name='sam',
+                       display_name='Sam')['user']['login_name'] == 'sam'
+
+
 def test_disconnecting_keeps_the_key_and_the_desktop(access):
     owner = access.owner()
     alice = onboard(access, owner)
@@ -326,14 +408,14 @@ def test_the_helper_answers_the_service_only_and_checks_every_argument(access):
 def test_journal_entries_count_only_from_the_annotation_sshd_as_root(access):
     tracker = access.helper.tracker
     identity = access.system.spawn(access.config.sshd_unit)
-    message = (f'Accepted publickey for zexuan from 198.51.100.4 port 4000 ssh2: ED25519 '
+    message = (f'Accepted publickey for labeler from 198.51.100.4 port 4000 ssh2: ED25519 '
                f'{sshpolicy.parse_public_key(ed25519_key(1)).fingerprint}')
     base = {'_PID': str(identity.pid), '__MONOTONIC_TIMESTAMP': '10000000',
             '__REALTIME_TIMESTAMP': '1', 'MESSAGE': message}
     tracker.entry(dict(base, _SYSTEMD_UNIT='ssh.service', _UID='0'))  # the owner's sshd
     tracker.entry(dict(base, _SYSTEMD_UNIT=access.config.sshd_unit, _UID='1000'))  # not root
     tracker.entry(dict(base, _SYSTEMD_UNIT=access.config.sshd_unit, _UID='0',
-                       MESSAGE=message.replace('zexuan', 'root')))
+                       MESSAGE=message.replace('labeler', 'root')))
     assert tracker.alive() == []
     tracker.entry(dict(base, _SYSTEMD_UNIT=access.config.sshd_unit, _UID='0'))
     assert [connection.address for connection in tracker.alive()] == ['198.51.100.4']

@@ -9,7 +9,7 @@ from cutieplus.cooperation.errors import INVALID, Refused
 LOGIN_NAME = re.compile(r'[a-z][a-z0-9._-]{1,31}')
 # names that would read as the system, the account or a role
 RESERVED_LOGIN_NAMES = frozenset(('root', 'admin', 'administrator', 'supervisor', 'annotator',
-                                  'system', 'cutieplus', 'zexuan', 'nobody', 'owner'))
+                                  'system', 'cutieplus', 'nobody', 'owner'))
 
 
 def login_name(value) -> str:

@@ -31,6 +31,9 @@ EYE_CARE_HOVER = '#F0EFD5'  # the cream 4 % darker: a control under the pointer
 ATTENTION = '#ef6c00'  # Need Attention (the task browser's Attention status is red)
 DANGER = ('#d32f2f', '#ef5350')  # light, dark
 INFO = '#00A9E0'  # the task browser's Import, Export and Refresh
+NEUTRAL = '#53565A'  # the task browser's Manage Annotators and GPU queue (filled)
+NEUTRAL_HOVER = '#6A6D71'
+NEUTRAL_PRESSED = '#3F4245'
 
 RADIUS = 8  # px: buttons, boxes
 CARD_RADIUS = 12
@@ -114,6 +117,13 @@ QPushButton[variant="info"] {{ background: transparent; color: {info}; border: 1
                               font-weight: 600; }}
 QPushButton[variant="info"]:hover {{ background: rgba(0, 169, 224, 0.10); }}
 QPushButton[variant="info"]:pressed {{ background: rgba(0, 169, 224, 0.20); }}
+QPushButton[variant="neutral"] {{ background: {neutral}; color: {white}; border: 1px solid {neutral};
+                                 font-weight: 600; }}
+QPushButton[variant="neutral"]:hover {{ background: {neutral_hover}; border-color: {neutral_hover}; }}
+QPushButton[variant="neutral"]:pressed {{ background: {neutral_pressed};
+                                         border-color: {neutral_pressed}; }}
+QPushButton[variant="neutral"]:disabled {{ background: rgba(83, 86, 90, 0.35); border-color: transparent;
+                                          color: {white_text_disabled}; }}
 QPushButton[variant="danger"]:disabled, QPushButton[variant="attention"]:disabled,
 QPushButton[variant="info"]:disabled {{
     color: {muted}; border-color: {border}; background: transparent; }}
@@ -218,7 +228,8 @@ def style_sheet(dark: bool, eye_care: bool = False) -> str:
     return STYLE_SHEET.format(points=FONT_POINTS, radius=RADIUS, card_radius=CARD_RADIUS,
                               primary=PRIMARY, secondary=SECONDARY, pressed=PRESSED, white=white,
                               white_text_disabled=white_text_disabled, attention=ATTENTION,
-                              info=INFO, **colors)
+                              info=INFO, neutral=NEUTRAL, neutral_hover=NEUTRAL_HOVER,
+                              neutral_pressed=NEUTRAL_PRESSED, **colors)
 
 
 def app_font() -> QFont:

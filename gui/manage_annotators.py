@@ -10,13 +10,14 @@ every request again (cutieplus/cooperation/authz.py), so the buttons here only s
     Audit     (admins) every audit record
 
 A supervisor manages annotators: add, edit, suspend, reactivate, remove, reset their credential,
-their keys, desktop and sessions; there is no role selector. An admin manages supervisors too, and
-makes or revokes them. Changes to the system (the SSH policy, connections, desktops) are applied by
-the service afterwards: an operation shows Applying until it is done, or Failed with the reason
-while the service keeps trying.
+their keys, desktop and sessions; there is no role selector. An admin manages supervisors too,
+makes or revokes them, and deletes users for good (with their password, every time). Changes to
+the system (the SSH policy, connections, desktops) are applied by the service afterwards: an
+operation shows Applying until it is done, or Failed with the reason while the service keeps
+trying.
 """
 import html
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -28,15 +29,18 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from cutieplus.cooperation.client import ClientError
 from cutieplus.cooperation.errors import REAUTH_REQUIRED
-from gui.gui_utils import fit_window
+from gui.gui_utils import fit_window, is_dark
 from gui.service_link import ROLE_NAMES, ServiceLink
-from gui.style import GAP, Card, set_pill, set_variant
+from gui.style import DANGER, GAP, PRIMARY, SECONDARY, Card, set_pill, set_variant
 
 REFRESH_MS = 5000
 PREFERRED_SIZE = QSize(1240, 760)
 DETAILS_WIDTH = 460
 USER_COLUMNS = ('Name', 'Login', 'Role', 'Status', 'Desktop', 'SSH', 'VNC', 'App', 'Operations')
 STATUS_PILLS = {'active': 'accent', 'pending': 'null', 'suspended': 'null', 'archived': 'null'}
+DELETE_SINCE = 2  # the service version with delete_user
+OLDER_SERVICE = ('The CutiePlus service on this computer is older than this window: the owner '
+                 'runs sudo deploy/install.sh to update it.')
 
 
 def plain(text: str) -> QLabel:
@@ -58,6 +62,30 @@ def short_time(text: Optional[str]) -> str:
     return text[:16].replace('T', ' ') if text else '—'
 
 
+# why a sign-in failed, in the words of whoever manages the user (the user is told nothing more
+# than "wrong login name or ...": it tells an outsider nothing)
+SIGN_IN_FAILURES = {
+    ('setup_credential', 'invalid_credentials'): 'wrong, replaced or expired setup token',
+    ('login', 'invalid_credentials'): 'wrong password',
+    ('reauthenticate', 'invalid_credentials'): 'wrong password',
+    ('change_password', 'invalid_credentials'): 'wrong password',
+}
+
+
+def describe_event(event: dict) -> str:
+    """An audit event as a line of Recent activity: when, who, what, how it ended, and why a
+    sign-in failed."""
+    text = (f'{short_time(event["created_at"])}  '
+            f'{event.get("actor_login") or event["actor_source"]}  '
+            f'{event["action"].replace("_", " ")}  {event["result"]}')
+    code = event.get('error_code')
+    if event['result'] == 'failed' and code:
+        reason = 'at another user\'s desktop' if code == 'wrong_desktop' else \
+            SIGN_IN_FAILURES.get((event['action'], code), code.replace('_', ' '))
+        text += f' ({reason})'
+    return text
+
+
 def table(headers) -> QTableWidget:
     widget = QTableWidget(0, len(headers))
     widget.setHorizontalHeaderLabels(list(headers))
@@ -71,52 +99,139 @@ def table(headers) -> QTableWidget:
 
 
 class SecretCard(QDialog):
-    """What a new or reset user needs, shown once: their setup token, desktop, VNC password and the
-    SSH command. Nothing here is kept: copy it now."""
+    """What a user needs to connect, to copy and hand on: their login name, the SSH command and
+    the VNC address, any time (Connection info), and the setup token and VNC password when they
+    were just made: CutiePlus keeps no copy of those. actions: (label, make) buttons that make new
+    ones; make() returns the service's reply, whose secrets join the card, or None."""
 
-    def __init__(self, title: str, login: str, reply: dict, parent=None):
+    def __init__(self, title: str, login: str, reply: dict, parent=None,
+                 actions: Sequence[Tuple[str, Callable[[], Optional[dict]]]] = ()):
         super().__init__(parent)
         self.setWindowTitle(title)
-        rows = []
+        self.login = login
+        self.fields: Dict[str, QLineEdit] = {}  # row name -> its value
+        self.secrets = False  # a setup token or VNC password is shown
+        # what Copy last put on the clipboard, in green
+        self.copied = QLabel()
+        self.copied.setTextFormat(Qt.TextFormat.PlainText)
+        self.copied.setStyleSheet(f'color: {(PRIMARY, SECONDARY)[is_dark(self)]};')
+        self.grid = QGridLayout()
+        self.warning = QLabel()
+        self.warning.setWordWrap(True)
+        self.add_row('Login name', login, 'they sign in with it')
+        self.add_reply(reply)
+        if not self.secrets and actions:
+            self.warning.setText('The setup token and the VNC password are shown only when they '
+                                 'are made: New setup token or New VNC password makes new ones '
+                                 '(the old ones stop working).')
+        done = set_variant(QPushButton('Done'), 'primary')
+        done.setDefault(True)
+        done.clicked.connect(self.accept)
+        bottom = QHBoxLayout()
+        for label, make in actions:
+            button = QPushButton(label)
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _=False, make=make: self.add_reply(make() or {}))
+            bottom.addWidget(button)
+        bottom.addWidget(self.copied, 1)
+        bottom.addWidget(done)
+        layout = QVBoxLayout(self)
+        layout.addWidget(Card(self.grid))
+        layout.addWidget(self.warning)
+        layout.addLayout(bottom)
+
+    def add_reply(self, reply: dict) -> None:
+        """The rows of a service reply: a new setup token, a desktop and its VNC password."""
         if reply.get('setup_token'):
-            rows.append(('Setup token', reply['setup_token'],
+            self.add_row('Setup token', reply['setup_token'],
                          f'valid until {short_time(reply.get("setup_token_expires_at"))} UTC; '
-                         f'{login} signs in with "First time?" and sets their password'))
+                         f'{self.login} signs in with "First time?" and sets their password',
+                         secret=True)
         desktop = reply.get('desktop')
         if desktop:
-            rows.append(('SSH tunnel', desktop['ssh_command'],
-                         'run on their computer, with the key you registered for them'))
-            rows.append(('VNC viewer', desktop['vnc_address'], f'desktop :{desktop["display"]}'))
+            self.add_row('SSH tunnel', desktop['ssh_command'],
+                         'run on their computer, with the key you registered for them')
+            self.add_row('VNC viewer', desktop['vnc_address'], f'desktop :{desktop["display"]}')
             if desktop.get('vnc_password'):
-                rows.append(('VNC password', desktop['vnc_password'], 'asked by the VNC viewer'))
-        grid = QGridLayout()
-        for row, (name, value, note) in enumerate(rows):
-            field = QLineEdit(value)
-            field.setReadOnly(True)
-            field.setMinimumWidth(420)
-            copy = QPushButton('Copy')
-            copy.clicked.connect(lambda _=False, text=value: QGuiApplication.clipboard().setText(
-                text))
-            grid.addWidget(QLabel(name), 2 * row, 0)
-            grid.addWidget(field, 2 * row, 1)
-            grid.addWidget(copy, 2 * row, 2)
-            hint = QLabel(note)
-            hint.setProperty('muted', True)
-            grid.addWidget(hint, 2 * row + 1, 1)
-        warning = QLabel('Shown once: CutiePlus keeps no copy. Hand them on privately.')
-        done = set_variant(QPushButton('Done'), 'primary')
-        done.clicked.connect(self.accept)
-        layout = QVBoxLayout(self)
-        layout.addWidget(Card(grid))
-        layout.addWidget(warning)
-        layout.addWidget(done, alignment=Qt.AlignmentFlag.AlignRight)
+                self.add_row('VNC password', desktop['vnc_password'], 'asked by the VNC viewer',
+                             secret=True)
+
+    def add_row(self, name: str, value: str, note: str, secret: bool = False) -> None:
+        """A row to copy; one of the same name gets the new value."""
+        if secret and not self.secrets:
+            self.secrets = True
+            self.warning.setText('Shown once: CutiePlus keeps no copy of the setup token and '
+                                 'the VNC password. Hand them on privately.')
+        if name in self.fields:
+            self.fields[name].setText(value)
+            return
+        row = len(self.fields)
+        field = QLineEdit(value)
+        field.setReadOnly(True)
+        field.setMinimumWidth(420)
+        copy = QPushButton('Copy')
+        copy.setAutoDefault(False)
+        copy.clicked.connect(lambda _=False, name=name, field=field: self.copy(name, field.text()))
+        self.grid.addWidget(QLabel(name), 2 * row, 0)
+        self.grid.addWidget(field, 2 * row, 1)
+        self.grid.addWidget(copy, 2 * row, 2)
+        hint = QLabel(note)
+        hint.setProperty('muted', True)
+        self.grid.addWidget(hint, 2 * row + 1, 1)
+        self.fields[name] = field
+
+    def copy(self, name: str, text: str) -> None:
+        QGuiApplication.clipboard().setText(text)
+        self.copied.setText(f'{name} is copied.')
 
 
-class AddUserDialog(QDialog):
+class FormDialog(QDialog):
+    """A form the service answers (ManageAnnotators.submit). Enter presses its button, never
+    Cancel, and only once the required fields are filled; a refusal is shown in the form, which
+    stays open with what was typed."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.required: List[QWidget] = []
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.hide()
+
+    def require(self, *fields) -> None:
+        for field in fields:
+            self.required.append(field)
+            field.textChanged.connect(self.update_button)
+
+    def button_row(self, text: str) -> QHBoxLayout:
+        self.submit_button = set_variant(QPushButton(text), 'primary')
+        self.submit_button.setDefault(True)
+        self.submit_button.clicked.connect(self.accept)
+        cancel = QPushButton('Cancel')
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(self.submit_button)
+        self.update_button()
+        return row
+
+    def update_button(self) -> None:
+        self.submit_button.setEnabled(all(
+            (field.toPlainText() if isinstance(field, QPlainTextEdit) else field.text()).strip()
+            for field in self.required))
+
+    def show_error(self, text: str) -> None:
+        self.error.setText(text)
+        self.error.setStyleSheet(f'color: {DANGER[is_dark(self)]};')
+        self.error.show()
+
+
+class AddUserDialog(FormDialog):
 
     def __init__(self, admin: bool, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('Add user' if admin else 'Add Annotator')
+        super().__init__('Add user' if admin else 'Add Annotator', parent)
         self.login_edit = QLineEdit()
         self.login_edit.setPlaceholderText('e.g. alice (letters, digits, . _ -)')
         self.name_edit = QLineEdit()
@@ -132,19 +247,13 @@ class AddUserDialog(QDialog):
             self.role_combo.addItem('Annotator', 'annotator')
             self.role_combo.addItem('Supervisor', 'supervisor')
             form.addRow('Role', self.role_combo)
-        add = set_variant(QPushButton('Add'), 'primary')
-        add.clicked.connect(self.accept)
-        cancel = QPushButton('Cancel')
-        cancel.clicked.connect(self.reject)
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(cancel)
-        buttons.addWidget(add)
+        self.require(self.login_edit, self.name_edit)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel('They get a remote desktop and a one-time setup token; add their '
                                 'SSH public key next.'))
         layout.addLayout(form)
-        layout.addLayout(buttons)
+        layout.addWidget(self.error)
+        layout.addLayout(self.button_row('Add'))
 
     def values(self) -> dict:
         values = {'login_name': self.login_edit.text().strip(),
@@ -156,11 +265,10 @@ class AddUserDialog(QDialog):
         return values
 
 
-class AddKeyDialog(QDialog):
+class AddKeyDialog(FormDialog):
 
     def __init__(self, login: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f'Add an SSH key for {login}')
+        super().__init__(f'Add an SSH key for {login}', parent)
         self.key_edit = QPlainTextEdit()
         self.key_edit.setPlaceholderText('ssh-ed25519 AAAA… (the one line of their .pub file; '
                                          'never a private key)')
@@ -173,18 +281,12 @@ class AddKeyDialog(QDialog):
         form.addRow('Public key', self.key_edit)
         form.addRow('Device', self.label_edit)
         form.addRow('Expires', self.expiry_edit)
-        add = set_variant(QPushButton('Add key'), 'primary')
-        add.clicked.connect(self.accept)
-        cancel = QPushButton('Cancel')
-        cancel.clicked.connect(self.reject)
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(cancel)
-        buttons.addWidget(add)
+        self.require(self.key_edit, self.label_edit)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(QLabel('The key can open their own desktop only, and nothing else.'))
-        layout.addLayout(buttons)
+        layout.addWidget(self.error)
+        layout.addLayout(self.button_row('Add key'))
 
     def values(self) -> dict:
         values = {'public_key': self.key_edit.toPlainText().strip(),
@@ -200,6 +302,10 @@ class ManageAnnotators(QDialog):
         super().__init__(parent)
         self.link = link
         self.setWindowTitle('Manage Annotators')
+        # closed, it is deleted, and a reply that comes back later changes nothing: deleting the
+        # details of a closed window crashed Qt
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.closed = False
         self.users: List[dict] = []
         self.selected_id: Optional[str] = None
         self.details: Optional[dict] = None
@@ -231,9 +337,34 @@ class ManageAnnotators(QDialog):
         details_scroll.setWidgetResizable(True)
         details_scroll.setWidget(details_widget)
         details_scroll.setMinimumWidth(DETAILS_WIDTH)
+        # the clicked user's details, under their name and a close button; hidden until then
+        self.details_title = QLabel()
+        self.details_title.setTextFormat(Qt.TextFormat.PlainText)
+        title_font = self.details_title.font()
+        title_font.setBold(True)
+        self.details_title.setFont(title_font)
+        close_details = QPushButton('×')
+        close_details.setToolTip('Close the details')
+        close_details.setAutoDefault(False)
+        close_details.clicked.connect(self.close_details)
+        # what they need to connect, to copy and send at any time
+        self.info_button = QPushButton('Connection info…')
+        self.info_button.setAutoDefault(False)
+        self.info_button.clicked.connect(lambda: self.details and self.connection_info(
+            self.details))
+        header = QHBoxLayout()
+        header.addWidget(self.details_title, 1)
+        header.addWidget(self.info_button)
+        header.addWidget(close_details)
+        self.details_panel = QWidget()
+        panel_layout = QVBoxLayout(self.details_panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.addLayout(header)
+        panel_layout.addWidget(details_scroll, 1)
+        self.details_panel.hide()
         splitter = QSplitter()
         splitter.addWidget(self.user_table)
-        splitter.addWidget(details_scroll)
+        splitter.addWidget(self.details_panel)
         splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
@@ -276,6 +407,8 @@ class ManageAnnotators(QDialog):
             widget.setEnabled(enabled)
 
     def on_identity(self, whoami: dict) -> None:
+        if self.closed:
+            return
         if not self.link.permission('manage_annotators'):
             self.set_enabled(False)
             self.status.setText('You do not manage users (any more).')
@@ -308,8 +441,15 @@ class ManageAnnotators(QDialog):
         """Overridden by the tests."""
         SecretCard(title, login, reply, self).exec()
 
-    def run(self, what: str, op: str, **args) -> Optional[dict]:
-        """A management request; asks for the password again when the service wants it fresh."""
+    def show_info(self, title: str, login: str, reply: dict, actions) -> None:
+        """Overridden by the tests."""
+        SecretCard(title, login, reply, self, actions).exec()
+
+    def run(self, what: str, op: str, report: Optional[Callable[[str], None]] = None,
+            **args) -> Optional[dict]:
+        """A management request; asks for the password again when the service wants it fresh.
+        report: where a refusal is shown (the status line by default)."""
+        report = report or (lambda text: self.status.setText(f'{what}: {text}'))
         for attempt in range(2):
             try:
                 result = self.link.call(op, **args)
@@ -326,14 +466,22 @@ class ManageAnnotators(QDialog):
                         continue
                     except ClientError as again:
                         exc = again
-                self.status.setText(f'{what}: {exc}')
+                report(str(exc))
                 return None
-        self.status.setText(f'{what}: cancelled.')
+        report('cancelled.')
+        return None
+
+    def submit(self, dialog: FormDialog, what: str, op: str, **args) -> Optional[dict]:
+        """Sends the form until the service takes it or the user cancels it."""
+        while dialog.exec():
+            reply = self.run(what, op, report=dialog.show_error, **args, **dialog.values())
+            if reply is not None:
+                return reply
         return None
 
     # the list
     def refresh(self) -> None:
-        if not self.link.permission('manage_annotators') or self.loading:
+        if self.closed or not self.link.permission('manage_annotators') or self.loading:
             return
         self.loading = True
         self.link.request('list_users', self.on_users, query=self.search.text().strip(),
@@ -341,6 +489,8 @@ class ManageAnnotators(QDialog):
 
     def on_users(self, users, error) -> None:
         self.loading = False
+        if self.closed:
+            return
         if error is not None:
             self.status.setText(f'The list could not be loaded: {error}')
             return
@@ -368,7 +518,10 @@ class ManageAnnotators(QDialog):
         self.user_table.resizeColumnsToContents()
         self.user_table.blockSignals(False)
         if self.selected_id is not None:
-            self.load_details()
+            if any(user['id'] == self.selected_id for user in users):
+                self.load_details()
+            else:  # deleted, or removed while removed users are hidden
+                self.close_details()
 
     def on_select(self) -> None:
         rows = self.user_table.selectionModel().selectedRows()
@@ -382,6 +535,8 @@ class ManageAnnotators(QDialog):
         self.link.request('get_user', self.on_details, user_id=self.selected_id)
 
     def on_details(self, details, error) -> None:
+        if self.closed:
+            return
         if error is not None:
             self.status.setText(f'The user could not be loaded: {error}')
             return
@@ -389,6 +544,14 @@ class ManageAnnotators(QDialog):
             self.show_details(details)
 
     # the selected user
+    def close_details(self) -> None:
+        """The details' ×: the panel hides until a user is clicked again."""
+        self.selected_id = None
+        self.user_table.blockSignals(True)
+        self.user_table.clearSelection()
+        self.user_table.blockSignals(False)
+        self.show_details(None)
+
     def clear_details(self) -> None:
         while self.details_box.count():
             item = self.details_box.takeAt(0)
@@ -407,11 +570,13 @@ class ManageAnnotators(QDialog):
         self.details = user
         self.clear_details()
         if user is None:
-            self.details_box.addWidget(QLabel('Select a user.'))
-            self.details_box.addStretch(1)
+            self.details_panel.hide()
             return
+        self.details_title.setText(f'{user["display_name"]} ({user["login_name"]})')
+        self.details_panel.show()
         me = user['id'] == self.link.user['id']
         managed = not me or self.is_admin
+        self.info_button.setVisible(managed and user['status'] != 'archived')
         self.details_box.addWidget(self.profile_card(user))
         if not me and not user['is_owner']:
             self.details_box.addWidget(self.actions_card(user))
@@ -492,21 +657,62 @@ class ManageAnnotators(QDialog):
                     'Revoke Supervisor', f'{login} signs in again as an annotator; their desktop '
                     'and work stay.') and self.run('Revoke Supervisor', 'set_role',
                                                    user_id=user['id'], role='annotator')))
+        deleting = any(operation['operation_type'] == 'delete_user' and operation['status'] in
+                       ('pending', 'running', 'failed') for operation in user.get('operations', []))
+        if self.is_admin and not user['is_owner'] and user['id'] != self.link.user['id'] and \
+                not deleting:
+            delete = self.button('Delete permanently…', self.delete_user(user), 'danger')
+            if self.link.service_version < DELETE_SINCE:
+                delete.setEnabled(False)
+                delete.setToolTip(OLDER_SERVICE)
+            row.addWidget(delete)
         row.addStretch(1)
         return Card(row, title='Account')
+
+    def delete_user(self, user: dict) -> Callable[[], None]:
+
+        def delete() -> None:
+            login = user['login_name']
+            if not self.confirm('Delete permanently', f'Delete {login} for good? Their access '
+                                'ends now, as with Remove; once their desktop has stopped, their '
+                                'account, SSH keys and GPU job records are deleted and the login '
+                                f'name {login} is free again. This cannot be undone. Their '
+                                'annotation files and the audit log are kept.'):
+                return
+            password = self.ask_password()  # every time, however recent the sign-in
+            if password is not None:
+                self.run('Delete', 'delete_user', user_id=user['id'], password=password)
+
+        return delete
 
     def reset_credential(self, user: dict) -> Callable[[], None]:
 
         def reset() -> None:
-            if not self.confirm('Reset credential', f'{user["login_name"]}\'s password stops '
-                                'working and they are signed out; they set a new one with the '
-                                'setup token you get now.'):
-                return
-            reply = self.run('Reset credential', 'reset_credential', user_id=user['id'])
+            reply = self.make_setup_token(user)
             if reply:
                 self.show_secret('New setup token', user['login_name'], reply)
 
         return reset
+
+    def make_setup_token(self, user: dict) -> Optional[dict]:
+        if not self.confirm('Reset credential', f'{user["login_name"]}\'s password stops '
+                            'working and they are signed out; they set a new one with the '
+                            'setup token you get now.'):
+            return None
+        return self.run('Reset credential', 'reset_credential', user_id=user['id'])
+
+    def connection_info(self, user: dict) -> None:
+        """Connection info…: what they need to connect, to copy and send at any time; the setup
+        token and the VNC password are shown only when made, so the card makes new ones."""
+        desktop = user.get('desktop')
+        actions = []
+        if desktop is not None and user['status'] in ('pending', 'active'):
+            actions.append(('New VNC password', lambda: self.make_vnc_password(user)))
+        if user['id'] != self.link.user['id'] and not user['is_owner'] and \
+                user['status'] in ('pending', 'active'):
+            actions.append(('New setup token', lambda: self.make_setup_token(user)))
+        self.show_info(f'Connection info: {user["login_name"]}', user['login_name'],
+                       {'desktop': desktop['card']} if desktop else {}, actions)
 
     def desktop_card(self, user: dict) -> Card:
         desktop = user.get('desktop')
@@ -562,12 +768,15 @@ class ManageAnnotators(QDialog):
             self.show_secret('Their desktop', user['login_name'], reply)
 
     def new_vnc_password(self, user: dict) -> None:
-        if not self.confirm('New VNC password', 'The desktop restarts to use it: its window '
-                            'saves its work and closes, then opens again.'):
-            return
-        reply = self.run('VNC password', 'reset_vnc_password', user_id=user['id'])
+        reply = self.make_vnc_password(user)
         if reply:
             self.show_secret('New VNC password', user['login_name'], reply)
+
+    def make_vnc_password(self, user: dict) -> Optional[dict]:
+        if not self.confirm('New VNC password', 'The desktop restarts to use it: its window '
+                            'saves its work and closes, then opens again.'):
+            return None
+        return self.run('VNC password', 'reset_vnc_password', user_id=user['id'])
 
     def keys_card(self, user: dict) -> Card:
         keys = user.get('keys', [])
@@ -593,9 +802,8 @@ class ManageAnnotators(QDialog):
         return Card(layout, title='SSH keys')
 
     def add_key(self, user: dict) -> None:
-        dialog = AddKeyDialog(user['login_name'], self)
-        if dialog.exec():
-            self.run('Add key', 'add_key', user_id=user['id'], **dialog.values())
+        self.submit(AddKeyDialog(user['login_name'], self), 'Add key', 'add_key',
+                    user_id=user['id'])
 
     def connections_card(self, user: dict) -> Card:
         connections = [row for row in user.get('connections', []) if row['status'] != 'closed']
@@ -637,20 +845,15 @@ class ManageAnnotators(QDialog):
     def activity_card(self, user: dict) -> Card:
         layout = QVBoxLayout()
         for event in user['recent_activity'][:10]:
-            layout.addWidget(plain(f'{short_time(event["created_at"])}  '
-                                    f'{event.get("actor_login") or event["actor_source"]}  '
-                                    f'{event["action"].replace("_", " ")}  {event["result"]}'))
+            layout.addWidget(plain(describe_event(event)))
         return Card(layout, title='Recent activity')
 
     def on_add_user(self) -> None:
-        dialog = AddUserDialog(self.is_admin, self)
-        if not dialog.exec():
-            return
-        values = dialog.values()
-        reply = self.run('Add', 'create_user', **values)
+        reply = self.submit(AddUserDialog(self.is_admin, self), 'Add', 'create_user')
         if reply:
+            login = reply['user']['login_name']
             self.selected_id = reply['user']['id']
-            self.show_secret(f'{values["login_name"]} is added', values['login_name'], reply)
+            self.show_secret(f'{login} is added', login, reply)
 
     # admins: settings and the audit
     def build_admin_tabs(self) -> None:
@@ -681,6 +884,8 @@ class ManageAnnotators(QDialog):
             self.load_audit()
 
     def on_settings(self, settings, error) -> None:
+        if self.closed:
+            return
         if error is not None:
             self.status.setText(f'Settings: {error}')
             return
@@ -706,6 +911,8 @@ class ManageAnnotators(QDialog):
         self.link.request('list_audit', self.on_audit, limit=500)
 
     def on_audit(self, events, error) -> None:
+        if self.closed:
+            return
         if error is not None:
             self.status.setText(f'Audit: {error}')
             return
@@ -719,5 +926,13 @@ class ManageAnnotators(QDialog):
                 self.audit_table.setItem(row, column, cell(value))
 
     def closeEvent(self, event) -> None:
-        self.timer.stop()
+        self.closing()
         super().closeEvent(event)
+
+    def done(self, result: int) -> None:  # Esc, and a close by hand
+        self.closing()
+        super().done(result)
+
+    def closing(self) -> None:
+        self.closed = True
+        self.timer.stop()

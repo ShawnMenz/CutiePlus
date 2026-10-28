@@ -9,7 +9,7 @@ three roles, and every model runs in one shared GPU worker.
 |---|---|
 | Annotator | label; their own GPU jobs (see, cancel, retry); their own password and sign-out |
 | Supervisor | the same, and everything about annotators: add, edit, suspend, reactivate, remove, reset their credential, their SSH keys, desktops, sessions and jobs |
-| Admin | everything about annotators and supervisors, make or revoke supervisors, every job, the settings, the whole audit log |
+| Admin | everything about annotators and supervisors, make or revoke supervisors, delete users for good, every job, the settings, the whole audit log |
 
 The first admin is the **owner**, created by a maintenance command on the computer itself. Nothing
 in the application can suspend, remove, demote or reset the owner; only the maintenance commands
@@ -27,13 +27,19 @@ cutieplus-service   the cutieplus account; /opt/cutieplus code; /var/lib/cutiepl
       ▼                                 ▼
 cutieplus-gpu-worker                cutieplus-helper (root): the SSH policy file, VNC passwords,
   the only process using the GPU      starting and stopping desktops, cutting SSH connections
-cutieplus-sshd (port 2222): collaborators' keys only, each forwarding to its own desktop
+port 22 (your sshd): collaborators sign in as cutieplus-jump, which may only hop on to
+  ▼
+cutieplus-sshd (port 2222, this computer only): each key forwards to its own desktop only
 ```
 
 - **Sign-in.** Every Cutie window signs in, at every start; the session lives in that window only.
   A desktop's windows sign in as that desktop's user only; at the monitor anyone may. A change of
   someone's role, a suspension or a credential reset ends their sessions at once: they sign in
-  again with what they may do now.
+  again with what they may do now. Quit on the sign-in page ends Cutie; on a remote desktop it
+  opens again a moment later, since the desktop runs nothing else.
+- **A remote desktop runs Cutie only.** Its openbox gets the release's configuration
+  (`deploy/openbox/`): no menu, no key binding, nothing that starts a program. Openbox's own
+  defaults would offer a terminal, a shell as the desktop account, from a right click.
 - **The GPU.** Windows never load a model. Clicks and propagations go to the one GPU worker:
   propagations wait in one queue (first come, first served, one at a time; no role goes first) and
   clicks run between the steps of the running one. A worker takes a lock on
@@ -45,8 +51,15 @@ cutieplus-sshd (port 2222): collaborators' keys only, each forwarding to its own
   discard it. While a propagation waits for the GPU, its window stays editable.
 - **SSH.** Collaborators' public keys are registered in Manage Annotators. Each becomes one line of
   `/etc/cutieplus/ssh/authorized_keys`, which the helper writes and reads back: forwarding to that
-  user's own VNC port only, no shell, no SFTP, expiring if the key has a date. Port 22, your own,
-  keeps its configuration.
+  user's own VNC port only, no shell, no SFTP, expiring if the key has a date. The annotation
+  sshd listens on this computer only: collaborators come in through port 22, since many networks'
+  firewalls (campus networks often) pass SSH on port 22 alone (on another port they let the
+  connection open, then drop everything). There they sign in as `cutieplus-jump`, an account of
+  its own (no shell, no password), with the same keys (`/etc/cutieplus/ssh/jump_keys`), and may
+  open a channel to the annotation sshd and nothing else: no shell, no command, no other port, no
+  Unix socket, nothing listening (`ssh -J`). Port 22's sshd holds that account to it through one
+  drop-in, `/etc/ssh/sshd_config.d/20-cutieplus-jump.conf`; nobody else's settings change, yours
+  included.
 - **What the database holds.** Users, password hashes (Argon2id), token hashes, keys, desktops,
   connections, GPU jobs and the audit log, in SQLite (`/var/lib/cutieplus/cooperation.sqlite3`,
   readable by the service account only). Frames, masks and model weights stay files.
@@ -66,9 +79,14 @@ sudo deploy/install.sh
 
 It creates the `cutieplus` account, copies the cooperation code to `/opt/cutieplus` (root-owned,
 with its own Python environment), writes `/etc/cutieplus/service.toml` and `client.toml`, the
-annotation sshd's configuration, the systemd units, opens port 2222 in ufw, and starts the
-service, the helper, the GPU worker and the annotation sshd. Run it again after updating the
+annotation sshd's configuration, the systemd units, port 22's drop-in (checked by sshd before
+port 22 reloads), and starts the service, the helper, the GPU worker and the annotation sshd. Run it again after updating the
 repository. From then on every Cutie window on this computer signs in.
+
+Collaborators' SSH command names this computer by its IP address on the default route, never by
+its host name (which resolves on this computer only). To name it otherwise, e.g. by a DNS name,
+`sudo deploy/install.sh --ssh-host <name or address>` sets `ssh_host` in `service.toml` (and
+updates as usual).
 
 Then create the owner and set your password:
 
@@ -94,18 +112,34 @@ for the SSH port or display range, run the installer again.
 1. In the task browser, **Manage Annotators → Add Annotator** (an admin picks the role). The
    collaborator gets a desktop (`:2`, `:3`, … up to `:20`) and a card is shown once: their setup
    token, their desktop's VNC password, and the SSH command. Hand it on privately.
+   Later, **Connection info…** (beside the selected user's name) shows their login name, the SSH
+   command and the VNC address to copy at any time. The setup token and the VNC password are
+   never kept, so the card makes new ones on request (**New setup token**, **New VNC password**:
+   the old ones stop working).
 2. They send you their **public** key (the one line of `id_ed25519.pub`; `ssh-keygen -t ed25519`
    makes one). Select them, **Add key…**, paste it, name the device. Private keys are refused.
 3. On their computer:
 
    ```bash
-   ssh -N -L 5901:localhost:5902 -p 2222 <account>@<this computer>
+   ssh -N -o ExitOnForwardFailure=yes -J cutieplus-jump@<this computer's address> -p 2222 \
+       -L 5902:localhost:5902 <account>@localhost
    ```
 
-   then a VNC viewer to `localhost:5901` with the VNC password. In the Cutie window there:
-   **First time?**, their login name, the setup token, and a password of their own.
+   `-J` signs in on port 22 as `cutieplus-jump` with their key and hops to the annotation sshd
+   (`localhost`, port 2222, on this computer), which forwards their own desktop. The first time,
+   ssh asks them to accept two host keys: this computer's, then the annotation sshd's
+   (`localhost`).
 
-If they connect from outside your network, forward port 2222 of your router to this computer.
+   Then a VNC viewer to `localhost:5902` with the VNC password: their computer forwards the
+   desktop's own port (5902 for `:2`, 5903 for `:3`, …), so a VNC server of theirs (5900, 5901) or
+   another desktop's tunnel does not collide. If that port is in use there anyway, ssh says so and
+   ends: an earlier tunnel may still run (`lsof -nP -iTCP:5902 -sTCP:LISTEN` on a Mac or Linux,
+   `netstat -ano | findstr :5902` on Windows). In the Cutie window there: **First time, or after
+   a reset? Use your setup token**, their login name, the setup token, and a password of their
+   own.
+
+If they connect from outside your network, it is port 22 that must reach this computer (a
+VPN, or a rule of the network's firewall); port 2222 stays closed to the outside.
 A desktop keeps running when they disconnect; they come back to the same one.
 
 ## Appointing a supervisor
@@ -133,6 +167,12 @@ the reason while the service keeps trying (for example, if the helper is down).
 - **Remove**: the same, for good: their keys are revoked, they are archived, and their desktop is
   freed once it has stopped. Their annotation files, jobs and audit records are kept.
 - **Reset credential**: their password stops working; a new setup token is shown once.
+- **Delete permanently…** (admins; never yourself or the owner): asks for your password every
+  time, however recently you signed in. Their access ends at once, as with Remove; once their
+  desktop has stopped and been released, their account, SSH keys, sessions and GPU job records are
+  deleted and their login name may be given again. Their annotation files and the audit log are
+  kept: the log still names them, as "<login> (deleted)" for what they did. Backups made before
+  still hold them until they are rotated out.
 
 ## The GPU
 
@@ -164,6 +204,18 @@ then reconciles on the safe side: every session ends, jobs that were running are
 revoked after the backup stays revoked, and the SSH policy is written again from the backup (keys
 added after the backup must be added again). It lists the users: changes made after the backup
 (a suspension, a new user) are not in it, so check them.
+
+## Starting over
+
+```bash
+sudo cutieplus-admin reset
+```
+
+After you type RESET, it deletes every record: every account (the owner's too), SSH key, desktop,
+session, GPU job and the audit log. Collaborators' desktops stop and their connections end. A
+checked copy of the database is kept in `/var/lib/cutieplus/backups/` (delete it, and the older
+backups there, to remove the records for good). Annotation files are never touched. Then create
+the owner again, as on the first day (`sudo cutieplus-admin bootstrap-owner …`).
 
 ## Recovering the owner
 

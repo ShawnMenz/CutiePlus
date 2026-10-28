@@ -24,21 +24,21 @@ def everything_stored(db) -> str:
 
 def test_the_owner_comes_from_the_bootstrap_and_sets_up_once(harness):
     assert harness.call('hello')['owner_configured'] is False
-    setup = bootstrap_owner(harness.service, 'zexuan_admin', 'Zexuan')
+    setup = bootstrap_owner(harness.service, 'lab_admin', 'Lab Admin')
     with pytest.raises(AdminError):
         bootstrap_owner(harness.service, 'other', 'Other')
     # nobody signs in before the setup, and the token sets this one user's password only
-    assert harness.code('login', login_name='zexuan_admin', password=PASSWORD) == \
+    assert harness.code('login', login_name='lab_admin', password=PASSWORD) == \
         'invalid_credentials'
     assert harness.code('setup_credential', login_name='someone', setup_token=setup,
                         new_password=PASSWORD) == 'invalid_credentials'
-    session = harness.call('setup_credential', login_name='zexuan_admin',
+    session = harness.call('setup_credential', login_name='lab_admin',
                            setup_token=setup.lower().replace('-', ' '), new_password=PASSWORD)
     me = harness.call('whoami', session['token'])
     assert (me['user']['role'], me['user']['status'], me['is_owner']) == ('admin', 'active', True)
     assert me['permissions']['manage_supervisors']
     # consumed: a second use fails
-    assert harness.code('setup_credential', login_name='zexuan_admin', setup_token=setup,
+    assert harness.code('setup_credential', login_name='lab_admin', setup_token=setup,
                         new_password='another password') == 'invalid_credentials'
     # only hashes are stored
     stored = everything_stored(harness.db)

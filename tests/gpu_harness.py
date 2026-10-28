@@ -41,7 +41,7 @@ class GpuHarness(Harness):
         self.config_file.write_text(
             f'state_dir = "{self.config.state_dir}"\nworkspace_root = "{workspace}"\n'
             f'worker_socket = "{self.config.worker_socket}"\ngpu_lock = "{self.lock_file}"\n'
-            'verify_peers = false\nrequire_patched_sqlite = false\n')
+            'verify_peers = false\nrequire_patched_sqlite = false\ndesktop_user = "labeler"\n')
         # a sequence of frames in the workspace
         self.task = str(workspace / 'cutie_output' / 'main' / '0001')
         frames_dir = workspace / 'cutie_tasks' / 'main' / 'visual' / '0001'

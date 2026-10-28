@@ -47,14 +47,16 @@ class CooperationApp(QObject):
         client = ServiceClient(self.client_config.app_socket)
         dialog = LoginDialog(client, reason)
         if not dialog.exec():
-            QApplication.instance().quit()
+            # Quit: queued, since the first sign-in runs before the event loop, and quit() is
+            # ignored while none runs (the program would stay, with no window)
+            QTimer.singleShot(0, QApplication.instance().quit)
             return
         if dialog.offline:
             self.link = None
             self.browser = TaskBrowser(self.cfg, self.cfg['tasks'], self.cfg['task_split'],
                                        offline=True)
         else:
-            self.link = ServiceLink(client, dialog.session)
+            self.link = ServiceLink(client, dialog.session, dialog.hello)
             self.browser = TaskBrowser(self.cfg, self.cfg['tasks'], self.cfg['task_split'],
                                        link=self.link)
         self.browser.sign_in_again.connect(self.on_sign_in_again)

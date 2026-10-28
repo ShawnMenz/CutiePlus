@@ -203,3 +203,136 @@ def test_a_published_revocation_blocks_the_key_and_cutting_ends_its_tunnel(entry
         os.kill(pid, signal.SIGTERM)
     tunnel.wait(10)
     assert tunnel.returncode is not None
+
+
+# through port 22: collaborators hop from port 22's sshd to the annotation sshd, with ssh -J, as
+# the jump account (played by the test's own account here). Port 22's own settings are as
+# permissive as a stock sshd's: the jump account's drop-in (render_jump_dropin) and the jump
+# file's lines do the restricting
+
+@pytest.fixture
+def hop(entrypoint):
+    tmp = entrypoint['tmp']
+    jump_port = free_ports(1)[0]
+    alice = entrypoint['alice']
+
+    def publish_jump(entries):
+        (tmp / 'jump_keys').write_text(sshpolicy.render_jump_policy(
+            1, entries, (entrypoint['own'], entrypoint['other']), entrypoint['ssh_port']))
+
+    publish_jump([sshpolicy.PolicyEntry(KEY_ID, alice.canonical, entrypoint['own'])])
+    me = getpass.getuser()
+    (tmp / 'jump.conf').write_text(sshpolicy.render_jump_dropin(me, str(tmp / 'jump_keys'),
+                                                                entrypoint['ssh_port']))
+    (tmp / 'port22_config').write_text('\n'.join([
+        f'Include {tmp / "jump.conf"}',
+        f'Port {jump_port}', 'ListenAddress 127.0.0.1', f'HostKey {tmp / "host"}',
+        f'PidFile {tmp / "port22.pid"}', 'UsePAM no', 'StrictModes no',
+        'AllowTcpForwarding yes', 'AllowStreamLocalForwarding yes', 'PermitTTY yes',
+        'GatewayPorts no', 'Subsystem sftp internal-sftp', f'AllowUsers {me}',
+        'LogLevel VERBOSE']) + '\n')
+    log = open(tmp / 'port22.log', 'w')
+    sshd = subprocess.Popen([shutil.which('sshd') or '/usr/sbin/sshd', '-D', '-e', '-f',
+                             str(tmp / 'port22_config')], stderr=log)
+    common = ['  User ' + me, f'  IdentityFile {tmp / "alice"}', '  IdentitiesOnly yes',
+              '  IdentityAgent none', '  BatchMode yes', '  StrictHostKeyChecking no',
+              '  UserKnownHostsFile /dev/null', '  LogLevel ERROR', '  ExitOnForwardFailure yes']
+    (tmp / 'client_config').write_text('\n'.join(
+        ['Host port22', '  HostName 127.0.0.1', f'  Port {jump_port}', *common,
+         'Host desktop', '  HostName localhost', f'  Port {entrypoint["ssh_port"]}',
+         '  ProxyJump port22', *common]) + '\n')
+    try:
+        wait_for_port(jump_port)
+        yield dict(entrypoint, publish_jump=publish_jump)
+    finally:
+        sshd.send_signal(signal.SIGTERM)
+        sshd.wait(10)
+        log.close()
+
+
+def client(hop, *arguments, background=False):
+    command = ['ssh', '-F', str(hop['tmp'] / 'client_config'), *arguments]
+    if background:
+        return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(command, capture_output=True, text=True, timeout=30)
+
+
+def test_through_port_22_a_key_reaches_its_own_desktop_only(hop):
+    local_own, local_other = free_ports(2)
+    tunnel = client(hop, '-N', '-L', f'{local_own}:localhost:{hop["own"]}', '-L',
+                    f'{local_other}:localhost:{hop["other"]}', 'desktop', background=True)
+    try:
+        wait_for_port(local_own)
+        assert through(local_own) == b'vnc:hello'
+        assert through(local_other) == b''  # the annotation sshd refuses another desktop
+    finally:
+        tunnel.terminate()
+        tunnel.wait(10)
+    log = (hop['tmp'] / 'sshd.log').read_text()  # the annotation sshd saw it, from here
+    assert any('Accepted publickey' in line and '127.0.0.1' in line for line in log.splitlines())
+
+
+def test_port_22_lets_the_key_open_nothing_but_the_annotation_sshd(hop):
+    assert 'uid=' not in client(hop, 'port22', 'id').stdout  # no command
+    assert 'uid=' not in client(hop, '-tt', 'port22').stdout  # no shell
+    sftp = subprocess.run(['sftp', '-F', str(hop['tmp'] / 'client_config'), '-b', '-',
+                           'port22'], input='ls /\n', capture_output=True, text=True,
+                          timeout=30)
+    assert sftp.returncode != 0
+    # straight to a desktop's VNC port, past the annotation sshd: refused
+    local = free_ports(1)[0]
+    tunnel = client(hop, '-N', '-L', f'{local}:localhost:{hop["own"]}', 'port22',
+                    background=True)
+    try:
+        wait_for_port(local)
+        assert through(local) == b''
+    finally:
+        tunnel.terminate()
+        tunnel.wait(10)
+
+
+def unix_echo_server(socket_path: str, stop: threading.Event) -> None:
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(socket_path)
+    server.listen()
+    server.settimeout(0.2)
+
+    def serve():
+        while not stop.is_set():
+            try:
+                connection, _ = server.accept()
+            except socket.timeout:
+                continue
+            with connection:
+                connection.sendall(b'socket:' + connection.recv(64))
+        server.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+
+
+def test_port_22_forwards_no_unix_socket_and_listens_nowhere(hop):
+    """Port-forwarding in a key's options gives back every kind of forwarding: the jump
+    account's drop-in refuses all but the TCP channel to the annotation sshd."""
+    # a socket this computer's account could reach (a stand-in for Docker's, or D-Bus's)
+    socket_path = str(hop['tmp'] / 'private.sock')
+    stop = threading.Event()
+    unix_echo_server(socket_path, stop)
+    local = free_ports(1)[0]
+    tunnel = client(hop, '-N', '-L', f'{local}:{socket_path}', 'port22', background=True)
+    try:
+        wait_for_port(local)
+        assert through(local) == b''
+    finally:
+        stop.set()
+        tunnel.terminate()
+        tunnel.wait(10)
+    for remote in (f'{free_ports(1)[0]}:localhost:22', f'{hop["tmp"] / "planted.sock"}:localhost:22'):
+        refused = client(hop, '-N', '-R', remote, '-o', 'ConnectTimeout=10', 'port22')
+        assert refused.returncode == 255, remote
+    assert not (hop['tmp'] / 'planted.sock').exists()
+
+
+def test_a_revoked_key_no_longer_passes_port_22(hop):
+    hop['publish_jump']([])
+    refused = client(hop, '-N', '-L', f'{free_ports(1)[0]}:localhost:{hop["own"]}', 'desktop')
+    assert refused.returncode == 255 and 'Permission denied' in refused.stderr

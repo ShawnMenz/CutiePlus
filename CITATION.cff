@@ -3,7 +3,7 @@ message: "If you use CutiePlus, please cite the original Cutie paper and acknowl
 title: "CutiePlus"
 abstract: "A multi-annotator video object segmentation annotation tool built upon Cutie."
 type: software
-version: "0.1.0"
+version: "1.0.0"
 authors:
   - family-names: Meng
     given-names: Zexuan

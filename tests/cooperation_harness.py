@@ -25,7 +25,8 @@ class Harness:
         workspace = tmp_path / 'workspace'
         workspace.mkdir(exist_ok=True)
         self.config = ServiceConfig(state_dir=str(state), workspace_root=str(workspace),
-                                    verify_peers=False, **config).check()
+                                    verify_peers=False,
+                                    **{'desktop_user': 'labeler', **config}).check()
         self.clock = FakeClock()
         self.units = {}  # pid -> systemd unit
         self.next_pid = 1000

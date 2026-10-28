@@ -250,17 +250,20 @@ class Helper:
                 'authorized_keys': self.config.authorized_keys}
 
     def publish_ssh_policy(self, revision, entries) -> dict:
+        """The annotation sshd's policy and port 22's jump file, from the same entries: the jump
+        file is written last, so a key it lets in finds its line in the policy."""
         if not isinstance(entries, list):
             raise Refusal('invalid', 'entries is a list')
-        text = sshpolicy.render_policy(
-            revision, [sshpolicy.PolicyEntry.from_dict(entry) for entry in entries],
-            self.config.vnc_ports)
-        data = text.encode('utf-8')
-        self.system.write_atomic(self.config.authorized_keys, data, 0o644)
-        written = self.system.read(self.config.authorized_keys)
-        if written != data:
-            raise Refusal('failed', 'the policy file reads back differently')
-        return {'revision': revision, 'checksum': sshpolicy.checksum(text),
+        entries = [sshpolicy.PolicyEntry.from_dict(entry) for entry in entries]
+        ports = self.config.vnc_ports
+        texts = (sshpolicy.render_policy(revision, entries, ports),
+                 sshpolicy.render_jump_policy(revision, entries, ports, self.config.ssh_port))
+        for file_path, text in zip((self.config.authorized_keys, self.config.jump_keys), texts):
+            data = text.encode('utf-8')
+            self.system.write_atomic(file_path, data, 0o644)
+            if self.system.read(file_path) != data:
+                raise Refusal('failed', f'{file_path} reads back differently')
+        return {'revision': revision, 'checksum': sshpolicy.policies_checksum(*texts),
                 'keys': len(entries)}
 
     def write_vnc_password(self, display, password) -> dict:

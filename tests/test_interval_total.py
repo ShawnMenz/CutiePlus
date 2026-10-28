@@ -2,7 +2,8 @@
 The task browser's statistics end with "Total Intervals: N": the intervals of the sequences marked
 done, in every tab (main and long), whatever the tab shown; each is a clip of the dataset. A
 sequence flagged for attention after Mark done still counts; a discarded one never does. The
-statistics sit in a card of their own, apart from the messages.
+statistics sit in a card of their own, apart from the messages. Whoever marks a sequence done is
+among its annotators.
 """
 from os import path
 
@@ -50,6 +51,29 @@ def test_the_summary_tells_done_and_how_many_intervals(root):
     assert flagged['status'] == 'Attention' and flagged['done'] and flagged['intervals'] == 1
     assert not summary_of(work_folder(root, 'long', '0006'))['done']
     assert not summary_of(work_folder(root, 'main', '0003'))['done']
+
+
+def test_who_marks_a_sequence_done_joins_its_annotators(root, qapp):
+    from gui.task_browser import ANNOTATORS_COLUMN, SEQUENCE_COLUMN, TaskBrowser
+    browser = TaskBrowser(compose_gui_config(device='cpu', labeler='dave'), root)
+    table = browser.tables['main']
+
+    def annotators(sequence: str) -> str:
+        row = next(row for row in range(table.rowCount())
+                   if table.item(row, SEQUENCE_COLUMN).text() == sequence)
+        return table.item(row, ANNOTATORS_COLUMN).text()
+
+    try:
+        assert annotators('0001') == 'alice, bob'  # bob marked it done
+        assert annotators('0003') == 'alice'  # under review
+        row = next(row for row in range(table.rowCount())
+                   if table.item(row, SEQUENCE_COLUMN).text() == '0003')
+        table.selectRow(row)
+        browser.on_mark_done()
+        assert annotators('0003') == 'alice, dave'
+        assert 'dave 1' in browser.stats.text().split('<br>')[1]
+    finally:
+        browser.close()
 
 
 def test_the_browser_totals_the_done_intervals_of_every_tab(root, qapp):

@@ -19,12 +19,13 @@ Each pass of the reconciler:
    may not sign in, and those a manager asked to disconnect;
 4. writes pending VNC passwords and starts or stops each desktop toward its desired state;
 5. releases the desktops of removed users once they are stopped and unconnected;
-6. settles the operations.
+6. deletes the users an admin deleted for good, once nothing of theirs is left running;
+7. settles the operations.
 """
 import json
 import logging
+import os
 import secrets
-import socket
 import threading
 import time
 from typing import Dict, List, Optional
@@ -43,7 +44,8 @@ OPEN = (PENDING, RUNNING, FAILED)
 # a newer operation of a group supersedes the open ones of the same group on the same user
 GROUPS = {
     'provision_user': 'lifecycle', 'suspend_user': 'lifecycle', 'reactivate_user': 'lifecycle',
-    'remove_user': 'lifecycle', 'start_desktop': 'desktop', 'stop_desktop': 'desktop',
+    'remove_user': 'lifecycle', 'delete_user': 'lifecycle', 'start_desktop': 'desktop',
+    'stop_desktop': 'desktop',
     'restart_desktop': 'desktop',
 }
 SUPERSEDES = {'lifecycle': ('lifecycle', 'desktop'), 'desktop': ('desktop', )}
@@ -141,11 +143,16 @@ def desktop_card(service, display: int, password: Optional[str] = None) -> dict:
     """How the user reaches their desktop: shown to the manager to hand on."""
     config = service.config
     port = config.vnc_port_of(display)
-    host = config.ssh_host or socket.gethostname()
+    # through port 22 (the jump), to the annotation sshd on this computer, then the VNC port,
+    # forwarded from the same port on their computer: a VNC server there (5900, 5901) or another
+    # desktop's tunnel does not collide; a port in use there ends ssh with the error, rather than
+    # leaving it connected without the tunnel
+    jump = config.public_host + ('' if config.jump_port == 22 else f':{config.jump_port}')
     card = {'display': display, 'vnc_port': port, 'ssh_port': config.ssh_port,
-            'ssh_command': f'ssh -N -L 5901:localhost:{port} -p {config.ssh_port} '
-                           f'{config.desktop_user}@{host}',
-            'vnc_address': 'localhost:5901'}
+            'ssh_command': f'ssh -N -o ExitOnForwardFailure=yes -J {config.jump_user}@{jump} '
+                           f'-p {config.ssh_port} -L {port}:localhost:{port} '
+                           f'{config.desktop_user}@localhost',
+            'vnc_address': f'localhost:{port}'}
     if password is not None:
         card['vnc_password'] = password
     return card
@@ -187,6 +194,48 @@ def on_user_change(service, cursor, before: Optional[dict], after: dict, actor_i
         hook(cursor, after, actor_id, now)
 
 
+def purge_user(service, cursor, operation: dict) -> List[str]:
+    """Deletes a removed user and what is theirs: their GPU jobs, connections, keys, sessions and
+    operations. The audit log keeps every entry (those of what they did keep their login name),
+    and other users' records that name them (who created a user or a key, revoked a key,
+    cancelled a job, ran an operation, changed a setting) keep the rest and name nobody there.
+    Returns the files of their jobs, to remove once this is committed."""
+    user_id = operation['target_user_id']
+    user = cursor.execute('SELECT * FROM users WHERE id = ?', (user_id, )).fetchall()[0]
+    jobs = cursor.execute('SELECT id, input_reference FROM gpu_jobs WHERE owner_user_id = ?',
+                          (user_id, )).fetchall()
+    results = service.config.results_dir
+    files = [os.path.join(results, f'{job["id"]}{suffix}') for job in jobs
+             for suffix in ('.jsonl', '.json')]
+    files += [job['input_reference'] for job in jobs  # a retry shares its original's snapshot
+              if os.path.dirname(job['input_reference']) == service.config.snapshots_dir]
+    theirs = 'SELECT id FROM gpu_jobs WHERE owner_user_id = ?'
+    for sql in (f'UPDATE gpu_state SET active_job_id = NULL WHERE active_job_id IN ({theirs})',
+                f'UPDATE gpu_jobs SET retry_of_job_id = NULL WHERE retry_of_job_id IN ({theirs})',
+                'UPDATE gpu_jobs SET cancelled_by = NULL WHERE cancelled_by = ?',
+                'DELETE FROM gpu_jobs WHERE owner_user_id = ?',
+                'DELETE FROM ssh_connections WHERE user_id = ?',
+                'UPDATE ssh_keys SET created_by = NULL WHERE created_by = ?',
+                'UPDATE ssh_keys SET revoked_by = NULL WHERE revoked_by = ?',
+                'DELETE FROM ssh_keys WHERE user_id = ?',
+                'DELETE FROM app_sessions WHERE user_id = ?',
+                'UPDATE management_operations SET actor_user_id = NULL WHERE actor_user_id = ?',
+                'UPDATE users SET created_by = NULL WHERE created_by = ?',
+                'UPDATE system_settings SET updated_by = NULL WHERE updated_by = ?'):
+        cursor.execute(sql, (user_id, ))
+    cursor.execute('DELETE FROM management_operations WHERE target_user_id = ? AND id != ?',
+                   (user_id, operation['id']))
+    cursor.execute('UPDATE management_operations SET target_user_id = NULL WHERE id = ?',
+                   (operation['id'], ))
+    cursor.execute('UPDATE audit_events SET actor_login_name = ?, actor_user_id = NULL WHERE '
+                   'actor_user_id = ?', (user['login_name'], user_id))
+    cursor.execute('DELETE FROM users WHERE id = ?', (user_id, ))
+    audit.record(cursor, service.now(), 'purge_user', audit.SUCCEEDED, None, audit.SYSTEM, 'user',
+                 user_id, operation_id=operation['id'],
+                 before={key: user[key] for key in ('login_name', 'display_name', 'role')})
+    return files
+
+
 class Reconciler:
 
     def __init__(self, service, helper):
@@ -211,7 +260,7 @@ class Reconciler:
         with self.lock:
             self.errors = {}
             for step in (self.publish_policy, self.sync_connections, self.cut_connections,
-                         self.sync_desktops, self.release_desktops):
+                         self.sync_desktops, self.release_desktops, self.purge_users):
                 try:
                     step()
                 except ClientError as exc:
@@ -233,10 +282,10 @@ class Reconciler:
     def publish_policy(self) -> None:
         state = self.db.query_one('SELECT * FROM policy_state WHERE id = 1')
         now = self.service.now()
-        ports = self.service.config.vnc_ports
+        ports, annotation_port = self.service.config.vnc_ports, self.service.config.ssh_port
         revision, entries = policy.snapshot(self.db, now)
         if revision == state['applied_revision'] and not self.first_pass:
-            if policy.expected_checksum(revision, entries, ports) == \
+            if policy.expected_checksum(revision, entries, ports, annotation_port) == \
                     state['applied_snapshot_checksum']:
                 return
             # what was applied no longer matches (a key expired): a new revision
@@ -246,7 +295,8 @@ class Reconciler:
         try:
             result = self.call('publish_ssh_policy', revision=revision,
                                entries=[entry.as_dict() for entry in entries])
-            if result['checksum'] != policy.expected_checksum(revision, entries, ports):
+            if result['checksum'] != policy.expected_checksum(revision, entries, ports,
+                                                              annotation_port):
                 raise ClientError('failed', 'the published policy differs from the database')
         except ClientError as exc:
             self.errors['policy'] = str(exc)
@@ -438,7 +488,36 @@ class Reconciler:
                              audit.SYSTEM, 'desktop', str(slot['display_number']),
                              after={'user_id': slot['user_id']})
 
-    # 6. operations
+    # 6. deleting users for good
+    def purge_users(self) -> None:
+        """Once the policy without their keys is published, their connections are closed, their
+        desktop is released and their GPU jobs have ended."""
+        if not self.policy_current():
+            return
+        rows = self.db.query(
+            "SELECT m.* FROM management_operations m JOIN users u ON u.id = m.target_user_id "
+            "WHERE m.operation_type = 'delete_user' AND m.status IN "
+            f"({','.join('?' * len(OPEN))}) AND u.status = 'archived' AND NOT EXISTS "
+            "(SELECT 1 FROM desktop_slots s WHERE s.user_id = u.id) AND NOT EXISTS "
+            "(SELECT 1 FROM ssh_connections c WHERE c.user_id = u.id AND c.status IN "
+            "('active', 'disconnecting')) AND NOT EXISTS (SELECT 1 FROM gpu_jobs j WHERE "
+            "j.owner_user_id = u.id AND j.status IN ('queued', 'running', 'cancel_requested'))",
+            OPEN)
+        for row in rows:
+            try:
+                with self.db.transaction() as cursor:
+                    files = purge_user(self.service, cursor, row)
+            except Exception:  # the other operations still settle
+                log.exception('deleting user %s failed', row['target_user_id'])
+                self.errors['purge'] = 'the account could not be deleted: see the service log'
+                continue
+            for file_path in files:
+                try:
+                    os.remove(file_path)
+                except FileNotFoundError:
+                    pass
+
+    # 7. operations
     def settle_operations(self) -> None:
         now = self.service.now()
         state = self.db.query_one('SELECT * FROM policy_state WHERE id = 1')
@@ -504,6 +583,18 @@ class Reconciler:
             if slot is not None:
                 need_desktop('stopped')
                 waiting.append(('releasing the desktop', None))
+        elif kind == 'delete_user':
+            if user is None:  # deleted: purge_user
+                return SUCCEEDED, None, None
+            need_policy()
+            need_no_connections('user_id = ?', user_id)
+            if slot is not None:
+                need_desktop('stopped')
+                waiting.append(('releasing the desktop', None))
+            if one("SELECT 1 AS x FROM gpu_jobs WHERE owner_user_id = ? AND status IN "
+                   "('queued', 'running', 'cancel_requested')", user_id):
+                waiting.append(('ending their GPU jobs', None))
+            waiting.append(('deleting the account', self.errors.get('purge')))
         elif kind == 'add_key':
             need_policy()
         elif kind == 'revoke_key':

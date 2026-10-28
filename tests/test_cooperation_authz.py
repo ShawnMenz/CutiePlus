@@ -7,24 +7,25 @@ The cast: the owner (admin), two supervisors, two annotators.
 """
 import pytest
 
-from tests.cooperation_harness import Harness
+from tests.cooperation_harness import PASSWORD, Harness
 
 OK, F, OP = 'ok', 'forbidden', 'owner_protected'
-ACTIONS = ('view', 'edit', 'suspend', 'reactivate', 'remove', 'reset', 'set_role', 'sessions')
+ACTIONS = ('view', 'edit', 'suspend', 'reactivate', 'remove', 'reset', 'set_role', 'sessions',
+           'delete')
 
 # (actor, target) -> the outcome of each action, in ACTIONS order
 EXPECTED = {
-    ('owner', 'owner'): (OK, OK, OP, F, OP, OP, OP, OK),
-    ('owner', 'sup1'): (OK, ) * 8,
-    ('owner', 'ann1'): (OK, ) * 8,
-    ('sup1', 'owner'): (F, F, OP, F, OP, OP, F, F),
-    ('sup1', 'sup1'): (OK, OK, F, F, F, F, F, OK),
-    ('sup1', 'sup2'): (F, ) * 8,
-    ('sup1', 'ann1'): (OK, OK, OK, OK, OK, OK, F, OK),
-    ('ann1', 'owner'): (F, F, OP, F, OP, OP, F, F),
-    ('ann1', 'sup1'): (F, ) * 8,
-    ('ann1', 'ann1'): (OK, OK, F, F, F, F, F, OK),
-    ('ann1', 'ann2'): (F, ) * 8,
+    ('owner', 'owner'): (OK, OK, OP, F, OP, OP, OP, OK, OP),
+    ('owner', 'sup1'): (OK, ) * 9,
+    ('owner', 'ann1'): (OK, ) * 9,
+    ('sup1', 'owner'): (F, F, OP, F, OP, OP, F, F, OP),
+    ('sup1', 'sup1'): (OK, OK, F, F, F, F, F, OK, F),
+    ('sup1', 'sup2'): (F, ) * 9,
+    ('sup1', 'ann1'): (OK, OK, OK, OK, OK, OK, F, OK, F),
+    ('ann1', 'owner'): (F, F, OP, F, OP, OP, F, F, OP),
+    ('ann1', 'sup1'): (F, ) * 9,
+    ('ann1', 'ann1'): (OK, OK, F, F, F, F, F, OK, F),
+    ('ann1', 'ann2'): (F, ) * 9,
 }
 CASES = [(actor, target, action, outcomes[index]) for (actor, target), outcomes in
          EXPECTED.items() for index, action in enumerate(ACTIONS)]
@@ -57,6 +58,8 @@ class Cast:
         if action == 'set_role':
             role = 'annotator' if row['role'] != 'annotator' else 'supervisor'
             return harness.code('set_role', token, user_id=user_id, role=role)
+        if action == 'delete':
+            return harness.code('delete_user', token, user_id=user_id, password=PASSWORD)
         operation = {'suspend': 'suspend_user', 'remove': 'remove_user',
                      'reset': 'reset_credential', 'sessions': 'revoke_sessions'}[action]
         return harness.code(operation, token, user_id=user_id)

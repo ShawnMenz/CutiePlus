@@ -35,7 +35,8 @@ def record(cursor, now: str, action: str, result: str = SUCCEEDED, actor_id: Opt
 
 def events(db, where: str = '1', bindings=(), limit: int = 100) -> List[dict]:
     rows = db.query(
-        'SELECT e.*, a.login_name AS actor_login FROM audit_events e LEFT JOIN users a '
+        "SELECT e.*, coalesce(a.login_name, e.actor_login_name || ' (deleted)') AS actor_login "
+        'FROM audit_events e LEFT JOIN users a '
         f'ON a.id = e.actor_user_id WHERE {where} ORDER BY e.id DESC LIMIT ?',
         tuple(bindings) + (int(limit), ))
     for row in rows:

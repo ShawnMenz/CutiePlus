@@ -12,7 +12,7 @@ column_limit = 100
 
 [project]
 name = "cutieplus"
-version = "0.1.0"
+version = "1.0.0"
 authors = [{ name = "Zexuan Meng" }]
 description = "A video object segmentation annotation tool built upon Cutie."
 readme = "README.md"
@@ -52,7 +52,7 @@ eval = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["cutie", "gui"]
+packages = ["cutie", "cutieplus", "gui"]
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]

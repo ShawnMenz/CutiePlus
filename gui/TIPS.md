@@ -7,6 +7,7 @@
 3. Propagate (F forward, B backward). Anchors are never overwritten; propagation stops at "target absent" frames. Started inside an interval, it stays there: F stops at the interval's last frame, B at its first. It runs on the modality shown: press T first to propagate on the thermal (or RGB) frames, with every anchor you have labeled.
 4. Save (Ctrl+S): the sequence goes "under review". A reviewer accepts it with Mark done in the task browser. (Masks are saved as you label.)
    When you label and review the sequence at the same time, Ctrl+Q does steps 4 and Mark done in one go: it saves, marks the sequence done and closes the window (it asks first).
+   Output video (Ctrl+E) also saves and marks the sequence done, once it has written the sequence's demo videos; the window stays open.
 5. Export (task browser): every interval of every done sequence becomes a clip of the dataset in `workspace/cutie_export/`.
 
 **Mouse**
@@ -44,6 +45,7 @@ The dots belong to the current frame's clicks. They clear when you change frame,
 | Arrow keys | scroll the image when zoomed in |
 | Q | close this window |
 | Ctrl+Q | quit and mark done: save, mark the sequence done and close the window, after a warning (for labeling and review at the same time) |
+| Ctrl+E | output video: save, write the demo videos, mark the sequence done |
 
 Undo covers clicks, Reset frame, Import mask, C and Delete. Propagation cannot be undone; propagate again instead.
 
@@ -84,7 +86,8 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
 - Save (Ctrl+S): masks are saved as you label, each edit at once; Save also saves the intervals and descriptions as typed, and submits the sequence for review. The sequence's work folder holds only `masks/` and `metadata.json`.
 - Quit and mark done (Ctrl+Q, no button): for a sequence you label and review yourself. A warning first shows the intervals: once you confirm, the window saves (with the intervals and descriptions), marks the sequence done in your name and closes. There is no second check by a reviewer, so look at every interval, its description and its masks before you press it. The time you pressed it is kept with the done mark. Need Attention, and an interval that is not complete or overlaps, stop it before the warning.
 - Need Attention (orange outline): click it when the sequence needs further attention, for example a problem you cannot solve or a question for someone else. While it is on, the button is filled orange, the task browser shows the status Attention in red, and Mark done refuses the sequence. Click again to clear it. Edits and Save leave it as it is; hover over the button to see who turned it on and when.
-- Visualization mode: how the mask is drawn on screen.
+- Output video (Ctrl+E) and Output FPS: writes one demo video per interval to `workspace/cutie_demo/<tab>/<sequence>_<start>-<end>_<mode>.mp4`: the RGB frame on the left and the thermal one on the right, both with the mask drawn in the current Visualization mode (davis unless you change it) and the interval's category color, the frame number of the clip in a band above (e.g. 12/101), and "category: description" in a band below, the category in its color. It saves first, and marks the sequence done in your name once every video is written (the window stays open). While it writes, the button reads Cancel output. Need Attention, a discarded sequence, a running or queued propagation, or an interval that is not complete stop it, as they stop Ctrl+Q; a change while it writes keeps the videos but not the done mark. Output again replaces the sequence's videos of that mode. Output FPS is remembered for the next window.
+- Visualization mode: how the mask is drawn on screen, and in the output videos.
 
 **Sidebar**
 
@@ -119,7 +122,7 @@ The Theme button (top right) cycles Auto, Light, Dark and Eye care, a light them
 - Open by: which window has the sequence open, by name and process id. It updates every 10 seconds.
 - A sequence open in another window cannot be opened, discarded or marked done until it is closed there. A window that crashes releases its sequence at once.
 - Your name (in the window title) is recorded on your anchors and review steps: the user you signed in as when this computer runs the CutiePlus service; otherwise `--labeler`, else `CUTIE_LABELER`, else the account name.
-- Annotators: everyone who changed the sequence (any change; Save and Mark done do not count). The Statistics card (bottom right, beside the messages) counts the sequences each annotator worked on in this tab, whatever their status now; a sequence with two annotators counts for both. Type a name in the filter to list that person's sequences.
+- Annotators: everyone who changed the sequence (any change) or marked it done (Mark done, or Ctrl+Q in the labeling window); Save does not count. The Statistics card (bottom right, beside the messages) counts the sequences each annotator worked on in this tab, whatever their status now; a sequence with two annotators counts for both. Type a name in the filter to list that person's sequences.
 - Total Intervals (the last line of the Statistics card): the intervals of every sequence marked done, in all tabs, whatever tab is shown. Each interval is a clip of the dataset (Export); a sequence with no interval of its own counts as one (the whole sequence). A done sequence later flagged Need Attention still counts; a discarded one does not.
 
 Outside task mode (a plain Cutie workspace), C commits the frame to permanent memory, Ctrl+S exports binary masks, and the Advanced card keeps the original Cutie's overlay video (Save visualization, Save soft mask, Export as video, Ctrl+E).

@@ -4,7 +4,6 @@ from os import path
 import logging
 from typing import Callable, List, Literal, Optional, Tuple
 
-import cv2
 # fix conflicts between qt5 and cv2
 os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
@@ -22,13 +21,16 @@ from gui.category_colors import hex_to_rgb
 from gui.interactive_utils import *
 from gui.interactive_utils import set_target_color
 from gui.resource_manager import ResourceManager, SaveError
-from gui.gui import GUI
+from gui.demo_video import DemoWorker, demo_root_of, task_clips
+from gui.gui import GUI, OUTPUT_FPS_SETTING
 from gui.gui_utils import REMOVE_INTERVAL_TEXT
 from gui.click_controller import ClickController
 from gui.exporter import convert_frames_to_video
 from gui.edit_history import Edit, EditHistory, FrameState
+from gui.theme import save_setting
 from gui.task_state import (TaskLock, TaskState, category_text, check_intervals, discard_of,
-                            format_intervals, labeler_name, utc_now)
+                            format_intervals, input_root_of, labeler_name, read_metadata,
+                            utc_now)
 
 log = logging.getLogger()
 
@@ -186,8 +188,10 @@ class MainController():
         self.gui.mem_every_box.setValue(mem_every)
 
         # for exporting videos
-        self.output_fps = cfg['output_fps']
+        self.output_fps = self.gui.fps_dial.value()
         self.output_bitrate = cfg['output_bitrate']
+        self.demo_worker: Optional[DemoWorker] = None  # while a task's demo videos are written
+        self.demo_metadata: Optional[dict] = None  # the task as the videos show it
 
         # set callbacks
         self.gui.on_mouse_motion_xy = self.on_mouse_motion_xy
@@ -588,6 +592,9 @@ class MainController():
         if self.closed:
             return
         self.closed = True
+        if self.demo_worker is not None:  # its partial video is removed
+            self.demo_worker.stop()
+            self.demo_worker = None
         # a queued propagation goes on: its result waits for the next window of the task
         self.stop_waiting()
         self.res_man.close()
@@ -610,6 +617,26 @@ class MainController():
         if self.on_task_event is not None:
             self.on_task_event(self, 'closed')
 
+    def done_refusal(self) -> Optional[str]:
+        """Why the task cannot be marked done now (Ctrl+Q, Output video), else None. The
+        intervals and descriptions typed are saved first, so what follows shows them; none may be
+        left out, as Save would."""
+        if self.propagating:
+            return 'pause the propagation first.'
+        if self.waiting_for_gpu:
+            return 'a propagation waits for the GPU: let it run, or cancel it, first.'
+        if discard_of(self.task.workspace):
+            return 'this sequence is discarded (Restore in the task browser brings it back).'
+        if self.task.attention is not None:
+            return 'this sequence needs attention: toggle Need Attention off first.'
+        self.backend.wait_for_saves()
+        unsaved = self.save_typed_intervals()
+        self.on_description_change()
+        if unsaved:
+            return (f'{unsaved} interval{"" if unsaved == 1 else "s"} not saved (not complete, or '
+                    f'overlapping). Change or remove {"it" if unsaved == 1 else "them"} first.')
+        return None
+
     def on_quit_done(self) -> None:
         """Ctrl+Q, for a labeler who reviews their own work (labeling and review at the same
         time): after a warning, saves the task (which submits it), marks it done and closes the
@@ -620,25 +647,9 @@ class MainController():
         if self.quit_done_at is not None:
             self.gui.text('Already quitting.')
             return
-        if self.propagating:
-            self.gui.text('Pause the propagation first.')
-            return
-        if discard_of(self.task.workspace):
-            self.gui.text('This sequence is discarded: it is not marked done (Restore in the task '
-                          'browser brings it back).')
-            return
-        if self.task.attention is not None:
-            self.gui.text('This sequence needs attention: toggle Need Attention off first.')
-            return
-        # the intervals and descriptions typed are saved first, so the warning shows them; none
-        # may be left out, as Save would
-        self.backend.wait_for_saves()
-        unsaved = self.save_typed_intervals()
-        self.on_description_change()
-        if unsaved:
-            self.gui.text(f'Not marked done: {unsaved} interval{"" if unsaved == 1 else "s"} not '
-                          f'saved (not complete, or overlapping). Change or remove '
-                          f'{"it" if unsaved == 1 else "them"} first.')
+        refusal = self.done_refusal()
+        if refusal is not None:
+            self.gui.text(f'Not marked done: {refusal}')
             return
         if not self.gui.confirm_quit_done():
             return
@@ -657,6 +668,60 @@ class MainController():
         if self.on_task_event is not None:
             self.on_task_event(self, 'done')
         self.gui.close()
+
+    def on_output_demo(self) -> None:
+        """Output video (Ctrl+E), a task's: saves it (which submits it), writes one demo video per
+        interval (gui/demo_video.py) in a thread, and marks the task done once they are written,
+        if it has not changed meanwhile. Pressed again while they are written: cancels."""
+        if self.task is None:
+            return
+        if self.demo_worker is not None:
+            self.demo_worker.cancel.set()
+            self.gui.text('Cancelling the video output…')
+            return
+        refusal = self.done_refusal()
+        if refusal is not None:
+            self.gui.text(f'No video output: {refusal}')
+            return
+        if not self.on_save():
+            self.gui.text('No video output: the task was not saved.')
+            return
+        clips = task_clips(self.task, self.res_man,
+                           demo_root_of(input_root_of(self.task.workspace)), self.vis_mode,
+                           self.overlay_layer if self.vis_mode == 'layer' else None)
+        self.demo_metadata = read_metadata(self.task.workspace)
+        self.demo_worker = DemoWorker(clips, self.output_fps, self.output_bitrate,
+                                      self.on_demo_progress, self.on_demo_finished)
+        self.gui.show_demo_output(True)
+        frames = sum(len(clip.frames) for clip in clips)
+        self.gui.text(f'Writing {len(clips)} video{"" if len(clips) == 1 else "s"} '
+                      f'({frames} frames, {self.vis_mode}, {self.output_fps} fps)…')
+        self.demo_worker.start()
+
+    def on_demo_progress(self, written: int, total: int) -> None:
+        self.gui.show_demo_output(True, written, total)
+
+    def on_demo_finished(self, videos: Optional[List[str]], error: str) -> None:
+        self.demo_worker = None
+        self.gui.show_demo_output(False)
+        if videos is None:
+            self.gui.text(f'No video output: {error}' if error else 'Video output cancelled.')
+            return
+        written = (f'{len(videos)} video{"" if len(videos) == 1 else "s"} written to '
+                   f'{path.dirname(videos[0])}: '
+                   f'{", ".join(path.basename(video) for video in videos)}.')
+        if read_metadata(self.task.workspace) != self.demo_metadata:
+            self.gui.text(f'{written} Not marked done: the sequence changed while they were '
+                          'written; output again to mark it done.')
+            return
+        try:
+            self.backend.mark_done()
+        except BackendError as exc:
+            self.gui.text(f'{written} Not marked done: {exc}.')
+            return
+        self.gui.text(f'{written} {self.task.sequence_id} is done.')
+        if self.on_task_event is not None:
+            self.on_task_event(self, 'done')
 
     def current_anchor(self) -> dict:
         if self.task is None:
@@ -766,7 +831,7 @@ class MainController():
         if path.exists(image_folder):
             # Sorted so frames will be in order
             output_path = path.join(save_folder, f'visualization_{self.vis_mode}.mp4')
-            self.gui.text(f'Exporting visualization -- please wait')
+            self.gui.text('Exporting visualization -- please wait')
             self.gui.process_events()
             convert_frames_to_video(image_folder,
                                     output_path,
@@ -835,7 +900,7 @@ class MainController():
         if not path.exists(mask_folder):
             self.gui.text(f'No masks found in {mask_folder}')
             return False
-        self.gui.text(f'Exporting binary masks -- please wait')
+        self.gui.text('Exporting binary masks -- please wait')
         self.gui.process_events()
         try:
             export = self.backend.export_binary(self.vis_target_objects,
@@ -1033,6 +1098,7 @@ class MainController():
 
     def on_fps_dial_change(self):
         self.output_fps = self.gui.fps_dial.value()
+        save_setting(OUTPUT_FPS_SETTING, self.output_fps)  # every window starts with it
 
     def on_bitrate_dial_change(self):
         self.output_bitrate = self.gui.bitrate_dial.value()

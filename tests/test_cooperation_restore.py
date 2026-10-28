@@ -102,3 +102,43 @@ def test_backups_keep_the_newest_few(tmp_path):
         made.append(backup_now(access.service))
     assert backup_files(access.config.backups_dir) == made[1:]
     assert os.stat(access.config.backups_dir).st_mode & 0o777 == 0o700
+
+
+def test_a_reset_keeps_a_copy_and_leaves_an_empty_start(tmp_path):
+    """cutieplus-admin reset, the parts after the services stop: the database goes (a checked
+    copy is kept in the backups), with the jobs' files, the desktops' files and the keys in the
+    SSH policy and jump files; a service started then has no record, the owner included."""
+    from cutieplus.cooperation.admin_cli import reset_database, reset_system_files
+    access = AccessHarness(tmp_path)
+    owner = access.owner()
+    alice = access.add(owner, 'alice')
+    access.call('add_key', owner, user_id=alice['id'], public_key=ed25519_key(1),
+                device_label='Laptop')
+    access.reconcile()
+    config = access.config
+    assert 'ssh-ed25519' in access.policy_text()
+    assert os.listdir(config.desktops_dir)  # alice's desktop files
+    for folder in (config.snapshots_dir, config.results_dir):
+        os.makedirs(folder, exist_ok=True)
+        open(os.path.join(folder, 'job.bin'), 'wb').close()
+    os.makedirs(os.path.join(config.jobs_dir, 'some-job'), exist_ok=True)
+    access.db.close()
+
+    kept = reset_database(config, '20261027T220000Z')
+    reset_system_files(config)
+    assert not os.path.exists(config.db_path) and os.path.dirname(kept) == config.backups_dir
+    assert not os.path.exists(config.snapshots_dir) and not os.path.exists(config.results_dir)
+    assert os.listdir(config.desktops_dir) == [] and os.listdir(config.jobs_dir) == []
+    for policy in (config.authorized_keys, config.jump_keys):
+        with open(policy, encoding='utf-8') as f:
+            assert 'ssh-' not in f.read()
+    # the copy holds everything, checked
+    copy = Database(kept, access.clock)
+    assert [row['login_name'] for row in copy.query(
+        'SELECT login_name FROM users ORDER BY login_name')] == ['alice', 'owner']
+    copy.close()
+    # a service started now: no record, no owner, a fresh schema
+    service = reopen(access)
+    assert service.owner_id() is None
+    assert access.db.query('SELECT * FROM users') == []
+    assert reset_database(config, 'again') is not None  # the new, empty one, kept too

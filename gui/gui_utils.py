@@ -5,7 +5,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, Si
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPalette, QPen, QRegion, QValidator
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QPlainTextEdit,
                                QPushButton, QSizePolicy, QSlider, QSpinBox, QProgressBar, QStyle,
-                               QStyleOptionSlider, QToolButton, QWidget)
+                               QStyleOptionSlider, QWidget)
 
 from gui.style import PRIMARY, SECONDARY, category_pill, restyle
 
