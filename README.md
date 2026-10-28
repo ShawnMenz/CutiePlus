@@ -11,6 +11,15 @@ CutiePlus extends the original interactive demo with:
 
 Each task labels **one target**. See [changes from Cutie](docs/MODIFICATIONS.md) for the feature comparison and compatibility notes.
 
+## Preview
+
+| Task browser | Labeling window |
+| --- | --- |
+| ![CutiePlus task browser showing sequences, annotation status, and dataset statistics](docs/browser.png) | ![CutiePlus labeling window showing a target mask, clip interval, and propagation controls](docs/label_window.png) |
+| Browse sequences and track annotation and review progress. | Refine target masks, propagate corrections, and select clip intervals. |
+
+[Watch the annotation demo](docs/demo.mov)
+
 ## Quick start
 
 The steps below set up a local desktop session. Run the commands in Bash. For remote annotators sharing a GPU, complete this setup on the host, then follow [multi-annotator deployment](docs/COOPERATION.md).
