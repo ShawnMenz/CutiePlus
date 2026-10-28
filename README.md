@@ -1,15 +1,6 @@
 # CutiePlus
 
-CutiePlus is a video object segmentation annotation tool built on [Cutie](https://github.com/hkchengrex/Cutie). It turns aligned RGB and thermal frame sequences into annotated datasets: select a target, refine its mask with clicks, propagate it through the sequence, review the results, and export labeled clips.
-
-CutiePlus extends the original interactive demo with:
-
-- **Dataset workflows:** browse subsets and sequences, track progress, and export completed clips with masks and metadata.
-- **RGB–thermal annotation:** switch between aligned modalities while editing the same target mask.
-- **Anchors and review:** preserve human corrections during propagation, mark target absence, and review clips before completion.
-- **Shared GPU inference:** optionally support multiple annotators through individual remote desktops and a queued GPU worker.
-
-Each task labels **one target**. See [changes from Cutie](docs/MODIFICATIONS.md) for the feature comparison and compatibility notes.
+CutiePlus is a video object segmentation annotation tool built on [Cutie](https://github.com/hkchengrex/Cutie). Refine a target with clicks, propagate its mask, review the results, and export labeled RGB–thermal clips.
 
 ## Preview
 
@@ -20,15 +11,26 @@ Each task labels **one target**. See [changes from Cutie](docs/MODIFICATIONS.md)
 
 [Watch the annotation demo](docs/demo.mov)
 
+## Highlights
+
+- 📂 **Task browser:** Import and organize sequences, track status and annotators, and export completed work from one place.
+- 🌡️ **Built for RGB–thermal labeling:** Switch between aligned RGB and thermal frames while working with the same target mask.
+- 🎬 **Clips and descriptions:** Define video clip intervals, assign each a category and description, and export frames, masks, and metadata together.
+- 🖥️ **Multi-annotator collaboration on one GPU:** A shared worker loads the models once. An exclusive worker lock prevents duplicate workers; a queue schedules propagations and handles clicks between propagation steps. [Deployment guide](docs/COOPERATION.md)
+- 🔒 **Local account management:** The optional cooperation service stores accounts in SQLite on your host and hashes passwords with Argon2id. CutiePlus does not send account information to the project maintainers.
+- 🎯 **Anchor-based corrections:** Human edits become anchors that propagation preserves; empty anchors mark target absence. Review, undo supported edits, and track progress before export.
+
+Each task labels **one target**. See [changes from Cutie](docs/MODIFICATIONS.md) for more details.
+
 ## Quick start
 
-The steps below set up a local desktop session. Run the commands in Bash. For remote annotators sharing a GPU, complete this setup on the host, then follow [multi-annotator deployment](docs/COOPERATION.md).
+🚀 Set up a local desktop session with the Bash commands below. For a shared GPU, complete this setup on the host, then follow [multi-annotator deployment](docs/COOPERATION.md).
 
 ### 1. Check the requirements
 
-- **Linux with a graphical desktop.** The committed environment targets Linux and Python 3.12.
-- **An NVIDIA GPU compatible with the locked PyTorch CUDA 13 build**, with a driver from the 580 series or newer. See [NVIDIA's compatibility requirements](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html). The local application falls back to CPU when CUDA is unavailable; GPU inference is recommended.
-- **Git, curl, a C/C++ compiler, and internet access.** RITM compiles a Cython extension when first loaded.
+- **Linux desktop** and Python 3.12.
+- **CUDA 13-compatible NVIDIA GPU and driver 580 or newer** for GPU inference. See [NVIDIA's compatibility requirements](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html). The local application falls back to CPU when CUDA is unavailable.
+- **Git, curl, a C/C++ compiler, and internet access.** RITM compiles a Cython extension on first load.
 
 On an Ubuntu/Debian desktop, install the command-line tools and Qt runtime libraries:
 
@@ -52,7 +54,7 @@ uv sync --locked
 uv run python cutie/utils/download_models.py
 ```
 
-`uv` installs Python 3.12 as needed and creates `.venv/`; environment activation is unnecessary when using `uv run`. Keep subsequent commands in the repository directory. The model downloader writes these two upstream checkpoints:
+`uv` installs Python 3.12 as needed and creates `.venv/`; `uv run` uses it without activation. Run subsequent commands from the repository directory. The downloader places the upstream checkpoints in:
 
 ```text
 weights/
@@ -60,17 +62,17 @@ weights/
 └── coco_lvis_h18_itermask.pth
 ```
 
-Check that the environment can import PyTorch and detect the GPU:
+Check GPU availability:
 
 ```bash
 uv run python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 ```
 
-For GPU use, the final line should report `CUDA available: True`. See [environment and model checks](docs/SETUP.md) for additional diagnostics and manual model downloads.
+For GPU inference, the final line should report `CUDA available: True`. See [setup checks](docs/SETUP.md) for diagnostics and manual model downloads.
 
 ### 3. Prepare a dataset
 
-Prepare your own frames under `workspace/cutie_tasks/`. Each subset becomes a browser tab, and each sequence becomes a task. Align the RGB and thermal images before import; the same mask applies to both. Use matching sequence names and zero-padded frame basenames:
+Prepare your frames under `workspace/cutie_tasks/`. Each subset becomes a tab; each sequence is a task. Align RGB and thermal frames before import and use matching sequence names and zero-padded frame basenames:
 
 ```text
 workspace/cutie_tasks/example/
@@ -89,7 +91,7 @@ Create `categories.json` with the target categories for the subset:
 ["car", "person"]
 ```
 
-Frames may be JPG, JPEG, PNG, or BMP. The **Import → Save** operation validates the subset and assigns colors to name-only categories, updating `categories.json`. A subset already at the location above stays there. **Importing a folder from elsewhere moves it into the workspace**; keep a separate copy if needed. See [input format](docs/WORKFLOW.md#tasks-and-their-files) for optional initial masks, target descriptions, and sequence metadata.
+Frames can be JPG, JPEG, PNG, or BMP. **Import → Save** validates the subset and adds colors to `categories.json`. Subsets already in the workspace stay in place; **importing a folder from elsewhere moves it** into the workspace, so keep a copy if needed. See [input format](docs/WORKFLOW.md#tasks-and-their-files) for optional masks and metadata.
 
 ### 4. Launch and annotate
 
