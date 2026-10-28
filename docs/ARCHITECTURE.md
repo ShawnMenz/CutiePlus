@@ -1,195 +1,110 @@
-# CutiePlus architecture (review, October 2026)
+# Architecture
 
-This document records how the labeling tool worked when it was reviewed in October 2026 (commit
-`039c919`). The inference has since moved, unchanged, into `cutieplus/engine/` (model loading, RITM
-interactions, step-based Cutie propagation, the task-mode policies), which the window reaches
-through `cutieplus/backends/local.py`; the masks are the same, which `tests/test_engine.py` and
-`tests/test_baseline_controller.py` check against the original code. The
-[modifications](MODIFICATIONS.md) list what CutiePlus changed relative to the original Cutie.
+This guide describes the current CutiePlus implementation and the boundaries between the interface, inference, task files, and optional cooperation service. For installation and annotation instructions, see the [README](../README.md) and [workflow guide](WORKFLOW.md). For deployment, accounts, and recovery, see the [multi-annotator guide](COOPERATION.md).
 
-## Processes
+## Components
 
-On a host that runs the cooperation service ([COOPERATION.md](COOPERATION.md)), several people
-label at once and no window loads a model: the inference runs in the one GPU worker
-(`cutieplus/gpu_worker/`), queued by the service (`cutieplus/cooperation/gpu.py`), and the window
-uses `cutieplus/backends/service.py`. What follows describes a window on its own.
+| Component | Responsibility |
+| --- | --- |
+| `interactive_demo.py` | Parses launch arguments, selects local or service mode, and starts the Qt application. |
+| `gui/task_browser.py` | Discovers subsets and tasks, opens a labeling window, manages review status, and starts dataset export. |
+| `gui/main_controller.py` and `gui/gui.py` | Handle annotation controls, navigation, visualization, and interaction with a task backend. |
+| `cutieplus/backends/` | Expose a common interface for click inference, propagation, frame edits, and task metadata. |
+| `cutieplus/engine/` | Load models, manage RITM interactions, execute propagation one step at a time, and apply resolution and anchor policies. |
+| `cutie/` | Provides the Cutie model, temporal memory, training, and benchmark evaluation inherited from upstream. |
+| `cutieplus/cooperation/` | Implements application identities, authorization, management operations, audit records, and the shared GPU queue. |
+| `cutieplus/gpu_worker/` | Executes inference commands for the cooperation service using one loaded pair of models. |
+| `deploy/` | Installs the service, root helper, GPU worker, SSH configuration, and managed remote desktops. |
 
-One person labels at the desktop. `interactive_demo.py --tasks <task root>` is one PySide6 process
-with a task browser (`gui/task_browser.py`). The browser loads Cutie and RITM on the first *Open*
-and keeps them for the life of the process (about 450-660 MB of GPU memory when idle, measured with
-`nvidia-smi` on the lab host), and opens one task at a time in the labeling window
-(`gui/main_controller.py`).
+## Local execution
 
-## Model initialization and CUDA
+Without a cooperation client configuration, the application selects CUDA when available, then MPS, then CPU. The packaged environment targets Linux; device-selection code alone does not establish support for other operating systems.
 
-- `interactive_demo.py` picks `cuda`, `mps` or `cpu` and disables autograd.
-- `gui/main_controller.py: load_networks` builds `CUTIE(cfg)`, loads `weights/cutie-base-mega.pth`
-  and builds `ClickController` (`gui/click_controller.py`), which loads the RITM HRNet-18
-  (`weights/coco_lvis_h18_itermask.pth`) through `gui/ritm/inference/utils.load_is_model`
-  (distance maps in Cython on the CPU, `cpu_dist_maps=True`).
-- `download_models_if_needed` checks the MD5 of both weight files at every load.
-- **Implicit CUDA initialization at import:** `gui/interactive_utils.py` creates its color tables
-  with `.to(device)` at import time, choosing CUDA whenever a GPU is visible. Importing the
-  module therefore creates a CUDA context, and the CPU mode fails on a host with a GPU (the
-  colors are on CUDA, the images on the CPU). Found while recording the baseline tests.
-- `MainController.update_gpu_gauges` calls `torch.cuda.mem_get_info` every 2 s. The "torch"
-  gauge shows `max_memory_allocated`, the process's peak, not its current use.
+The task browser loads Cutie and RITM on the first task open and reuses the networks across tasks. A labeling window receives a `LocalTaskBackend`, which owns its `InferenceCore`, RITM interaction, and active propagation state. Closing the window releases this task-specific state while the browser retains the networks for the next task.
 
-## Mutable inference state
+```mermaid
+flowchart LR
+    Browser[Task browser] --> Window[Labeling window]
+    Window --> Backend[LocalTaskBackend]
+    Backend --> Engine[Cutie and RITM engines]
+    Backend --> Files[Task masks and metadata]
+    Engine --> Models[Shared loaded networks]
+```
 
-None of the following can be shared between windows or between propagation jobs.
+Local propagation advances in the GUI process, one inference step at a time. The controller processes Qt events between steps. `FramePrefetcher` reads a bounded number of images ahead using threads, and `ResourceManager` queues mask writes on background save threads.
 
-### Cutie (`cutie/inference/inference_core.py`)
+## Shared GPU execution
 
-One `InferenceCore` per labeling window (`MainController.processor`), holding:
+The installer creates `/etc/cutieplus/client.toml`. When this configuration is present, `interactive_demo.py` hides CUDA from the GUI process before importing Torch and starts `CooperationApp`. The application requires sign-in and uses `ServiceTaskBackend` for inference.
 
-- `curr_ti`, `last_mem_ti`: the frame counter that decides memory frames (`mem_every`) and
-  sensory updates (`stagger_ti`, computed once from `mem_every` at construction).
-- `ObjectManager`: object ids to tensor positions. It survives `clear_memory()`.
-- `MemoryManager` (`memory_manager.py`): working and long-term key/value stores
-  (`kv_memory_store.py`), each with a permanent part at the front of every bucket; sensory
-  memory per object; object memory (`obj_v`); usage counters for consolidation.
-- `ImageFeatureStore` (`image_feature_store.py`): encoded features per frame index, deleted after
-  each step.
-- `last_mask` (the previous output, an input of the next memory read) and `pad`.
-- `max_internal_size` and `upscale_to_internal_size`, set per window by the small-target policy.
+```mermaid
+flowchart LR
+    GUI[Signed-in labeling windows] --> Service[Cooperation service]
+    Service --> Worker[GPU worker]
+    Service --> DB[SQLite database]
+    Service --> Helper[Root helper]
+    Worker --> Staging[Staged propagation results]
+    GUI --> Files[Task masks and metadata]
+```
 
-### RITM (`gui/click_controller.py`, `gui/ritm/controller.py`, `gui/interaction.py`)
+The service runs as the separate `cutieplus` system account from `/opt/cutieplus`. It checks application permissions and derives the request origin from Unix peer credentials and the peer process's systemd unit. A root helper performs a fixed set of account-access and desktop operations. The GPU worker and remote desktops run as the configured desktop account. Remote annotators have separate application identities but share that Linux account and its files; the [deployment guide](COOPERATION.md) describes this trust boundary.
 
-One `ClickController` per process, reused by every task the browser opens:
+The worker acquires an exclusive GPU lock before loading the networks. The service schedules one propagation at a time from its persistent queue. Click requests run between propagation steps, round-robin across users, with a bounded burst before propagation resumes. Model execution remains sequential in the worker.
 
-- `anchored`: whether the predictor holds the current image.
-- `InteractiveController`: `image`, `clicker` (ordered clicks), `predictor` (`BasePredictor`:
-  `original_image`, `prev_prediction`, the transforms' state: zoom-in region, previous
-  probabilities, `LimitLongestSide` crop), `states` (predictor and clicker state before every
-  click, for undo, on the GPU) and `probs_history` (every click's prediction, on the GPU).
-  `add_click` calls `torch.cuda.empty_cache()` after every click.
-- `ClickInteraction` (per window): the previous probabilities (all objects), the target object,
-  the ordered clicks drawn as dots, and the last object mask.
+Click results are returned to the labeling window, which commits the mask and anchor to the task files. Propagation instead uses a snapshot containing frame paths, anchor-mask bytes, start-frame probabilities, resolution, memory settings, and task revision. The worker stages output masks; the service records their hashes. The window applies the results only after validating the recorded hashes and the task revision, and does not replace anchors. A revision conflict holds the result for an explicit apply-or-discard decision.
 
-GPU memory of one interaction grows with its clicks: a full-resolution probability map in
-`states` and one in `probs_history` per click (about 16 MB per click at 1920x1080).
+If the service becomes unavailable, `OfflineTaskBackend` retains file-based editing and review operations while click inference and propagation are unavailable. There is no automatic fallback to local GPU inference on a service host.
 
-## Temporal memory and permanent memory
+## Inference state
 
-- Memory frames every `mem_every` (5) frames and at every frame given a mask; sensory updates on
-  `stagger_updates` frames; working memory of 5-10 frames, consolidated into at most 10,000
-  long-term tokens (`gui_config.yaml`).
-- Task mode rebuilds the permanent memory before every propagation
-  (`MainController.rebuild_permanent_memory`): `clear_memory`, then every mask anchor as a
-  permanent memory frame, nearest to the start frame first, up to `permanent_anchor_limit()`.
-- The limit comes from `MEMORY_READ_BUDGET = 4e8` memory-token x query-token comparisons, a
-  constant described as "~8 GB of GPU memory". It assumes a GPU with that much room and does
-  not look at the GPU or at other processes. At 480 px on 16:9 frames it allows 136 anchors; at
-  the small-target size (960 px) it allows one.
-- Anchors left out of the permanent memory are fed as ordinary memory frames when reached.
+### Propagation
 
-## Small targets
+`PropagationPlan` describes the frame order, direction, anchors, and interval bounds. `PropagationRuntime` owns the progression through permanent-anchor loading, the seed frame, and following frames; its `InferenceCore` owns Cutie's mutable temporal memory. Local mode keeps an `InferenceCore` for the window, while the shared worker constructs one for a propagation job.
 
-At window open (`configure_task_resolution`), the median area of the mask anchors (else of up to
-25 pregenerated masks) at the default internal size (480 px) decides the processing size: below
-1,500 px the sequence is processed at 960 px with upscaling. It is decided once per window.
+In task mode, a propagation rebuilds permanent memory from selected mask anchors. Selection favors anchors nearest to the start frame, then loads them in chronological order. A fixed memory-read budget limits the selected anchors; it is an estimate and does not measure available VRAM. Anchors outside this selection still guide propagation when reached. Mask anchors are preserved, empty anchors stop the run, and a run started inside an interval stays within that interval. Images come from the selected display modality, with the resource manager's fallback when a paired frame is unavailable.
 
-## Video propagation (`MainController.on_propagate`)
+The task's resolution policy is evaluated when the window opens. It estimates target area from mask anchors or a sample of pregenerated masks. With the default 480-pixel shorter-edge setting, a target below the 1,500-pixel area threshold selects a 960-pixel internal size with upscaling enabled. This changes inference resolution, not the stored source images. See `cutieplus/engine/policies.py` for the formulas.
 
-Runs in the Qt thread and keeps the window responsive with `processEvents`:
+### Click interactions
 
-1. Refused when the current frame is an empty anchor.
-2. Task mode: rebuild the permanent memory (above).
-3. `clear_sensory_memory`; one step on the start frame with the shown probabilities as the mask
-   (not saved).
-4. For each following frame (read by `PropagationReader` through a `DataLoader` with
-   `num_read_workers` processes, always in the anchor modality):
-   - an empty anchor stops the run before the frame is processed;
-   - a mask anchor is fed with its mask (`step(image, mask)`) and its file is left alone;
-   - any other frame is segmented and its mask is queued for saving.
-5. At the end (or when paused), `task.touch()` if anything was written.
+`RitmEngine` separates the shared RITM network from each interaction's image, starting mask, ordered clicks, predictor state, and undo history. Local mode keeps one open interaction. The worker can track several interactions, keeping the active interaction on the inference device and inactive predictor snapshots on CPU. When a snapshot is evicted, accepted clicks reconstruct the interaction on demand.
 
-The frame number is derived from the start frame and the step count, so frame keys pressed
-during a run cannot redirect the saves.
+The click controller uses NoBRS with no click limit. Display color tables are created on CPU and copied to the image's device when needed; importing visualization code does not initialize CUDA.
 
-## Caches
+## Task data and persistence
 
-- `ResourceManager.get_image` and `get_mask`: LRU caches of `buffer_size` (20) entries; a mask
-  entry is invalidated when its frame is saved or deleted. A missing mask falls back to the
-  pregenerated mask of the input (binarized), then to nothing.
-- `ImageFeatureStore`: per-frame features, deleted after each step.
+The task backend interface carries arrays, tensors, and plain values, with no Qt objects. `TaskDataBackend` implements the file-based operations shared by local and service backends: frame commits, anchors, intervals, category and description edits, review submission, and reset operations. Inference reaches these operations through the selected backend.
 
-## Locking and identity
+Task inputs live under `workspace/cutie_tasks/` by default. Frames are read in place during annotation; the import operation can move a subset and fill missing category colors. Work is stored separately as `masks/` and `metadata.json` under `workspace/cutie_output/<subset>/<sequence>/`. See the [workflow guide](WORKFLOW.md#tasks-and-their-files) for the complete format and custom-path behavior.
 
-- `TaskLock` (`gui/task_state.py`): an exclusive `flock` on the task's lock file, released on close
-  or by the kernel when the process dies; the file describes the holder (labeler, host, pid). It
-  lives outside the output, in `~/.cache/cutieplus/task-locks/` (`lock_path`), one folder for
-  every window of the account, local or on a remote desktop.
-- The labeler is `--labeler`, else `$CUTIE_LABELER`, else the account name.
+Masks are written to temporary files and renamed into place. Save-worker exceptions are collected and reported instead of terminating a worker and leaving its queue blocked. Metadata writes read the existing JSON and replace the relevant sections under a process lock, then replace the file atomically. These operations avoid partially written individual files; they do not form a transaction across masks and metadata.
 
-## Official annotation data and the functions that change it
+`TaskLock` uses an exclusive `flock` in `~/.cache/cutieplus/task-locks/` to prevent concurrent windows or export from holding the same task under the shared account. The kernel releases the lock when its process exits. Task revisions increase with mask or anchor changes and are also used to guard shared-worker result application.
 
-The input (`workspace/cutie_tasks/<subset>/`: frames, `targets.json`, `categories.json`,
-`annotation/` pregenerated masks; `gui/task_input.py`) is only read; the Import window
-(`gui/task_import.py`) moves whole subsets into it. Everything below lives in the sequence's work
-folder, `workspace/cutie_output/<subset>/<sequence>/`, made on first open. It holds `masks/` and
-`metadata.json` only; each record is a section of `metadata.json`.
+`EditHistory` keeps up to 100 frame edits, including mask bytes and anchor state. RITM handles undo within an active click interaction before the controller falls back to frame-edit history. Propagation is not undoable.
 
-| Data | Written by |
-|---|---|
-| `masks/<frame>.png` (palette PNG) | `ResourceManager.save_mask` (background threads) from clicks, *Reset frame*, *Import mask*, *C* on a frame without a file, propagation; `delete_mask` (*Delete* anchor); `apply_frame_state` (undo/redo, written directly); `clear_sequence_masks` (*Reset all*) |
-| `anchors` | `TaskState.set_anchor` (`mark_anchor` after every human edit, `commit_anchor`), `remove_anchor`, `restore_anchor` (undo/redo), `clear_mask_references` |
-| `source` | `ensure_work_folder` (the browser's *Open* and *Discard*) |
-| `progress` | `TaskState.touch` (every change, in the same write as the anchors), `submit_for_review` (*Save*), `mark_done` (browser) |
-| `intervals`, `description`, `category` | `save_interval_pairs`, `on_interval_description_change`, `on_description_change`, `on_category_chosen`, `LocalTaskBackend.submit` (*Save*) |
-| `attention`, `discard` | `TaskState.save_attention` (*Need Attention*), `discard_task` (browser) |
+Dataset export is separate from ongoing annotation: `gui/dataset_export.py` plans clips from completed tasks, locks the source tasks, builds a temporary export, and replaces the previous export after completion. The [workflow guide](WORKFLOW.md) documents review states, masks, clip metadata, and demo-video output.
 
-Every write (`write_sections`) reads `metadata.json` again and replaces only its own sections,
-under a lock of the process: the browser and its labeling window write the same file. It is
-written to a temporary file and renamed (`_write_json`), without `fsync`. Before this branch,
-mask PNGs were written in place. A plain workspace (not a task) also has the original Cutie's
-`visualization/`, `soft_masks/` and `binary_masks/`.
+## Configuration and checks
 
-## Undo and redo
+The GUI and worker compose [`gui_config.yaml`](../cutie/config/gui_config.yaml) for model, memory, and I/O defaults. The inference-policy functions are in `cutieplus/engine/policies.py`. Root-owned service and client TOML files configure the optional deployment, while application administrators can change bounded runtime settings through the GUI.
 
-`EditHistory` keeps 100 frame edits; an edit is the frame's mask file bytes and anchor entry
-before and after. The clicks of one interaction form one edit; *Ctrl+Z* first takes back single
-clicks (RITM's own state stack), then whole edits. Propagation is not undoable.
+Relevant tests include `tests/test_engine.py` for inference behavior, `tests/test_resource_manager.py` for saving, `tests/test_task_state.py` for task metadata, and the `tests/test_cooperation_*.py` modules for authorization, lifecycle, and shared execution. Tests marked `models` or `gpu` require the corresponding weights or device; the default pytest configuration excludes `gpu` tests.
 
-## Export and review
+Run the CPU suite from the repository directory:
 
-Not started, in progress (any change), under review (*Save*, `MainController.on_save` →
-`TaskBackend.submit`), done (*Mark done* in the browser). The window's *Ctrl+Q*
-(`MainController.on_quit_done`) chains the steps: Save, then `TaskBackend.mark_done(quit_at)`
-while the task is still under review, and closes the window.
+```bash
+uv run pytest
+```
 
-The browser's *Export* (`gui/dataset_export.py`) writes the dataset into `workspace/cutie_export/`,
-laid out as a subset of the input: `visual/`, `thermal/`, `annotation/` (L 0/255 masks) and
-`seqinfo/<clip>_seqinfo.ini`. Each interval of each done sequence is a clip, numbered from 1 in
-the browser's order and zero-padded to the digits of the count. `plan_export` lists the clips and
-the problems that stop it; `lock_clips` takes every exported task's `TaskLock`; `write_export`
-(in a thread, `ExportWorker`) builds `.cutie_export.partial/` and puts it in place of the previous
-export only once complete. The seqinfo's `originalSource` is `<tab>/<sequence>`, and
-`intervalStart` / `intervalEnd` are frames of that sequence.
+For the GPU-marked tests, enable CUDA in the test fixtures and select that marker explicitly:
 
-## GUI-to-GPU dependencies
+```bash
+CUTIEPLUS_TEST_GPU=1 uv run pytest -m gpu
+```
 
-`MainController` uses the GPU directly in: `click_fn`, `on_undo` (click level), `on_propagate`,
-`rebuild_permanent_memory`, `on_commit` (non-task mode), `convert_current_image_mask_torch`,
-`model_image_torch`, `update_current_image_fast` (visualization on the GPU),
-`_try_load_layer`, the memory buttons and gauges, and `finish_close`
-(`torch.cuda.empty_cache`). `gui/interactive_utils.py` holds GPU color tables.
-`gui/task_browser.py` loads the models.
+The fixtures use offscreen Qt and temporary task and lock directories. If an inherited `PYTHONPATH` or globally discovered pytest plugin interferes with collection, use an isolated invocation:
 
-## Problems found in the review
-
-1. **Save worker:** an exception in a save thread (disk full, permissions) ended the thread
-   without `task_done()`. `save_queue.join()`, called on every frame change, then waited
-   forever, and once the queue filled, every save blocked: the window froze. Fixed on this
-   branch: `task_done()` always runs, mask files are written to a temporary file and renamed,
-   and failures are reported in the window (`ResourceManager.check_saves`). Covered by
-   `tests/test_resource_manager.py`.
-2. CUDA is initialized by importing `gui/interactive_utils.py` (above). Fixed since: the color
-   tables are made per device when first used.
-3. A mask anchor without a mask file (and without a pregenerated mask) makes every propagation fail in
-   `rebuild_permanent_memory` (`torch.from_numpy(None)`), after the run button has already
-   switched to *Pause*.
-4. `MEMORY_READ_BUDGET` encodes one GPU's capacity and ignores other processes.
-5. RITM empties the CUDA cache after every click, which also discards the cached blocks of any
-   other work in the process.
+```bash
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest
+```

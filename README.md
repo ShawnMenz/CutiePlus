@@ -1,85 +1,141 @@
 # CutiePlus
 
-## Declaration
+CutiePlus is a video object segmentation annotation tool built on [Cutie](https://github.com/hkchengrex/Cutie). It turns aligned RGB and thermal frame sequences into annotated datasets: select a target, refine its mask with clicks, propagate it through the sequence, review the results, and export labeled clips.
 
-**CutiePlus is a modified version of [Cutie](https://github.com/hkchengrex/Cutie), the video object segmentation framework from *Putting the Object Back into Video Object Segmentation* (CVPR 2024, Highlight).**
+CutiePlus extends the original interactive demo with:
 
-All credit for the model and the original code belongs to the original authors:
+- **Dataset workflows:** browse subsets and sequences, track progress, and export completed clips with masks and metadata.
+- **RGB–thermal annotation:** switch between aligned modalities while editing the same target mask.
+- **Anchors and review:** preserve human corrections during propagation, mark target absence, and review clips before completion.
+- **Shared GPU inference:** optionally support multiple annotators through individual remote desktops and a queued GPU worker.
 
-[Ho Kei Cheng](https://hkchengrex.github.io/), [Seoung Wug Oh](https://sites.google.com/view/seoungwugoh/), [Brian Price](https://www.brianpricephd.com/), [Joon-Young Lee](https://joonyoung-cv.github.io/), [Alexander Schwing](https://www.alexander-schwing.de/) — University of Illinois Urbana-Champaign and Adobe.
+Each task labels **one target**. See [changes from Cutie](docs/MODIFICATIONS.md) for the feature comparison and compatibility notes.
 
-[[Original repository]](https://github.com/hkchengrex/Cutie) [[arXiv]](https://arxiv.org/abs/2310.12982) [[PDF]](https://arxiv.org/pdf/2310.12982.pdf)
+## Quick start
 
-- CutiePlus is based on the original repository at commit [`ec5cdd4`](https://github.com/hkchengrex/Cutie/commit/ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a) (8 November 2024) and keeps its git history. Modified by Zexuan Meng.
-- It is **not affiliated with or endorsed by** the original authors. Please report problems specific to CutiePlus in the [CutiePlus issue tracker](https://github.com/ShawnMenz/CutiePlus/issues), not to them.
-- If you decide to use the pretrained Cutie weights, they are the original authors' work. They are downloaded from the original Cutie release and are not part of this repository.
-- If you use CutiePlus, **please cite the original Cutie paper** (see [Citation](#citation)). CutiePlus itself is not a publication.
-- Licensed under the MIT License, like the original ([License](#license)).
+The steps below set up a local desktop session. Run the commands in Bash. For remote annotators sharing a GPU, complete this setup on the host, then follow [multi-annotator deployment](docs/COOPERATION.md).
 
+### 1. Check the requirements
 
-## What's different from Cutie?
+- **Linux with a graphical desktop.** The committed environment targets Linux and Python 3.12.
+- **An NVIDIA GPU compatible with the locked PyTorch CUDA 13 build**, with a driver from the 580 series or newer. See [NVIDIA's compatibility requirements](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html). The local application falls back to CPU when CUDA is unavailable; GPU inference is recommended.
+- **Git, curl, a C/C++ compiler, and internet access.** RITM compiles a Cython extension when first loaded.
 
-The original Cutie ships a model and a GUI for interactive video segmentation. CutiePlus keeps both and extends Cutie with:
-
-- **Task-based annotation workflows**: a sequence opens as a *task* with an editable clip interval and target description (several intervals optional, each with its own description) and optional pregenerated masks; a *task browser* lists the sequences of every subset of the input (a tab each, added with *Import*) with their status, annotators and target text, and opens them one at a time.
-- **Anchor-aware mask propagation**: every human edit makes a frame an *anchor* that propagation never overwrites; an empty anchor means the target is absent and propagation stops there; propagation started inside a clip interval stays inside it; permanent memory is rebuilt from the anchors.
-- **RGB/thermal visualization and annotation support**: a visible (RGB) / thermal toggle; clicks and propagation use the modality shown, with the same anchors (the two are aligned), and the frame slider marks every anchor.
-- **Task locking and edit records**: a task is open in one window at a time, and every change records who made it (the signed-in user on a cooperation host; else `--labeler`, `$CUTIE_LABELER`, or the account name).
-- **Review workflow**: not started, in progress, under review (*Save*, Ctrl+S), done. *Export* in the browser writes the dataset into `workspace/cutie_export/`: one clip per interval of every done sequence, with its frames, masks and a seqinfo naming the sequence it was cut from. A *Need Attention* toggle in the window flags a sequence for further attention (status *Attention* in the browser; it is not marked done while flagged), and *Discard* in the browser leaves a sequence out of the dataset (status *discarded*; *Restore* undoes it).
-- **Cooperation on one computer with one GPU** (optional): several people label at once, the owner at the monitor and collaborators on remote desktops reached over SSH and VNC; each signs in with an identity and a role (Admin, Supervisor, Annotator), supervisors and admins manage collaborators in the task browser (*Manage Annotators*), and every model runs in one shared GPU worker with a queue. See [COOPERATION.md](docs/COOPERATION.md).
-- **Undo/redo and improved interactive editing**: undo/redo of clicks, *Reset frame*, *Import mask* and anchor changes; the click model runs without a click limit.
-- **A modern uv-based environment**: Python 3.12 and PyTorch with CUDA 13, with a lockfile.
-- **GUI and robustness improvements for repeated annotation work**: zoom and scroll, a layout that adapts to any screen size, keyboard shortcuts shown on the buttons, a Tips window, colored status labels, a light/dark/eye-care theme button, a flat rounded "soft cards" look with a green accent (`gui/style.py`), and fixes.
-
-For a detailed, file-level description of the changes relative to upstream Cutie commit [`ec5cdd4`](https://github.com/hkchengrex/Cutie/commit/ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a), see [MODIFICATIONS.md](docs/MODIFICATIONS.md).
-
-## Installation
-
-Tested on Ubuntu 24.04 with an RTX 4090 NVIDIA GPU. The environment is managed with [uv](https://docs.astral.sh/uv/): Python 3.12, and PyTorch with CUDA 13.0 (needs NVIDIA driver 580 or newer).
-
-**Prerequisites:**
-
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-
-**Install:**
+On an Ubuntu/Debian desktop, install the command-line tools and Qt runtime libraries:
 
 ```bash
-git clone https://github.com/ShawnMenz/CutiePlus.git
-cd CutiePlus
-uv sync
+sudo apt update
+sudo apt install git curl build-essential libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0
 ```
 
-This creates `.venv` from `uv.lock`. Training and benchmark evaluation need extra packages: `uv sync --extra train`, `uv sync --extra eval`, or `uv sync --all-extras`.
+For missing display libraries or CUDA issues, see [setup troubleshooting](docs/SETUP.md#troubleshooting).
 
-**Tests** (pytest comes with `uv sync`): `uv run pytest` runs the CPU tests; `CUTIEPLUS_TEST_GPU=1 uv run pytest -m gpu` the ones that need the GPU. If a system-wide `PYTHONPATH` (ROS, for example) brings its own pytest plugins, run them with `env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`.
-
-**Download the pretrained models** (they come from the original Cutie [release](https://github.com/hkchengrex/Cutie/releases/tag/v1.0) and are not stored in this repository):
+### 2. Install CutiePlus and its models
 
 ```bash
+# Install uv if it is not already available.
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
+
+git clone https://github.com/ShawnMenz/CutiePlus.git
+cd CutiePlus
+uv sync --locked
 uv run python cutie/utils/download_models.py
 ```
 
-Run the other commands below with `uv run` as well (e.g. `uv run python interactive_demo.py ...`).
+`uv` installs Python 3.12 as needed and creates `.venv/`; environment activation is unnecessary when using `uv run`. Keep subsequent commands in the repository directory. The model downloader writes these two upstream checkpoints:
 
-## Quick Start
+```text
+weights/
+├── cutie-base-mega.pth
+└── coco_lvis_h18_itermask.pth
+```
 
+Check that the environment can import PyTorch and detect the GPU:
 
+```bash
+uv run python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+```
 
-## References and acknowledgements
+For GPU use, the final line should report `CUDA available: True`. See [environment and model checks](docs/SETUP.md) for additional diagnostics and manual model downloads.
 
-- The GUI tools uses [RITM](https://github.com/SamsungLabs/ritm_interactive_segmentation) for interactive image segmentation. This repository also contains a redistribution of their code in `gui/ritm`. That part of code follows RITM's license.
-- For automatic video segmentation/integration with external detectors, see [DEVA](https://github.com/hkchengrex/Tracking-Anything-with-DEVA).
-- The interactive demo is developed upon [IVS](https://github.com/seoungwugoh/ivs-demo), [MiVOS](https://github.com/hkchengrex/MiVOS), and [XMem](https://github.com/hkchengrex/XMem).
-- The original authors used [ProPainter](https://github.com/sczhou/ProPainter) in their video inpainting demo.
-- Thanks to [RTIM](https://github.com/SamsungLabs/ritm_interactive_segmentation) and [XMem++](https://github.com/max810/XMem2) for making this possible.
-- Thanks to the original authors of Cutie, and to everyone who contributed to it, for releasing it as open source.
+### 3. Prepare a dataset
 
+Prepare your own frames under `workspace/cutie_tasks/`. Each subset becomes a browser tab, and each sequence becomes a task. Align the RGB and thermal images before import; the same mask applies to both. Use matching sequence names and zero-padded frame basenames:
 
-## License
+```text
+workspace/cutie_tasks/example/
+├── categories.json
+├── visual/sequence_01/
+│   ├── 000001.jpg
+│   └── 000002.jpg
+└── thermal/sequence_01/
+    ├── 000001.jpg
+    └── 000002.jpg
+```
 
-CutiePlus is released under the [MIT License](LICENSE), the same license as the original Cutie:
+Create `categories.json` with the target categories for the subset:
 
-- Copyright (c) 2024 Ho Kei Cheng (the original Cutie)
-- Copyright (c) 2026 Zexuan Meng (the modifications in this repository)
+```json
+["car", "person"]
+```
 
-The redistributed RITM code in `gui/ritm` is under its own MIT license, Copyright (c) 2021 Samsung Electronics Co., Ltd. ([`gui/ritm/LICENSE`](gui/ritm/LICENSE)). The pretrained weights are the original authors' and are downloaded from their release page.
+Frames may be JPG, JPEG, PNG, or BMP. The **Import → Save** operation validates the subset and assigns colors to name-only categories, updating `categories.json`. A subset already at the location above stays there. **Importing a folder from elsewhere moves it into the workspace**; keep a separate copy if needed. See [input format](docs/WORKFLOW.md#tasks-and-their-files) for optional initial masks, target descriptions, and sequence metadata.
+
+### 4. Launch and annotate
+
+```bash
+uv run python interactive_demo.py
+```
+
+1. Choose **Import**, check the subset, and select **Save**. Select a sequence in its tab and choose **Open**. The first open loads the models and may compile the click-model extension.
+2. Choose the target category and enter a description. Left-click the target and right-click the background to refine its mask. Press **F** or **B** to propagate forward or backward. Inspect and correct the masks; press **T** to switch between RGB and thermal.
+3. Set the clip's start and end frames if you want to export part of the sequence. Press **Ctrl+S** to submit it for review. After reviewing, select the sequence in the browser and choose **Mark done**.
+4. Close the labeling window and choose **Export** in the browser. All completed intervals across subsets are assembled in `workspace/cutie_export/`.
+
+Masks are saved as you work in `workspace/cutie_output/`; **Ctrl+S** also submits the task for review. Press **F1** for the in-app labeling guide. See the [workflow guide](docs/WORKFLOW.md) for anchors, intervals, review, custom task locations, and export behavior.
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Setup and troubleshooting](docs/SETUP.md) | Environment checks, model downloads, and startup problems |
+| [Annotation workflow](docs/WORKFLOW.md) | Input format, task states, intervals, outputs, and launch options |
+| [Multi-annotator deployment](docs/COOPERATION.md) | Shared GPU installation, remote access, accounts, and recovery |
+| [Changes from Cutie](docs/MODIFICATIONS.md) | Added capabilities and differences from upstream |
+| [Changelog](docs/CHANGELOG.md) | Official CutiePlus releases, starting with v1.0.0 |
+| [Architecture](docs/ARCHITECTURE.md) | Current GUI, inference backends, service, and storage design |
+| [Training](docs/TRAINING.md) and [evaluation](docs/EVALUATION.md) | Optional Cutie model workflows and benchmark data |
+
+The [in-app labeling guide](gui/TIPS.md), available with **F1**, is kept with the GUI resources so the application can load it directly.
+
+## Attribution and license
+
+CutiePlus builds on [Cutie](https://github.com/hkchengrex/Cutie), starting from upstream commit [`ec5cdd4`](https://github.com/hkchengrex/Cutie/commit/ec5cdd4cf16f75c73ad785a2f96fb97dbad4125a), and is developed independently from that baseline with its own releases. The Cutie model and original paper are the work of Ho Kei Cheng, Seoung Wug Oh, Brian Price, Joon-Young Lee, and Alexander Schwing. CutiePlus is not affiliated with or endorsed by the original authors; please report CutiePlus issues [here](https://github.com/ShawnMenz/CutiePlus/issues).
+
+The repository is released under the [MIT License](LICENSE). The bundled [RITM click model](gui/ritm/LICENSE) has its own license. The interactive demo also builds on [IVS](https://github.com/seoungwugoh/ivs-demo), [MiVOS](https://github.com/hkchengrex/MiVOS), and [XMem](https://github.com/hkchengrex/XMem); thanks also to [XMem++](https://github.com/max810/XMem2). Model weights and datasets may have their own terms.
+
+## Citation
+
+If you use CutiePlus in your work, please cite both the software and the original Cutie paper. GitHub's **Cite this repository** feature provides a software citation from [CITATION.cff](CITATION.cff). You can also use the following BibTeX entries, updating the software entry with the version or commit you used:
+
+```bibtex
+@software{meng_cutieplus,
+  author = {Meng, Zexuan},
+  title = {{CutiePlus}},
+  version = {1.0.0},
+  year = {2026},
+  url = {https://github.com/ShawnMenz/CutiePlus}
+}
+```
+
+For the underlying Cutie model:
+
+```bibtex
+@inproceedings{cheng2024putting,
+  title={Putting the Object Back into Video Object Segmentation},
+  author={Cheng, Ho Kei and Oh, Seoung Wug and Price, Brian and Lee, Joon-Young and Schwing, Alexander},
+  booktitle={CVPR},
+  year={2024}
+}
+```

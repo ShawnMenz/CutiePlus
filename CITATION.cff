@@ -1,9 +1,10 @@
 cff-version: 1.2.0
-message: "If you use CutiePlus, please cite the original Cutie paper and acknowledge CutiePlus."
+message: "If you use CutiePlus, please cite this software and the original Cutie paper listed in the README."
 title: "CutiePlus"
 abstract: "A multi-annotator video object segmentation annotation tool built upon Cutie."
 type: software
 version: "1.0.0"
+date-released: 2026-10-28
 authors:
   - family-names: Meng
     given-names: Zexuan

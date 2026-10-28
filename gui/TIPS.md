@@ -97,7 +97,7 @@ Three cards under the frame slider, left to right; in a narrow window they wrap 
   - Memory gauges: permanent (your anchors), working, long-term, and GPU. The first three show the memory of your latest propagation, live during the run and as the run left it afterwards.
   - Reset all memory / Reset non-permanent memory: clears the model's memory; masks on disk stay. Rarely needed, since each propagation rebuilds memory from the anchors.
   - Working and long-term memory settings: model tuning. The defaults are fine.
-  - Import mask: loads a mask image into this frame and makes it an anchor.
+  - Import mask: loads a single-channel or palette mask with values 0 (background) and 1 (target), resizes it to the current frame, and makes it an anchor. Convert 0/255 masks to 0/1 before using this control; the subset's starting `annotation/` masks can use either convention.
   - Reset all frame masks (red outline): after confirmation, deletes this sequence's masks. In task mode it also clears the anchors and returns the task to "in progress"; the pregenerated masks of the input show again. This cannot be undone.
 - Small targets are processed at 960 px instead of 480 px; the messages say which on start-up.
 

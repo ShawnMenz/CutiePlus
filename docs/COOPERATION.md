@@ -1,233 +1,225 @@
-# Cooperation: several people, one GPU
+# Multi-annotator deployment
 
-CutiePlus can let several people label at once on one Linux computer with one GPU: the owner at the
-monitor, and collaborators who reach a remote desktop of their own over SSH and VNC. Everyone runs
-as the same Linux account, but signs in to CutiePlus with an identity of their own, with one of
-three roles, and every model runs in one shared GPU worker.
+The optional cooperation service lets several annotators use one Linux host and one shared GPU. The operator can work at the host's display, while remote annotators connect to individual desktops through SSH and VNC. Each person signs in with a CutiePlus account. All remote desktops and the GPU worker run under the same Linux desktop account.
 
-| Role | May |
-|---|---|
-| Annotator | label; their own GPU jobs (see, cancel, retry); their own password and sign-out |
-| Supervisor | the same, and everything about annotators: add, edit, suspend, reactivate, remove, reset their credential, their SSH keys, desktops, sessions and jobs |
-| Admin | everything about annotators and supervisors, make or revoke supervisors, delete users for good, every job, the settings, the whole audit log |
+Complete the [Quick Start](../README.md#quick-start) before deploying this service. For dataset preparation and annotation, see the [workflow guide](WORKFLOW.md).
 
-The first admin is the **owner**, created by a maintenance command on the computer itself. Nothing
-in the application can suspend, remove, demote or reset the owner; only the maintenance commands
-below can recover or hand over the ownership. Being an admin gives no access to the operating
-system.
+## Install on the GPU host
 
-## How it fits together
+### Requirements
 
-```
-your login at the monitor ── Cutie window ─┐
-cutieplus-desktop@N (one per collaborator) ─┤ Xtigervnc on 127.0.0.1:5900+N, openbox, Cutie window
-                                            ▼ /run/cutieplus/app.sock (sign-in required)
-cutieplus-service   the cutieplus account; /opt/cutieplus code; /var/lib/cutieplus database
-      │ worker.sock                     │ helper.sock (the cutieplus account only)
-      ▼                                 ▼
-cutieplus-gpu-worker                cutieplus-helper (root): the SSH policy file, VNC passwords,
-  the only process using the GPU      starting and stopping desktops, cutting SSH connections
-port 22 (your sshd): collaborators sign in as cutieplus-jump, which may only hop on to
-  ▼
-cutieplus-sshd (port 2222, this computer only): each key forwards to its own desktop only
+- A systemd-based Linux host with a working NVIDIA GPU and a graphical desktop for local operation.
+- A checkout with its `.venv` and model weights prepared using the README instructions. The worker and remote desktops use this checkout directly; keep it at a stable path.
+- The host's `/usr/bin/python3` must provide `tomllib` (Python 3.11 or later). The installer uses it for the helper and a separate service environment, independently of the project's Python 3.12 environment.
+- `sudo`, `uv`, and network access to install the service dependencies.
+- An SSH server reachable by collaborators on port 22. Remote annotators need an SSH client, a public key, and a VNC viewer.
+
+On Ubuntu, install the remote desktop dependencies:
+
+```bash
+sudo apt install tigervnc-standalone-server tigervnc-tools openbox dbus-x11 openssh-server
 ```
 
-- **Sign-in.** Every Cutie window signs in, at every start; the session lives in that window only.
-  A desktop's windows sign in as that desktop's user only; at the monitor anyone may. A change of
-  someone's role, a suspension or a credential reset ends their sessions at once: they sign in
-  again with what they may do now. Quit on the sign-in page ends Cutie; on a remote desktop it
-  opens again a moment later, since the desktop runs nothing else.
-- **A remote desktop runs Cutie only.** Its openbox gets the release's configuration
-  (`deploy/openbox/`): no menu, no key binding, nothing that starts a program. Openbox's own
-  defaults would offer a terminal, a shell as the desktop account, from a right click.
-- **The GPU.** Windows never load a model. Clicks and propagations go to the one GPU worker:
-  propagations wait in one queue (first come, first served, one at a time; no role goes first) and
-  clicks run between the steps of the running one. A worker takes a lock on
-  `/var/lib/cutieplus-gpu/gpu.lock` before it touches the GPU, so two never run. Other programs of
-  the account can still use the GPU.
-- **Results.** A propagation starts from a copy of its inputs taken when it was asked for. Its masks
-  are written to the task when it ends, and only if the task did not change meanwhile; otherwise
-  the result is held, and the window asks whether to apply it (anchors are never overwritten) or
-  discard it. While a propagation waits for the GPU, its window stays editable.
-- **SSH.** Collaborators' public keys are registered in Manage Annotators. Each becomes one line of
-  `/etc/cutieplus/ssh/authorized_keys`, which the helper writes and reads back: forwarding to that
-  user's own VNC port only, no shell, no SFTP, expiring if the key has a date. The annotation
-  sshd listens on this computer only: collaborators come in through port 22, since many networks'
-  firewalls (campus networks often) pass SSH on port 22 alone (on another port they let the
-  connection open, then drop everything). There they sign in as `cutieplus-jump`, an account of
-  its own (no shell, no password), with the same keys (`/etc/cutieplus/ssh/jump_keys`), and may
-  open a channel to the annotation sshd and nothing else: no shell, no command, no other port, no
-  Unix socket, nothing listening (`ssh -J`). Port 22's sshd holds that account to it through one
-  drop-in, `/etc/ssh/sshd_config.d/20-cutieplus-jump.conf`; nobody else's settings change, yours
-  included.
-- **What the database holds.** Users, password hashes (Argon2id), token hashes, keys, desktops,
-  connections, GPU jobs and the audit log, in SQLite (`/var/lib/cutieplus/cooperation.sqlite3`,
-  readable by the service account only). Frames, masks and model weights stay files.
+### Install and check the services
 
-The shared Linux account limits how far one desktop is kept from another: any program of the
-account can read every desktop's VNC credential, take the GPU lock, or change the repository's code
-that the GPU worker and the desktops run. Sign-in, roles, SSH access and the database are
-protected from it; the files of the account are not.
-
-## Installing
-
-Run as yourself (the account that owns the repository), with sudo:
+Run the installer from the repository as the desktop account that owns the checkout, using `sudo`. It requires `SUDO_USER` and refuses a direct root login.
 
 ```bash
 sudo deploy/install.sh
+systemctl status cutieplus-service cutieplus-helper cutieplus-gpu-worker cutieplus-sshd
 ```
 
-It creates the `cutieplus` account, copies the cooperation code to `/opt/cutieplus` (root-owned,
-with its own Python environment), writes `/etc/cutieplus/service.toml` and `client.toml`, the
-annotation sshd's configuration, the systemd units, port 22's drop-in (checked by sshd before
-port 22 reloads), and starts the service, the helper, the GPU worker and the annotation sshd. Run it again after updating the
-repository. From then on every Cutie window on this computer signs in.
+The installer creates two system accounts, writes systemd units and SSH configuration, and starts four services:
 
-Collaborators' SSH command names this computer by its IP address on the default route, never by
-its host name (which resolves on this computer only). To name it otherwise, e.g. by a DNS name,
-`sudo deploy/install.sh --ssh-host <name or address>` sets `ssh_host` in `service.toml` (and
-updates as usual).
+| Component | Purpose |
+| --- | --- |
+| `cutieplus-service` | Application accounts, permissions, database, management operations, and GPU queue; runs as the protected `cutieplus` account. |
+| `cutieplus-helper` | A root service with fixed operations for SSH policy, VNC credentials, desktops, and connections. |
+| `cutieplus-gpu-worker` | Model inference under the desktop account, using the checkout's `.venv` and weights. |
+| `cutieplus-sshd` | An annotation SSH server listening on the host's loopback interface, port 2222 by default. |
 
-Then create the owner and set your password:
+The service and helper use a root-owned release in `/opt/cutieplus`, with a separate environment in `/opt/cutieplus/venv`. The installer also adds `/etc/ssh/sshd_config.d/20-cutieplus-jump.conf` to the host's existing SSH server: collaborators enter as `cutieplus-jump` and can forward only to the annotation SSH server. The regular installation changes SSH policy for that jump account; the optional host-wide key policy is described below.
+
+If a service fails, inspect its journal before continuing:
 
 ```bash
-sudo cutieplus-admin bootstrap-owner --login <your login> --name "<your name>"
-uv run python interactive_demo.py      # at the monitor: "First time?", the token, a password
+sudo journalctl -u cutieplus-service -u cutieplus-helper -u cutieplus-gpu-worker -u cutieplus-sshd -n 100 --no-pager
 ```
 
-`sudo deploy/install.sh --disable` stops it all and removes `client.toml`: windows started
-afterwards run the models themselves again, as before. The database and settings are kept.
+The installer normally uses the host's IPv4 address on its default route for connection instructions. If collaborators need another reachable address or DNS name, specify it explicitly:
 
-Once everything works, `sudo deploy/install.sh --port22` makes port 22 read keys from a root-owned
-file (`/etc/ssh/authorized_keys.d/<account>`) instead of `~/.ssh/authorized_keys`, which any
-window of the account could change. Your password sign-in is not affected.
+```bash
+sudo deploy/install.sh --ssh-host gpu.example.org
+```
 
-Settings that may change while it runs (session lengths, the pending-job limit, backups) are in
-Manage Annotators → Settings. The rest is `/etc/cutieplus/service.toml`; after changing it, restart
-the services (`sudo systemctl restart cutieplus-service cutieplus-helper cutieplus-gpu-worker`) and,
-for the SSH port or display range, run the installer again.
+Replace `gpu.example.org` with your host's address. This also runs the normal installation/update steps. Do not expose port 2222 or the VNC ports externally; collaborators reach them through the SSH tunnel on port 22.
 
-## Adding a collaborator
+### Create the owner
 
-1. In the task browser, **Manage Annotators → Add Annotator** (an admin picks the role). The
-   collaborator gets a desktop (`:2`, `:3`, … up to `:20`) and a card is shown once: their setup
-   token, their desktop's VNC password, and the SSH command. Hand it on privately.
-   Later, **Connection info…** (beside the selected user's name) shows their login name, the SSH
-   command and the VNC address to copy at any time. The setup token and the VNC password are
-   never kept, so the card makes new ones on request (**New setup token**, **New VNC password**:
-   the old ones stop working).
-2. They send you their **public** key (the one line of `id_ed25519.pub`; `ssh-keygen -t ed25519`
-   makes one). Select them, **Add key…**, paste it, name the device. Private keys are refused.
-3. On their computer:
+Choose a CutiePlus login and display name; these are application credentials, separate from Linux accounts. For example:
 
-   ```bash
-   ssh -N -o ExitOnForwardFailure=yes -J cutieplus-jump@<this computer's address> -p 2222 \
-       -L 5902:localhost:5902 <account>@localhost
-   ```
+```bash
+sudo cutieplus-admin bootstrap-owner --login alex --name "Alex Chen"
+uv run python interactive_demo.py
+```
 
-   `-J` signs in on port 22 as `cutieplus-jump` with their key and hops to the annotation sshd
-   (`localhost`, port 2222, on this computer), which forwards their own desktop. The first time,
-   ssh asks them to accept two host keys: this computer's, then the annotation sshd's
-   (`localhost`).
+At the host's display, select **First time, or after a reset? Use your setup token**, enter the login and the printed token, and set a password. Passwords must contain 10–256 characters and cannot equal the login name. Setup tokens are shown once and expire after 72 hours by default.
 
-   Then a VNC viewer to `localhost:5902` with the VNC password: their computer forwards the
-   desktop's own port (5902 for `:2`, 5903 for `:3`, …), so a VNC server of theirs (5900, 5901) or
-   another desktop's tunnel does not collide. If that port is in use there anyway, ssh says so and
-   ends: an earlier tunnel may still run (`lsof -nP -iTCP:5902 -sTCP:LISTEN` on a Mac or Linux,
-   `netstat -ano | findstr :5902` on Windows). In the Cutie window there: **First time, or after
-   a reset? Use your setup token**, their login name, the setup token, and a password of their
-   own.
+The owner is the application's admin. This version permits creating annotators and supervisors; ownership transfer is the maintenance command for changing the admin. The owner cannot be suspended, removed, deleted, demoted, or have their credential reset through the application.
 
-If they connect from outside your network, it is port 22 that must reach this computer (a
-VPN, or a rule of the network's firewall); port 2222 stays closed to the outside.
-A desktop keeps running when they disconnect; they come back to the same one.
+Installing `/etc/cutieplus/client.toml` enables cooperation mode for newly started windows on this host. Each window requires sign-in and uses the GPU service. A managed remote desktop accepts only its assigned user; a window at the host's display accepts any active application user. Plain-workspace launches (`--images`, `--video`, or `--workspace` without `--tasks`) are refused in cooperation mode; use the task browser.
 
-## Appointing a supervisor
+## Connect an annotator
 
-An admin selects the annotator in Manage Annotators and clicks **Make Supervisor** (it asks for the
-admin's password again if they signed in more than 10 minutes ago). The user is signed out and,
-after signing in again, sees Manage Annotators with the annotators in it. **Revoke Supervisor**
-makes them an annotator again; their desktop and work stay.
+### Prepare the account
 
-## Revoking a key, disconnecting
+1. Open **Manage Annotators** in the task browser. An admin selects **Add user** and chooses Annotator or Supervisor; a supervisor selects **Add Annotator**.
+2. Enter the login and display name. Logins have 2–32 characters: a letter followed by letters, digits, `.`, `_`, or `-`; they are normalized to lowercase. Some system and role names are reserved for users created in the application.
+3. Copy the setup token, VNC password, and connection instructions from the resulting card and deliver them privately. New users receive a desktop automatically, using displays `:2` through `:20` by default. Wait for its management operation to finish before connecting.
+4. Obtain the annotator's SSH **public** key, such as the contents of `~/.ssh/id_ed25519.pub`. Select the user, choose **Add key…**, paste the key, and name the device. The application rejects private keys. An annotator can generate an Ed25519 key with `ssh-keygen -t ed25519` if needed.
 
-- **Revoke** (the key's row): the key stops working once the policy file is rewritten, and its
-  open connections are cut; their other keys keep working. A revoked key never comes back: they
-  make a new one.
-- **Disconnect** (a connection's row): ends that SSH connection only; they may connect again.
+**Connection info…** displays the login, SSH command, and VNC address later. A setup token or VNC password is displayed only when generated. **New setup token** and **New VNC password** replace the old values; generating a VNC password restarts the desktop. The database keeps hashes of application credentials and tokens. VNC authentication uses a credential file on the host.
 
-The Operations card shows each change as *Applying* until the system has done it, and *Failed* with
-the reason while the service keeps trying (for example, if the helper is down).
+### Open the remote desktop
 
-## Suspending and removing
+On the annotator's computer, run the exact SSH command shown in **Connection info…**. For a desktop on display `:2`, it has this form:
 
-- **Suspend**: they are signed out everywhere, their SSH access stops and their connections are
-  cut, their desktop stops (its window saves and closes), and their waiting GPU jobs are cancelled.
-  **Reactivate** brings access and desktop back.
-- **Remove**: the same, for good: their keys are revoked, they are archived, and their desktop is
-  freed once it has stopped. Their annotation files, jobs and audit records are kept.
-- **Reset credential**: their password stops working; a new setup token is shown once.
-- **Delete permanently…** (admins; never yourself or the owner): asks for your password every
-  time, however recently you signed in. Their access ends at once, as with Remove; once their
-  desktop has stopped and been released, their account, SSH keys, sessions and GPU job records are
-  deleted and their login name may be given again. Their annotation files and the audit log are
-  kept: the log still names them, as "<login> (deleted)" for what they did. Backups made before
-  still hold them until they are rotated out.
+```bash
+ssh -N -o ExitOnForwardFailure=yes -J cutieplus-jump@gpu.example.org -p 2222 \
+    -L 5902:localhost:5902 desktop_account@localhost
+```
 
-## The GPU
+Use the generated command's host, Linux account, and port values. The CutiePlus login is entered in the application, not substituted for `desktop_account`. The public key must be available to the SSH client for both hops. Verify the host keys with the operator when connecting for the first time.
 
-The **GPU queue** button (every role) shows the worker, the running and waiting propagations
-(owners as far as you may see them) and your own, with Cancel and Retry.
+Keep the SSH process running. In a VNC viewer, connect to the address from the card (`localhost:5902` in this example) and enter the VNC password. In the CutiePlus window, use the setup-token option to create the application password, then annotate normally.
 
-- Cancelling a waiting propagation is immediate; a running one stops after its current step, once
-  the worker has freed it. The frames it made are kept, as with Pause.
-- If the worker crashes, its running job is *interrupted* with the frames it made; nothing is
-  retried by itself. **Retry** queues a new job from the same inputs.
-- If the worker stops answering, the service restarts its unit (systemd ends every process of the
-  old one before the new one starts). By hand:
-  `sudo systemctl restart cutieplus-gpu-worker` and `journalctl -u cutieplus-gpu-worker`.
-- Out of GPU memory, a job fails (*oom*) and the queue goes on. Close other programs using the GPU
-  (`nvidia-smi`), then Retry.
-- `sudo cutieplus-admin status` sums up users, the SSH policy, the worker and the jobs.
+SSH forwarding and VNC address syntax depends on the viewer: some viewers use `localhost::5902` to select TCP port 5902 explicitly. Use the supplied port rather than treating 5902 as a display number.
 
-## Backups and restoring
+Disconnecting the SSH tunnel leaves the remote desktop running, so the annotator can reconnect to the same session. Closing the application on a remote desktop starts it again after a short delay. Remote desktops provide CutiePlus with a restricted Openbox configuration; they do not provide a general-purpose terminal or desktop menu.
 
-The service backs the database up every 24 hours (Settings: `backup_interval_hours`, `backup_keep`)
-into `/var/lib/cutieplus/backups/`; `sudo cutieplus-admin backup` makes one now. To restore:
+## Manage users and work
+
+### Roles and access
+
+| Role | Permissions |
+| --- | --- |
+| Annotator | Annotate; inspect, cancel, and retry their own GPU jobs; change their password and sign out. |
+| Supervisor | Annotator permissions, plus account, key, desktop, session, and job management for annotators. |
+| Admin | Manage annotators and supervisors; appoint or revoke supervisors; permanently delete users; manage all jobs, settings, and the audit log. |
+
+An admin can select **Make Supervisor** or **Revoke Supervisor**. A role change ends that user's application sessions; their desktop and annotation files remain. The service checks permissions against the current target role on every request. Changing a role, removing a user, or changing settings requires the manager's password again when the last authentication is older than 10 minutes by default. Permanent deletion asks for it every time.
+
+| Action | Effect |
+| --- | --- |
+| **Revoke** a key | Removes that key from the published SSH policy and disconnects its tracked connections. Other keys remain usable. A revoked key cannot be reactivated. |
+| **Disconnect** a connection | Ends that SSH connection; the key can reconnect. |
+| **Suspend** | Ends application sessions, disables SSH access, stops the desktop, cancels queued jobs, and requests cancellation of a running job. **Reactivate** restores access and the desktop. |
+| **Remove** | Archives the user, revokes their keys, ends access, and releases the desktop after it stops. Annotation files, job records, and audit history remain. |
+| **Reset credential** | Invalidates the password and application sessions and issues a new setup token. |
+| **Delete permanently…** | Admin-only deletion after access has ended and the desktop is released. Removes the account, keys, sessions, and job records. Annotation files and audit history remain; the login can be reused. Older backups may still contain the deleted records. |
+
+Changes to desktops and SSH access are asynchronous. The **Operations** card shows **Applying** until the system change completes and **Failed** with a reason while the reconciler retries. Check this status when the GUI has accepted a request but access has not changed yet.
+
+### GPU queue and results
+
+**GPU queue** shows the worker and propagation jobs that the signed-in user may manage. Propagations run in submission order, one at a time, with no role priority. Clicks are scheduled between propagation steps and shared between users. The default limit of three pending propagations per user includes queued, running, and cancelling jobs.
+
+A propagation records its submitted inputs and stages its output separately. Its window applies the result only if the task has the expected revision; otherwise it offers the result for review. Applying a held result preserves anchors. A submitted job can finish while its window is closed; its owner's window checks for pending results when that task is opened again.
+
+- **Cancel** stops a queued job immediately. A running job stops after the current step and releases its GPU state; completed frames remain available as a partial result.
+- A worker failure interrupts its running job. Jobs are not automatically retried. **Retry** is available for failed, interrupted, or cancelled propagations and creates a new job from the original submitted inputs.
+- An out-of-memory failure is reported as `oom`. Check other GPU processes with `nvidia-smi`, free memory as appropriate, and retry.
+
+The worker holds `/var/lib/cutieplus-gpu/gpu.lock` before initializing its GPU work. This prevents a second cooperating worker from running; it does not prevent unrelated programs from using the GPU.
+
+## Configuration and updates
+
+| Path | Contents |
+| --- | --- |
+| `/etc/cutieplus/service.toml` | Paths, SSH address, desktop range, and service configuration; root-owned. |
+| `/etc/cutieplus/client.toml` | Enables cooperation mode and supplies the application socket. |
+| `/var/lib/cutieplus/` | Service-owned database, job input snapshots, result manifests, and database backups; mode `0700`. |
+| `<checkout>/workspace/.cutie_jobs/` | Staged GPU output files by default. |
+| `/etc/cutieplus/ssh/` | Published SSH key policies, written by the helper. |
+| `/var/lib/cutieplus-desktops/` | Remote desktop environment and VNC credential files. |
+
+The default input is `<checkout>/workspace/cutie_tasks`. GPU requests require task workspace and frame paths inside the configured `workspace_root`; setting `--tasks` to an arbitrary external path does not change that boundary. Configure and prepare the workspace consistently before using another location.
+
+Admins can change session timeouts, setup-token lifetime, pending-job limit, and backup settings in **Manage Annotators → Settings**. Defaults are 12 hours of session inactivity, a seven-day maximum session lifetime, a 72-hour setup-token lifetime, a 24-hour backup interval, and 14 retained database backups.
+
+Edit `/etc/cutieplus/service.toml` as root for host configuration, then restart the service, helper, and worker. Re-run the installer when changing SSH or desktop-range configuration so it regenerates the SSH configuration and units. The supplied desktop script uses VNC ports `5900 + display`; retain that mapping.
+
+After updating the checkout and syncing its dependencies, close application windows and re-run `sudo deploy/install.sh` as the desktop account. This refreshes the protected service release and restarts its services; schedule it when annotators can stop work because running inference is interrupted. The existing `service.toml` and database are retained.
+
+### Optional host-wide SSH key policy
+
+`sudo deploy/install.sh --port22` is a separate operation that changes the host's regular SSH server to read public keys from `/etc/ssh/authorized_keys.d/%u` through `/etc/ssh/sshd_config.d/10-cutieplus-keys.conf`. The installer copies only the desktop account's existing `~/.ssh/authorized_keys`, and only if its destination does not exist. Other accounts' public-key access can be affected because their keys are not copied.
+
+Before using this option, provision the root-owned key files needed by other accounts and check the host's effective SSH configuration. Keep an administrative session open while testing access. The installer does not change password authentication. This option addresses the shared desktop account's ability to edit its own `~/.ssh/authorized_keys`; it is not required to run the annotation service.
+
+### Disable cooperation mode
+
+```bash
+sudo deploy/install.sh --disable
+```
+
+This stops and disables the services, stops remote desktops, removes `client.toml`, and removes the jump-account SSH drop-in. Newly started windows then use local inference. The database, settings, accounts, and stored key files remain. The optional host-wide `10-cutieplus-keys.conf` policy is not removed by this command.
+
+## Backup and recovery
+
+### Back up and restore the database
+
+Automatic backups are written to `/var/lib/cutieplus/backups/` by default. Create one immediately with:
+
+```bash
+sudo cutieplus-admin backup
+```
+
+The command prints its path. These backups contain the cooperation database, including user and audit records. They do not include task images, annotations, model weights, the checkout, or job snapshot and result files. Back up those separately if needed.
+
+Restore a database backup with:
 
 ```bash
 sudo cutieplus-admin restore /var/lib/cutieplus/backups/cooperation-<time>.sqlite3
 ```
 
-It checks the backup, stops the service, puts the backup in place, and starts the service, which
-then reconciles on the safe side: every session ends, jobs that were running are interrupted, a key
-revoked after the backup stays revoked, and the SSH policy is written again from the backup (keys
-added after the backup must be added again). It lists the users: changes made after the backup
-(a suspension, a new user) are not in it, so check them.
+Replace the placeholder with an existing backup path readable by the `cutieplus` service account. The command stops the service, checks and restores the database as that account, and starts the service again. Application sessions end; jobs recorded as running are interrupted. The SSH policy and desired desktop states are reconciled from the restored database.
 
-## Starting over
+When the current SSH policy file is readable, active keys absent from that policy are revoked in the restored database, preserving later revocations. Keys added after the backup must be added again. Other changes after the backup, including suspensions and newly created users, are absent: review the users printed by the command and verify access before resuming work.
+
+### Recover or transfer ownership
+
+```bash
+sudo cutieplus-admin owner-reset
+sudo cutieplus-admin owner-transfer --login jordan
+```
+
+`owner-reset` clears the owner's password, ends their sessions, and prints a new setup token. `owner-transfer` requires an existing active user; it makes that user the owner and admin and demotes the previous owner to supervisor. Both users sign in again.
+
+### Reset all cooperation records
 
 ```bash
 sudo cutieplus-admin reset
 ```
 
-After you type RESET, it deletes every record: every account (the owner's too), SSH key, desktop,
-session, GPU job and the audit log. Collaborators' desktops stop and their connections end. A
-checked copy of the database is kept in `/var/lib/cutieplus/backups/` (delete it, and the older
-backups there, to remove the records for good). Annotation files are never touched. Then create
-the owner again, as on the first day (`sudo cutieplus-admin bootstrap-owner …`).
+After the operator types `RESET`, this command stops desktops and relevant services and clears all cooperation records, including the owner, keys, jobs, and audit log. It keeps a checked database copy in the backup directory and leaves annotation files untouched. Existing database backups still contain old records. After a reset, create the owner again with `bootstrap-owner`.
 
-## Recovering the owner
+## Troubleshooting
 
-```bash
-sudo cutieplus-admin owner-reset                    # a new setup token for the owner
-sudo cutieplus-admin owner-transfer --login <user>  # an active user becomes the owner and admin;
-                                                    # the previous owner becomes a supervisor
-```
+| Symptom | Checks |
+| --- | --- |
+| Application cannot reach the service | Check `cutieplus-service` and its journal. Installing `client.toml` enables service mode even when the service is stopped. |
+| SSH authentication fails | Confirm the key was added to the intended active user and its operation completed. Use the generated connection command; inspect `cutieplus-sshd` and the host's SSH logs. |
+| SSH reports a local port already in use | Close the earlier tunnel or choose an unused local port and use the same local port in the VNC viewer. Keep the remote destination port unchanged. |
+| VNC rejects the password | Use the most recently generated VNC password and check the desktop's operation status. A new password restarts the desktop. |
+| Remote desktop does not start | Inspect `journalctl -u cutieplus-desktop@2` for display `:2`, substituting the assigned display. Check the checkout and `.venv` paths. |
+| No desktop is available | All configured slots may be assigned. Review users and released desktops; removed users release their slot after stopping. |
+| Job is stuck or the worker is unavailable | Check **GPU queue**, `sudo cutieplus-admin status`, and `journalctl -u cutieplus-gpu-worker`. If required, restart it with `sudo systemctl restart cutieplus-gpu-worker`; a running job is interrupted. |
+| Request says a frame or workspace is outside the workspace | Compare the task and frame paths with `workspace_root` in `service.toml`. |
+| Management operation remains failed | Read its reported reason and the helper/service logs. The reconciler retries; restarting the application alone does not repair a failed system operation. |
 
-## Logs
+Admins can read application audit records in **Manage Annotators → Audit**. It records authentication, management actions, SSH connections observed from the annotation SSH journal, and job completion. System logs are available through `journalctl` for each service.
 
-`journalctl -u cutieplus-service`, `-u cutieplus-helper`, `-u cutieplus-gpu-worker`,
-`-u cutieplus-sshd`, `-u 'cutieplus-desktop@*'`. The audit log (Manage Annotators → Audit, admins)
-records sign-ins, every management action with its actor, SSH connections as sshd's journal reports
-them, and the end of every GPU job.
+## Trust boundary
+
+Application users have distinct identities and roles, but remote desktops share the Linux desktop account. This deployment is intended for trusted collaborators sharing a dataset, rather than operating-system isolation between users. A process under the shared account can access that account's files and VNC credentials or modify the checkout used by the worker and desktops. The service database and protected service release use a separate account and root-owned code; application admin rights do not grant Linux administrative privileges.
